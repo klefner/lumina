@@ -1,0 +1,62 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #000000;
+  overflow: hidden;
+  touch-action: none;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#gameCanvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  background: #000000;
+  touch-action: none;
+}
+
+#ui-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  text-align: center;
+  font-family: 'Courier New', monospace;
+  color: #ffffff;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+#waveLabel {
+  margin-top: 24px;
+  font-size: 16px;
+  letter-spacing: 4px;
+}
+
+#message {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  font-family: 'Courier New', monospace;
+  color: #ffffff;
+  opacity: 0.6;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+#message .title {
+  font-size: 48px;
+  letter-spacing: 8px;
+}
+
+#message .subtitle {
+  font-size: 18px;
+  letter-spacing: 3px;
+  margin-top: 12px;
+}
