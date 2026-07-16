@@ -1,24 +1,28 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#000000">
-<title>Lumina</title>
-<link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icons/icon-192.png">
-<link rel="icon" href="icons/icon-192.png">
-<link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Lumina">
+  <meta name="theme-color" content="#000000">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+  <title>Lumina</title>
 </head>
 <body>
-<canvas id="gameCanvas"></canvas>
-<div id="ui-overlay">
-  <div id="waveLabel"></div>
-</div>
-<div id="message"></div>
-<script src="game.js"></script>
+  <canvas id="gameCanvas"></canvas>
+  <div id="ui-overlay">
+    <div id="wave-display"></div>
+    <div id="score-display"></div>
+  </div>
+  <div id="message-overlay">
+    <div id="message-title"></div>
+    <div id="message-subtitle"></div>
+  </div>
+  <script src="game.js"></script>
 </body>
 </html>

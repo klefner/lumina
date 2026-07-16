@@ -1,62 +1,76 @@
-html, body {
+* {
   margin: 0;
   padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
   width: 100%;
   height: 100%;
-  background: #000000;
   overflow: hidden;
+  background: #000000;
   touch-action: none;
-  overscroll-behavior: none;
-  -webkit-user-select: none;
   user-select: none;
+  -webkit-user-select: none;
 }
 
 #gameCanvas {
-  display: block;
-  width: 100vw;
-  height: 100vh;
-  background: #000000;
-  touch-action: none;
-}
-
-#ui-overlay {
-  position: absolute;
+  position: fixed;
   top: 0;
   left: 0;
   width: 100%;
-  text-align: center;
-  font-family: 'Courier New', monospace;
-  color: #ffffff;
-  opacity: 0.6;
+  height: 100%;
+  display: block;
+}
+
+#ui-overlay {
+  position: fixed;
+  top: 20px;
+  left: 0;
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  padding: 0 24px;
   pointer-events: none;
-}
-
-#waveLabel {
-  margin-top: 24px;
-  font-size: 16px;
-  letter-spacing: 4px;
-}
-
-#message {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  text-align: center;
   font-family: 'Courier New', monospace;
-  color: #ffffff;
-  opacity: 0.6;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.45);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  z-index: 10;
+}
+
+#message-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   pointer-events: none;
-  white-space: nowrap;
+  z-index: 20;
+  opacity: 1;
+  transition: opacity 0.8s ease;
 }
 
-#message .title {
-  font-size: 48px;
-  letter-spacing: 8px;
+#message-title {
+  font-family: 'Courier New', monospace;
+  font-size: 42px;
+  font-weight: 300;
+  color: rgba(255, 255, 255, 0.9);
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  text-shadow: 0 0 30px rgba(255, 255, 255, 0.5);
 }
 
-#message .subtitle {
-  font-size: 18px;
-  letter-spacing: 3px;
-  margin-top: 12px;
+#message-subtitle {
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.4);
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  margin-top: 16px;
 }

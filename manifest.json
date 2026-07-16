@@ -1,11 +1,12 @@
 {
   "name": "Lumina",
   "short_name": "Lumina",
+  "description": "Draw light. Reveal music.",
+  "start_url": "/lumina/",
+  "display": "fullscreen",
   "background_color": "#000000",
   "theme_color": "#000000",
-  "display": "fullscreen",
-  "start_url": "/lumina/",
-  "scope": "/lumina/",
+  "orientation": "portrait",
   "icons": [
     {
       "src": "icons/icon-192.png",
