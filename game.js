@@ -46,16 +46,17 @@ const INSTRUMENTS = [
 
 // Procedural song genres. Each defines a proper 7-note scale (so diatonic
 // triads are well-formed), a chord progression (scale degrees, cycled one
-// chord per bar), a lead synthesis style, a per-bar rhythmic "groove" that
-// biases where melody notes land, and a drum pattern — this is what gives
-// each genre real harmonic movement and rhythmic identity instead of an
-// undirected random walk over a scale.
+// chord per bar), a per-bar rhythmic "groove" that biases where melody
+// notes land, a drum pattern, and the instrumentation for lead/bass/pad.
+// Three genres use real sampled instruments (recorded, pitch-shifted —
+// see sounds/CREDITS.md); chiptune keeps its fully synthesized 8-bit voices
+// on purpose, since that's genuinely what defines the genre.
 const GENRES = [
   {
     name: 'ambient', bpm: 68, rootMidi: 60,
     scaleIntervals: [0, 2, 4, 5, 7, 9, 11], // Ionian
     chordProgression: [0, 5, 3, 4],          // I - vi - IV - V
-    leadStyle: 'pluck',
+    instruments: { lead: 'flute', bass: 'doublebass', pad: 'cello' },
     bassOnBeatThree: false,
     grooveWeights: [0.5, 0.1, 0.3, 0.1, 0.4, 0.1, 0.3, 0.1],
     drumPattern: {
@@ -68,7 +69,7 @@ const GENRES = [
     name: 'synthwave', bpm: 100, rootMidi: 57,
     scaleIntervals: [0, 2, 3, 5, 7, 8, 10], // Aeolian (natural minor)
     chordProgression: [0, 5, 2, 6],          // i - VI - III - VII
-    leadStyle: 'saw',
+    instruments: { lead: 'trumpet', bass: 'doublebass', pad: 'cello' },
     bassOnBeatThree: true,
     grooveWeights: [0.8, 0.3, 0.6, 0.3, 0.8, 0.3, 0.6, 0.4],
     drumPattern: {
@@ -81,7 +82,7 @@ const GENRES = [
     name: 'lofi', bpm: 78, rootMidi: 62,
     scaleIntervals: [0, 2, 3, 5, 7, 9, 10], // Dorian
     chordProgression: [1, 4, 0, 5],          // ii - V - I - vi
-    leadStyle: 'pluck',
+    instruments: { lead: 'piano', bass: 'doublebass', pad: 'cello' },
     bassOnBeatThree: false,
     grooveWeights: [0.6, 0.2, 0.4, 0.5, 0.5, 0.2, 0.4, 0.6],
     drumPattern: {
@@ -94,7 +95,7 @@ const GENRES = [
     name: 'chiptune', bpm: 128, rootMidi: 64,
     scaleIntervals: [0, 2, 4, 5, 7, 9, 11], // Ionian
     chordProgression: [0, 4, 5, 3],          // I - V - vi - IV
-    leadStyle: 'square',
+    instruments: { lead: 'synth-square', bass: 'synth-bass', pad: 'synth-pad' },
     bassOnBeatThree: true,
     grooveWeights: [0.9, 0.5, 0.7, 0.5, 0.9, 0.5, 0.7, 0.6],
     drumPattern: {
@@ -104,6 +105,18 @@ const GENRES = [
     },
   },
 ];
+
+// Real instrument samples: recorded, individually-pitched one-shots from
+// the University of Iowa Electronic Music Studios (free for any use — see
+// sounds/CREDITS.md), pitch-shifted at playback via playbackRate to cover
+// notes between the ones actually sampled.
+const SAMPLE_MANIFEST = {
+  piano: ['A3', 'C4', 'E4', 'Ab4', 'C5', 'E5', 'Ab5', 'C6'],
+  flute: ['B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6', 'Db6', 'D6', 'Eb6', 'E6', 'F6', 'Gb6', 'G6', 'Ab6', 'A6', 'Bb6', 'B6'],
+  trumpet: ['C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5'],
+  cello: ['D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4'],
+  doublebass: ['E1', 'F1', 'Gb1', 'G1', 'Ab1', 'A1', 'Bb1', 'B1', 'C2', 'Db2', 'D2', 'Eb2', 'E2', 'F2', 'Gb2', 'G2', 'Ab2', 'A2', 'Bb2', 'B2'],
+};
 
 const STARFIELD_CONFIG = {
   MAX_STARS: 500,
@@ -161,6 +174,9 @@ const STATE = {
   chunkGains: [],       // One persistent GainNode per pair — starts muted, ramped open on connect,
                         // so the whole song builds up in place rather than replaying from scratch.
 
+  sampleBuffers: {},   // { piano: { A3: AudioBuffer, ... }, flute: {...}, ... } — decoded lazily
+  sampleBytesLoaded: false, // raw fetch finished (kicked off at page load)
+
   stars: [],           // Background starfield for the current wave — resets each wave
   spaceObjects: [],    // Drifting asteroids / comets / satellites
   spaceSpawnTimer: 0,
@@ -189,6 +205,12 @@ function initAudio() {
     masterGain.connect(STATE.audioCtx.destination);
     STATE.masterBus = compressor;
     STATE.masterGain = masterGain;
+
+    // Track the decode promise so startWave can wait for it before
+    // scheduling the first wave's song — scheduleLoopingSong calls
+    // playSample synchronously for every note up front, so if decoding
+    // isn't finished by then, those notes would silently never play.
+    STATE.samplesReadyPromise = decodeAllSamples();
   }
 
   // iOS Safari (especially standalone/home-screen PWAs) frequently leaves the
@@ -206,15 +228,66 @@ function initAudio() {
   unlockSource.start(0);
 }
 
+// --- Sample loading -----------------------------------------------------
+// Raw bytes are fetched as soon as the page loads (no AudioContext needed
+// for a plain fetch), overlapping with the "tap to begin" dwell time.
+// Decoding happens once the AudioContext exists (first user gesture).
+let sampleRawBytes = {};
+
+function preloadSampleBytes() {
+  for (const instrument in SAMPLE_MANIFEST) {
+    sampleRawBytes[instrument] = {};
+    SAMPLE_MANIFEST[instrument].forEach(note => {
+      fetch(`sounds/${instrument}/${instrument}_${note}.ogg`)
+        .then(r => r.arrayBuffer())
+        .then(buf => { sampleRawBytes[instrument][note] = buf; })
+        .catch(() => { /* sample missing — playSample falls back gracefully */ });
+    });
+  }
+}
+
+async function decodeAllSamples() {
+  for (const instrument in SAMPLE_MANIFEST) {
+    STATE.sampleBuffers[instrument] = {};
+    for (const note of SAMPLE_MANIFEST[instrument]) {
+      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      let raw = sampleRawBytes[instrument] && sampleRawBytes[instrument][note];
+      let attempts = 0;
+      while (!raw && attempts < 20) { // fetch may still be in flight — wait briefly
+        await wait(100);
+        raw = sampleRawBytes[instrument] && sampleRawBytes[instrument][note];
+        attempts++;
+      }
+      if (!raw) continue;
+      try {
+        const audioBuffer = await STATE.audioCtx.decodeAudioData(raw.slice(0));
+        STATE.sampleBuffers[instrument][note] = audioBuffer;
+      } catch (e) { /* skip — playSample falls back gracefully */ }
+    }
+  }
+}
+
+const NOTE_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+function noteNameToMidi(name) {
+  const m = /^([A-G]b?)(-?\d+)$/.exec(name);
+  const octave = parseInt(m[2], 10);
+  return (octave + 1) * 12 + NOTE_NAMES.indexOf(m[1]);
+}
+
 function midiToFreq(midi) {
   return 440 * Math.pow(2, (midi - 69) / 12);
 }
 
-function scaleFreq(genre, degreeIndex, octaveOffset) {
+function scaleMidi(genre, degreeIndex, octaveOffset) {
   const scaleLen = genre.scaleIntervals.length;
   const octave = Math.floor(degreeIndex / scaleLen) + octaveOffset;
   const degree = ((degreeIndex % scaleLen) + scaleLen) % scaleLen;
-  return midiToFreq(genre.rootMidi + octave * 12 + genre.scaleIntervals[degree]);
+  return genre.rootMidi + octave * 12 + genre.scaleIntervals[degree];
+}
+
+function scaleFreq(genre, degreeIndex, octaveOffset) {
+  return midiToFreq(scaleMidi(genre, degreeIndex, octaveOffset));
 }
 
 function makeNoiseBuffer(durSec) {
@@ -246,74 +319,52 @@ function stopAllScheduledAudio(atTime) {
   STATE.activeSources = [];
 }
 
-// --- Instrument voices -----------------------------------------------
-// Each of these is a small self-contained synthesis patch built entirely
-// from native AudioNodes (no samples, no libraries) — shaped envelopes and
-// filters chosen to read as a genuine instrument role rather than a bare
-// oscillator beep.
-
-// Plucked/mallet-like voice: a triangle fundamental plus a quiet octave-up
-// sine for a touch of attack "click", with a fast attack and a natural
-// exponential decay — reads as a soft mallet/pluck without any feedback-loop
-// DSP (a native delay/feedback Karplus-Strong loop turned out to overload
-// mobile audio processing under polyphony and produced harsh artifacts).
-function playPluck(freq, t, peak, dest) {
-  const ctx = STATE.audioCtx;
-  const osc = ctx.createOscillator();
-  osc.type = 'triangle';
-  osc.frequency.setValueAtTime(freq, t);
-
-  const overtone = ctx.createOscillator();
-  overtone.type = 'sine';
-  overtone.frequency.setValueAtTime(freq * 2, t);
-
-  const gain = ctx.createGain();
-  gain.gain.setValueAtTime(0, t);
-  gain.gain.linearRampToValueAtTime(peak, t + 0.006);
-  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
-
-  const overtoneGain = ctx.createGain();
-  overtoneGain.gain.setValueAtTime(0, t);
-  overtoneGain.gain.linearRampToValueAtTime(peak * 0.25, t + 0.004);
-  overtoneGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
-
-  osc.connect(gain);
-  gain.connect(dest);
-  overtone.connect(overtoneGain);
-  overtoneGain.connect(dest);
-
-  trackSource(osc).start(t); osc.stop(t + 0.6);
-  trackSource(overtone).start(t); overtone.stop(t + 0.15);
+// --- Real instrument sample playback -----------------------------------
+// Recorded, individually-pitched note samples (see SAMPLE_MANIFEST), pitch-
+// shifted via playbackRate to reach notes between the ones actually
+// sampled. Falls back to silence gracefully if a sample hasn't finished
+// decoding yet (should be rare — decoding happens on the same gesture that
+// unlocks audio, well before the first note is scheduled to play).
+function nearestSampleNote(instrument, targetMidi) {
+  const notes = SAMPLE_MANIFEST[instrument];
+  if (!notes) return null;
+  let best = null, bestDist = Infinity;
+  for (const name of notes) {
+    const dist = Math.abs(noteNameToMidi(name) - targetMidi);
+    if (dist < bestDist) { bestDist = dist; best = name; }
+  }
+  return best;
 }
 
-// Gently filtered sawtooth for an analog synth lead — softened just enough
-// to tame the raw buzz. Deliberately no resonance and no filter sweep: a
-// resonant (high-Q) filter swept across its range is a classic source of
-// harsh whistling/screeching, especially with many overlapping notes, so
-// this stays static and mild.
-function playFilteredSaw(freq, t, dur, peak, dest) {
-  const ctx = STATE.audioCtx;
-  const osc = ctx.createOscillator();
-  osc.type = 'sawtooth';
-  osc.frequency.setValueAtTime(freq, t);
+function playSample(instrument, targetMidi, t, peak, dest) {
+  const buffers = STATE.sampleBuffers[instrument];
+  if (!buffers) return;
+  const nearestName = nearestSampleNote(instrument, targetMidi);
+  if (!nearestName) return;
+  const buffer = buffers[nearestName];
+  if (!buffer) return;
 
-  const filter = ctx.createBiquadFilter();
-  filter.type = 'lowpass';
-  filter.Q.value = 0.5;
-  filter.frequency.value = Math.min(6000, freq * 3.5);
+  const ctx = STATE.audioCtx;
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.playbackRate.value = Math.pow(2, (targetMidi - noteNameToMidi(nearestName)) / 12);
 
   const gain = ctx.createGain();
-  gain.gain.setValueAtTime(0, t);
-  gain.gain.linearRampToValueAtTime(peak, t + 0.015);
-  gain.gain.setValueAtTime(peak, t + Math.max(0.015, dur * 0.6));
-  gain.gain.exponentialRampToValueAtTime(0.001, t + dur + 0.2);
+  gain.gain.value = peak;
 
-  osc.connect(filter);
-  filter.connect(gain);
+  src.connect(gain);
   gain.connect(dest);
-  trackSource(osc).start(t);
-  osc.stop(t + dur + 0.25);
+  trackSource(src).start(t);
 }
+
+function playSampleChord(instrument, midiList, t, peak, dest) {
+  midiList.forEach(midi => playSample(instrument, midi, t, peak, dest));
+}
+
+// --- Synthesized voices (chiptune only) --------------------------------
+// Chiptune keeps fully synthesized 8-bit voices on purpose — that IS the
+// genre's authentic sound, unlike the other genres' "computer sounding"
+// leads which real samples were specifically brought in to fix.
 
 // Punchy square lead — kept deliberately "chip" in character since that
 // 8-bit voice is genuinely what defines the chiptune genre, but taken
@@ -477,15 +528,16 @@ function playScheduledNote(note, startTime, beatDur, dest) {
   const t = startTime + note.beat * beatDur;
   switch (note.role) {
     case 'lead':
-      if (note.synth === 'pluck') playPluck(note.freq, t, 0.22, dest);
-      else if (note.synth === 'square') playSquareLead(note.freq, t, note.dur * beatDur, 0.16, dest);
-      else playFilteredSaw(note.freq, t, note.dur * beatDur, 0.18, dest);
+      if (note.instrument === 'synth-square') playSquareLead(note.freq, t, note.dur * beatDur, 0.16, dest);
+      else playSample(note.instrument, note.midi, t, 0.7, dest);
       break;
     case 'bass':
-      playBassNote(note.freq, t, note.dur * beatDur, 0.24, dest);
+      if (note.instrument === 'synth-bass') playBassNote(note.freq, t, note.dur * beatDur, 0.24, dest);
+      else playSample(note.instrument, note.midi, t, 0.55, dest);
       break;
     case 'pad':
-      playPadChord(note.freqs, t, note.dur * beatDur, 0.09, dest);
+      if (note.instrument === 'synth-pad') playPadChord(note.freqs, t, note.dur * beatDur, 0.09, dest);
+      else playSampleChord(note.instrument, note.midiList, t, 0.28, dest);
       break;
     case 'kick': playKick(t, dest); break;
     case 'snare': playSnare(t, dest); break;
@@ -523,24 +575,27 @@ function generateSong(pairCount) {
         notes.push({
           beat: barStartBeat + step * 0.5,
           dur: 0.5,
+          midi: scaleMidi(genre, deg, 1),
           freq: scaleFreq(genre, deg, 1),
           role: 'lead',
-          synth: genre.leadStyle,
+          instrument: genre.instruments.lead,
           chunkIndex,
         });
       }
     }
 
-    notes.push({ beat: barStartBeat, dur: 1.8, freq: scaleFreq(genre, chordRoot, -1), role: 'bass', chunkIndex });
+    notes.push({ beat: barStartBeat, dur: 1.8, midi: scaleMidi(genre, chordRoot, -1), freq: scaleFreq(genre, chordRoot, -1), role: 'bass', instrument: genre.instruments.bass, chunkIndex });
     if (genre.bassOnBeatThree) {
-      notes.push({ beat: barStartBeat + 2, dur: 1.8, freq: scaleFreq(genre, chordDegrees[2], -1), role: 'bass', chunkIndex });
+      notes.push({ beat: barStartBeat + 2, dur: 1.8, midi: scaleMidi(genre, chordDegrees[2], -1), freq: scaleFreq(genre, chordDegrees[2], -1), role: 'bass', instrument: genre.instruments.bass, chunkIndex });
     }
 
     notes.push({
       beat: barStartBeat,
       dur: 4,
+      midiList: chordDegrees.map(d => scaleMidi(genre, d, 0)),
       freqs: chordDegrees.map(d => scaleFreq(genre, d, 0)),
       role: 'pad',
+      instrument: genre.instruments.pad,
       chunkIndex,
     });
 
@@ -1025,12 +1080,26 @@ function startWave(waveNumber) {
 
   const pairCount = getPairCountForWave(waveNumber);
   STATE.song = generateSong(pairCount);
-  if (STATE.audioCtx) scheduleLoopingSong(STATE.song);
   STATE.barriers = generateBarriers(waveNumber, STATE.dots);
 
   updateWaveDisplay();
 
   if (!STATE.beatInterval) startBeat();
+
+  // Sample decoding is async; scheduleLoopingSong calls playSample
+  // synchronously for every note up front, so it must wait for decoding
+  // to finish or the whole wave's real-instrument notes would silently
+  // never play. The staleness guard skips scheduling if this wave was
+  // already superseded by the time decoding resolves (shouldn't normally
+  // happen — decode is fast — but keeps this safe regardless).
+  if (STATE.audioCtx) {
+    const songForThisWave = STATE.song;
+    Promise.resolve(STATE.samplesReadyPromise).then(() => {
+      if (STATE.song === songForThisWave) {
+        scheduleLoopingSong(songForThisWave);
+      }
+    });
+  }
 }
 
 // ============================================================
@@ -1435,6 +1504,7 @@ function gameLoop() {
 // ============================================================
 function init() {
   resizeCanvas();
+  preloadSampleBytes(); // start fetching instrument samples now, overlapping the "tap to begin" wait
 
   STATE.phase = 'TITLE';
   showMessage('LUMINA', 'connect the dots');
