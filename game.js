@@ -158,6 +158,8 @@ const STATE = {
 
   activeSources: [],   // Every scheduled oscillator/buffer source currently pending or playing —
                         // tracked so a wave transition can hard-stop everything, not just mute it.
+  chunkGains: [],       // One persistent GainNode per pair — starts muted, ramped open on connect,
+                        // so the whole song builds up in place rather than replaying from scratch.
 
   stars: [],           // Background starfield for the current wave — resets each wave
   spaceObjects: [],    // Drifting asteroids / comets / satellites
@@ -255,7 +257,7 @@ function stopAllScheduledAudio(atTime) {
 // exponential decay — reads as a soft mallet/pluck without any feedback-loop
 // DSP (a native delay/feedback Karplus-Strong loop turned out to overload
 // mobile audio processing under polyphony and produced harsh artifacts).
-function playPluck(freq, t, peak) {
+function playPluck(freq, t, peak, dest) {
   const ctx = STATE.audioCtx;
   const osc = ctx.createOscillator();
   osc.type = 'triangle';
@@ -276,18 +278,20 @@ function playPluck(freq, t, peak) {
   overtoneGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
 
   osc.connect(gain);
-  gain.connect(STATE.masterBus);
+  gain.connect(dest);
   overtone.connect(overtoneGain);
-  overtoneGain.connect(STATE.masterBus);
+  overtoneGain.connect(dest);
 
   trackSource(osc).start(t); osc.stop(t + 0.6);
   trackSource(overtone).start(t); overtone.stop(t + 0.15);
 }
 
-// Filtered sawtooth with a closing filter sweep — the bright-to-mellow
-// motion is what reads as an analog synth lead/brass rather than a flat
-// buzzy tone.
-function playFilteredSaw(freq, t, dur, peak) {
+// Gently filtered sawtooth for an analog synth lead — softened just enough
+// to tame the raw buzz. Deliberately no resonance and no filter sweep: a
+// resonant (high-Q) filter swept across its range is a classic source of
+// harsh whistling/screeching, especially with many overlapping notes, so
+// this stays static and mild.
+function playFilteredSaw(freq, t, dur, peak, dest) {
   const ctx = STATE.audioCtx;
   const osc = ctx.createOscillator();
   osc.type = 'sawtooth';
@@ -295,9 +299,8 @@ function playFilteredSaw(freq, t, dur, peak) {
 
   const filter = ctx.createBiquadFilter();
   filter.type = 'lowpass';
-  filter.Q.value = 3;
-  filter.frequency.setValueAtTime(freq * 6, t);
-  filter.frequency.exponentialRampToValueAtTime(Math.max(200, freq * 1.5), t + dur * 0.8);
+  filter.Q.value = 0.5;
+  filter.frequency.value = Math.min(6000, freq * 3.5);
 
   const gain = ctx.createGain();
   gain.gain.setValueAtTime(0, t);
@@ -307,18 +310,26 @@ function playFilteredSaw(freq, t, dur, peak) {
 
   osc.connect(filter);
   filter.connect(gain);
-  gain.connect(STATE.masterBus);
+  gain.connect(dest);
   trackSource(osc).start(t);
   osc.stop(t + dur + 0.25);
 }
 
-// Punchy square/triangle lead — kept deliberately "chip" in character since
-// that 8-bit voice is genuinely what defines the chiptune genre.
-function playSquareLead(freq, t, dur, peak) {
+// Punchy square lead — kept deliberately "chip" in character since that
+// 8-bit voice is genuinely what defines the chiptune genre, but taken
+// through a mild static lowpass to take the edge off the raw square wave's
+// harsh upper harmonics (measured to carry ~5x the high-frequency energy
+// of the other leads otherwise).
+function playSquareLead(freq, t, dur, peak, dest) {
   const ctx = STATE.audioCtx;
   const osc = ctx.createOscillator();
   osc.type = 'square';
   osc.frequency.setValueAtTime(freq, t);
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.Q.value = 0.5;
+  filter.frequency.value = Math.min(4500, freq * 4);
 
   const gain = ctx.createGain();
   gain.gain.setValueAtTime(0, t);
@@ -326,8 +337,9 @@ function playSquareLead(freq, t, dur, peak) {
   gain.gain.setValueAtTime(peak, t + Math.max(0.008, dur * 0.5));
   gain.gain.exponentialRampToValueAtTime(0.001, t + dur + 0.05);
 
-  osc.connect(gain);
-  gain.connect(STATE.masterBus);
+  osc.connect(filter);
+  filter.connect(gain);
+  gain.connect(dest);
   trackSource(osc).start(t);
   osc.stop(t + dur + 0.08);
 }
@@ -335,7 +347,7 @@ function playSquareLead(freq, t, dur, peak) {
 // Bass: a sawtooth + sub-octave sine through a filter that snaps closed
 // right after the attack, giving the note a percussive "thump" instead of
 // a static drone.
-function playBassNote(freq, t, dur, peak) {
+function playBassNote(freq, t, dur, peak, dest) {
   const ctx = STATE.audioCtx;
   const osc = ctx.createOscillator();
   osc.type = 'sawtooth';
@@ -347,9 +359,9 @@ function playBassNote(freq, t, dur, peak) {
 
   const filter = ctx.createBiquadFilter();
   filter.type = 'lowpass';
-  filter.Q.value = 1;
+  filter.Q.value = 0.6;
   filter.frequency.setValueAtTime(freq * 4, t);
-  filter.frequency.exponentialRampToValueAtTime(freq * 1.2, t + 0.15);
+  filter.frequency.exponentialRampToValueAtTime(freq * 1.5, t + 0.15);
 
   const gain = ctx.createGain();
   gain.gain.setValueAtTime(0, t);
@@ -359,14 +371,14 @@ function playBassNote(freq, t, dur, peak) {
   osc.connect(filter);
   sub.connect(filter);
   filter.connect(gain);
-  gain.connect(STATE.masterBus);
+  gain.connect(dest);
   trackSource(osc).start(t); osc.stop(t + dur + 0.1);
   trackSource(sub).start(t); sub.stop(t + dur + 0.1);
 }
 
 // Pad: three detuned triangle voices (root/3rd/5th of the chord) through a
 // soft lowpass with a slow attack, for a warm sustained wash under everything.
-function playPadChord(freqs, t, dur, peak) {
+function playPadChord(freqs, t, dur, peak, dest) {
   const ctx = STATE.audioCtx;
   freqs.forEach((freq, i) => {
     const osc = ctx.createOscillator();
@@ -386,13 +398,13 @@ function playPadChord(freqs, t, dur, peak) {
 
     osc.connect(filter);
     filter.connect(gain);
-    gain.connect(STATE.masterBus);
+    gain.connect(dest);
     trackSource(osc).start(t);
     osc.stop(t + dur + 0.7);
   });
 }
 
-function playKick(t) {
+function playKick(t, dest) {
   const ctx = STATE.audioCtx;
   const osc = ctx.createOscillator();
   osc.type = 'sine';
@@ -404,12 +416,12 @@ function playKick(t) {
   gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
 
   osc.connect(gain);
-  gain.connect(STATE.masterBus);
+  gain.connect(dest);
   trackSource(osc).start(t);
   osc.stop(t + 0.25);
 }
 
-function playSnare(t) {
+function playSnare(t, dest) {
   const ctx = STATE.audioCtx;
   const noise = ctx.createBufferSource();
   noise.buffer = makeNoiseBuffer(0.15);
@@ -425,7 +437,7 @@ function playSnare(t) {
 
   noise.connect(filter);
   filter.connect(gain);
-  gain.connect(STATE.masterBus);
+  gain.connect(dest);
   trackSource(noise).start(t);
   noise.stop(t + 0.16);
 
@@ -436,12 +448,12 @@ function playSnare(t) {
   oscGain.gain.setValueAtTime(0.25, t);
   oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
   osc.connect(oscGain);
-  oscGain.connect(STATE.masterBus);
+  oscGain.connect(dest);
   trackSource(osc).start(t);
   osc.stop(t + 0.09);
 }
 
-function playHihat(t) {
+function playHihat(t, dest) {
   const ctx = STATE.audioCtx;
   const noise = ctx.createBufferSource();
   noise.buffer = makeNoiseBuffer(0.06);
@@ -456,37 +468,38 @@ function playHihat(t) {
 
   noise.connect(filter);
   filter.connect(gain);
-  gain.connect(STATE.masterBus);
+  gain.connect(dest);
   trackSource(noise).start(t);
   noise.stop(t + 0.06);
 }
 
-function playScheduledNote(note, startTime, beatDur) {
+function playScheduledNote(note, startTime, beatDur, dest) {
   const t = startTime + note.beat * beatDur;
   switch (note.role) {
     case 'lead':
-      if (note.synth === 'pluck') playPluck(note.freq, t, 0.22);
-      else if (note.synth === 'square') playSquareLead(note.freq, t, note.dur * beatDur, 0.16);
-      else playFilteredSaw(note.freq, t, note.dur * beatDur, 0.18);
+      if (note.synth === 'pluck') playPluck(note.freq, t, 0.22, dest);
+      else if (note.synth === 'square') playSquareLead(note.freq, t, note.dur * beatDur, 0.16, dest);
+      else playFilteredSaw(note.freq, t, note.dur * beatDur, 0.18, dest);
       break;
     case 'bass':
-      playBassNote(note.freq, t, note.dur * beatDur, 0.24);
+      playBassNote(note.freq, t, note.dur * beatDur, 0.24, dest);
       break;
     case 'pad':
-      playPadChord(note.freqs, t, note.dur * beatDur, 0.09);
+      playPadChord(note.freqs, t, note.dur * beatDur, 0.09, dest);
       break;
-    case 'kick': playKick(t); break;
-    case 'snare': playSnare(t); break;
-    case 'hihat': playHihat(t); break;
+    case 'kick': playKick(t, dest); break;
+    case 'snare': playSnare(t, dest); break;
+    case 'hihat': playHihat(t, dest); break;
   }
 }
 
 // Generates a full multi-instrument song: a chord progression (one chord
 // per bar, one bar per dot pair) drives a chord-aware "lead" melody, a
 // bassline that follows the chord roots, sustained pad chords, and a
-// genre-specific drum pattern. The lead melody is sliced into pairCount
-// segments — one per dot pair — so each pair "owns" a short phrase, while
-// bass/pad/drums remain unattributed to any single pair.
+// genre-specific drum pattern. Every note — melody, bass, pad, and drums
+// alike — is tagged with the bar (chunkIndex) it falls in, so each dot
+// pair owns a genuine equal slice of the ENTIRE arrangement (not just its
+// melody line): connecting pair N reveals bar N in full.
 function generateSong(pairCount) {
   const genre = GENRES[Math.floor(Math.random() * GENRES.length)];
   const beatsPerPair = 4; // one bar per pair
@@ -494,85 +507,95 @@ function generateSong(pairCount) {
   const totalBeats = totalBars * beatsPerPair;
   const stepsPerBar = 8; // eighth notes
 
-  const melodyNotes = [];
-  const backgroundNotes = [];
+  const notes = [];
 
   for (let bar = 0; bar < totalBars; bar++) {
     const chordRoot = genre.chordProgression[bar % genre.chordProgression.length];
     const chordDegrees = [chordRoot, chordRoot + 2, chordRoot + 4];
     const barStartBeat = bar * beatsPerPair;
+    const chunkIndex = bar;
 
     for (let step = 0; step < stepsPerBar; step++) {
       if (Math.random() < genre.grooveWeights[step]) {
         const baseDeg = chordDegrees[Math.floor(Math.random() * chordDegrees.length)];
         const useChordTone = Math.random() < 0.7;
         const deg = useChordTone ? baseDeg : baseDeg + (Math.random() < 0.5 ? 1 : -1);
-        melodyNotes.push({
+        notes.push({
           beat: barStartBeat + step * 0.5,
           dur: 0.5,
           freq: scaleFreq(genre, deg, 1),
           role: 'lead',
           synth: genre.leadStyle,
+          chunkIndex,
         });
       }
     }
 
-    backgroundNotes.push({ beat: barStartBeat, dur: 1.8, freq: scaleFreq(genre, chordRoot, -1), role: 'bass' });
+    notes.push({ beat: barStartBeat, dur: 1.8, freq: scaleFreq(genre, chordRoot, -1), role: 'bass', chunkIndex });
     if (genre.bassOnBeatThree) {
-      backgroundNotes.push({ beat: barStartBeat + 2, dur: 1.8, freq: scaleFreq(genre, chordDegrees[2], -1), role: 'bass' });
+      notes.push({ beat: barStartBeat + 2, dur: 1.8, freq: scaleFreq(genre, chordDegrees[2], -1), role: 'bass', chunkIndex });
     }
 
-    backgroundNotes.push({
+    notes.push({
       beat: barStartBeat,
       dur: 4,
       freqs: chordDegrees.map(d => scaleFreq(genre, d, 0)),
       role: 'pad',
+      chunkIndex,
     });
 
     for (let step = 0; step < stepsPerBar; step++) {
       const beat = barStartBeat + step * 0.5;
-      if (genre.drumPattern.kick[step]) backgroundNotes.push({ beat, role: 'kick' });
-      if (genre.drumPattern.snare[step]) backgroundNotes.push({ beat, role: 'snare' });
-      if (genre.drumPattern.hihat[step]) backgroundNotes.push({ beat, role: 'hihat' });
+      if (genre.drumPattern.kick[step]) notes.push({ beat, role: 'kick', chunkIndex });
+      if (genre.drumPattern.snare[step]) notes.push({ beat, role: 'snare', chunkIndex });
+      if (genre.drumPattern.hihat[step]) notes.push({ beat, role: 'hihat', chunkIndex });
     }
   }
 
-  const segments = [];
-  for (let i = 0; i < pairCount; i++) {
-    const segStart = i * beatsPerPair;
-    const segEnd = (i + 1) * beatsPerPair;
-    segments.push(melodyNotes.filter(n => n.beat >= segStart && n.beat < segEnd));
+  return { genre, totalBeats, beatsPerPair, pairCount, notes };
+}
+
+const SONG_LOOP_ITERATIONS = 10; // generous coverage for a full wave's play session
+
+// Schedules the whole song, looped, for the entire wave up front — routed
+// through one persistent, initially-muted GainNode per pair (chunkGains).
+// Nothing is audible yet; connecting a pair just opens its gate. Because
+// the whole loop is already running underneath, every unmuted chunk stays
+// in perfect sync with every other one, and the build-up is continuous
+// rather than a one-shot replay.
+function scheduleLoopingSong(song) {
+  const ctx = STATE.audioCtx;
+  const beatDur = 60 / song.genre.bpm;
+  const loopDuration = song.totalBeats * beatDur;
+  const startTime = ctx.currentTime + 0.05;
+
+  STATE.chunkGains.forEach(g => { try { g.disconnect(); } catch (e) { /* already gone */ } });
+  STATE.chunkGains = [];
+  for (let i = 0; i < song.pairCount; i++) {
+    const g = ctx.createGain();
+    g.gain.value = 0;
+    g.connect(STATE.masterBus);
+    STATE.chunkGains.push(g);
   }
 
-  return { genre, totalBeats, beatsPerPair, segments, backgroundNotes };
+  for (let loop = 0; loop < SONG_LOOP_ITERATIONS; loop++) {
+    const loopStart = startTime + loop * loopDuration;
+    song.notes.forEach(note => {
+      playScheduledNote(note, loopStart, beatDur, STATE.chunkGains[note.chunkIndex]);
+    });
+  }
 }
 
-// Plays the short musical phrase "owned" by this pair as immediate
-// feedback — normalized to start right now regardless of where it
-// falls in the full song's timeline.
-function playPairSegment(pairId) {
-  if (!STATE.audioCtx || !STATE.song) return;
-  if (STATE.audioCtx.state === 'suspended') STATE.audioCtx.resume();
-  const seg = STATE.song.segments[pairId];
-  if (!seg || !seg.length) return;
-  const beatDur = 60 / STATE.song.genre.bpm;
-  const now = STATE.audioCtx.currentTime;
-  const segStartBeat = pairId * STATE.song.beatsPerPair;
-  seg.forEach(n => playScheduledNote({ ...n, beat: n.beat - segStartBeat }, now, beatDur));
-}
-
-// The finale: plays the ENTIRE song in its original timeline — every
-// pair's phrase in its proper place, plus the bass/pad/drums that were
-// never attributed to any single pair. Individually each pair only ever
-// heard its own isolated phrase; together, with the rhythm section
-// underneath, it becomes one coherent arrangement.
-function playFullSong() {
-  if (!STATE.audioCtx || !STATE.song) return;
-  if (STATE.audioCtx.state === 'suspended') STATE.audioCtx.resume();
-  const beatDur = 60 / STATE.song.genre.bpm;
-  const now = STATE.audioCtx.currentTime + 0.05;
-  STATE.song.backgroundNotes.forEach(n => playScheduledNote(n, now, beatDur));
-  STATE.song.segments.forEach(seg => seg.forEach(n => playScheduledNote(n, now, beatDur)));
+// Opens this pair's gate — its slice of the song (already playing, silent)
+// becomes audible from here on, every loop, layering with whatever other
+// pairs have already been connected.
+function unmuteChunk(pairId) {
+  if (!STATE.audioCtx || !STATE.chunkGains[pairId]) return;
+  const t = STATE.audioCtx.currentTime;
+  const g = STATE.chunkGains[pairId].gain;
+  g.cancelScheduledValues(t);
+  g.setValueAtTime(g.value, t);
+  g.linearRampToValueAtTime(1.0, t + 0.12);
 }
 
 function startBeat() {
@@ -901,7 +924,7 @@ function completeConnection(dotA, dotB) {
 
   spawnStarsAroundDots(dotA, dotB);
 
-  playPairSegment(dotA.pairId);
+  unmuteChunk(dotA.pairId);
 
   haptic('connect');
 
@@ -964,7 +987,9 @@ function checkWaveComplete() {
 
   STATE.phase = 'WAVE_COMPLETE';
 
-  playFullSong();
+  // The full song is already playing at this point — every pair's chunk
+  // was unmuted as it connected, so the last connection simply completes
+  // an arrangement that's been building in real time, in sync, all along.
   STATE.beatSync = { startTime: performance.now(), bpm: STATE.song.genre.bpm };
 
   haptic('waveComplete');
@@ -1000,6 +1025,7 @@ function startWave(waveNumber) {
 
   const pairCount = getPairCountForWave(waveNumber);
   STATE.song = generateSong(pairCount);
+  if (STATE.audioCtx) scheduleLoopingSong(STATE.song);
   STATE.barriers = generateBarriers(waveNumber, STATE.dots);
 
   updateWaveDisplay();
@@ -1028,7 +1054,7 @@ function startFadeToBlack(onComplete) {
     STATE.masterGain.gain.setValueAtTime(STATE.masterGain.gain.value, t);
     STATE.masterGain.gain.linearRampToValueAtTime(0.0001, t + FADE_CONFIG.OUT_DURATION_SEC);
 
-    // playFullSong schedules notes across the ENTIRE song up front — some
+    // scheduleLoopingSong pre-schedules many loop iterations up front — some
     // land well past this listen window. Muting alone doesn't stop them;
     // they'd still fire later and become audible again once the next
     // wave's fade-in restores volume. Hard-stop everything exactly when
