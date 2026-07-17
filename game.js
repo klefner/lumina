@@ -26,7 +26,11 @@ const CONFIG = {
   STARTING_PAIRS: 3,         // Number of color pairs in Wave 1
   PAIRS_PER_WAVE_INCREASE: 2,// Add one pair every N waves
   MAX_PAIRS: 6,              // Maximum color pairs ever shown
-  WAVE_COMPLETE_DELAY: 2200, // ms before starting next wave
+  WAVE_COMPLETE_LINGER: 900, // ms the message lingers in silence after the song ends, before fading out
+};
+
+const FADE_CONFIG = {
+  STEP: 0.015, // canvas fade-to-black / fade-from-black speed per frame
 };
 
 // Color palette — each index is one instrument/color
@@ -97,8 +101,10 @@ const STATE = {
   beatTick: 0,         // Increments each beat
 
   song: null,          // Procedurally generated song for the current wave
+  beatSync: null,      // { startTime, bpm } — drives unison dot pulsing while the full song plays
+  fade: null,          // { alpha, direction: 'out'|'in'|'idle', onComplete } — canvas black transition between waves
 
-  stars: [],           // Persistent background starfield (accumulates across waves)
+  stars: [],           // Background starfield for the current wave — resets each wave
   spaceObjects: [],    // Drifting asteroids / comets / satellites
   spaceSpawnTimer: 0,
 };
@@ -107,8 +113,33 @@ const STATE = {
 // SECTION 3: MUSIC ENGINE (procedural song generation & playback)
 // ============================================================
 function initAudio() {
-  if (STATE.audioCtx) return;
-  STATE.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (!STATE.audioCtx) {
+    STATE.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    // Master bus: gain + compressor so many overlapping notes (the full-song
+    // finale) don't clip, and so per-note volumes can stay comfortably audible
+    // on phone speakers.
+    const compressor = STATE.audioCtx.createDynamicsCompressor();
+    const masterGain = STATE.audioCtx.createGain();
+    masterGain.gain.value = 1.0;
+    compressor.connect(masterGain);
+    masterGain.connect(STATE.audioCtx.destination);
+    STATE.masterBus = compressor;
+  }
+
+  // iOS Safari (especially standalone/home-screen PWAs) frequently leaves the
+  // context suspended even when created inside a user gesture, and can fail
+  // to fully engage the hardware audio session until a buffer is actually
+  // played. Resume + play a silent buffer synchronously on every gesture as
+  // a robust unlock — cheap and idempotent if already unlocked.
+  if (STATE.audioCtx.state === 'suspended') {
+    STATE.audioCtx.resume();
+  }
+  const unlockBuffer = STATE.audioCtx.createBuffer(1, 1, 22050);
+  const unlockSource = STATE.audioCtx.createBufferSource();
+  unlockSource.buffer = unlockBuffer;
+  unlockSource.connect(STATE.audioCtx.destination);
+  unlockSource.start(0);
 }
 
 function midiToFreq(midi) {
@@ -200,7 +231,7 @@ function scheduleNote(note, startTime, beatDur) {
   gain.gain.exponentialRampToValueAtTime(0.001, t + dur + 0.15);
 
   osc.connect(gain);
-  gain.connect(ctx.destination);
+  gain.connect(STATE.masterBus || ctx.destination);
   osc.start(t);
   osc.stop(t + dur + 0.2);
 }
@@ -210,6 +241,7 @@ function scheduleNote(note, startTime, beatDur) {
 // falls in the full song's timeline.
 function playPairSegment(pairId) {
   if (!STATE.audioCtx || !STATE.song) return;
+  if (STATE.audioCtx.state === 'suspended') STATE.audioCtx.resume();
   const seg = STATE.song.segments[pairId];
   if (!seg || !seg.length) return;
   const beatDur = 60 / STATE.song.genre.bpm;
@@ -225,6 +257,7 @@ function playPairSegment(pairId) {
 // it becomes one coherent arrangement.
 function playFullSong() {
   if (!STATE.audioCtx || !STATE.song) return;
+  if (STATE.audioCtx.state === 'suspended') STATE.audioCtx.resume();
   const beatDur = 60 / STATE.song.genre.bpm;
   const now = STATE.audioCtx.currentTime + 0.05;
   STATE.song.backgroundNotes.forEach(n => scheduleNote(n, now, beatDur));
@@ -251,11 +284,22 @@ function resizeCanvas() {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 
+function getBeatPulse() {
+  if (!STATE.beatSync) return null;
+  const elapsedSec = (performance.now() - STATE.beatSync.startTime) / 1000;
+  const beatDur = 60 / STATE.beatSync.bpm;
+  const beatPhase = (elapsedSec / beatDur) * Math.PI * 2;
+  return (Math.sin(beatPhase) + 1) / 2; // 0..1, one full pulse per beat
+}
+
 function drawDot(dot) {
   const instrument = INSTRUMENTS[dot.colorIndex];
 
   let radius;
-  const pulse = (Math.sin(dot.pulsePhase) + 1) / 2; // 0 to 1
+  const beatPulse = getBeatPulse();
+  // While the full song plays at wave-complete, all dots pulse together in
+  // sync with the beat instead of each animating on its own phase.
+  const pulse = beatPulse !== null ? beatPulse : (Math.sin(dot.pulsePhase) + 1) / 2;
 
   if (dot.connected) {
     radius = CONFIG.DOT_RADIUS_BASE + (CONFIG.DOT_RADIUS_CONNECTED_MAX - CONFIG.DOT_RADIUS_BASE) * pulse;
@@ -279,6 +323,47 @@ function drawDot(dot) {
   ctx.restore();
 }
 
+// Draws a point list as a smooth curve instead of a jagged polyline, using
+// the classic "quadratic through midpoints" technique: each raw point
+// becomes a curve control, and the curve passes through the midpoints
+// between consecutive points rather than through the raw points themselves.
+// Drawn as short per-segment strokes (via strokeStyleFn) so per-point alpha
+// (the traveling fade) still applies.
+function drawSmoothedPath(points, strokeStyleFn) {
+  if (points.length < 2) return;
+
+  if (points.length === 2) {
+    const alpha = strokeStyleFn.alpha(points[0], points[1]);
+    if (alpha > 0.01) {
+      ctx.beginPath();
+      ctx.strokeStyle = strokeStyleFn.style(alpha);
+      ctx.moveTo(points[0].x, points[0].y);
+      ctx.lineTo(points[1].x, points[1].y);
+      ctx.stroke();
+    }
+    return;
+  }
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const p0 = points[i - 1];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const alpha = strokeStyleFn.alpha(p0, p1);
+    if (alpha <= 0.01) continue;
+
+    const startX = i === 1 ? p0.x : (p0.x + p1.x) / 2;
+    const startY = i === 1 ? p0.y : (p0.y + p1.y) / 2;
+    const endX = (p1.x + p2.x) / 2;
+    const endY = (p1.y + p2.y) / 2;
+
+    ctx.beginPath();
+    ctx.strokeStyle = strokeStyleFn.style(alpha);
+    ctx.moveTo(startX, startY);
+    ctx.quadraticCurveTo(p1.x, p1.y, endX, endY);
+    ctx.stroke();
+  }
+}
+
 function drawFadingLine(line) {
   const instrument = INSTRUMENTS[line.colorIndex];
 
@@ -286,22 +371,14 @@ function drawFadingLine(line) {
   ctx.lineWidth = CONFIG.LINE_WIDTH;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
+  ctx.shadowBlur = CONFIG.LINE_GLOW_BLUR;
+  ctx.shadowColor = instrument.hex;
 
-  for (let i = 1; i < line.points.length; i++) {
-    const p0 = line.points[i - 1];
-    const p1 = line.points[i];
-    const alpha = Math.min(p0.alpha, p1.alpha);
+  drawSmoothedPath(line.points, {
+    alpha: (p0, p1) => Math.min(p0.alpha, p1.alpha),
+    style: (alpha) => instrument.glow + alpha + ')',
+  });
 
-    if (alpha <= 0.01) continue;
-
-    ctx.beginPath();
-    ctx.strokeStyle = instrument.glow + alpha + ')';
-    ctx.shadowBlur = CONFIG.LINE_GLOW_BLUR;
-    ctx.shadowColor = instrument.hex;
-    ctx.moveTo(p0.x, p0.y);
-    ctx.lineTo(p1.x, p1.y);
-    ctx.stroke();
-  }
   ctx.restore();
 }
 
@@ -314,16 +391,14 @@ function drawActiveLine() {
   ctx.lineWidth = CONFIG.LINE_WIDTH + 1;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.strokeStyle = instrument.hex;
   ctx.shadowBlur = CONFIG.LINE_GLOW_BLUR;
   ctx.shadowColor = instrument.hex;
 
-  ctx.beginPath();
-  ctx.moveTo(STATE.currentPath[0].x, STATE.currentPath[0].y);
-  for (let i = 1; i < STATE.currentPath.length; i++) {
-    ctx.lineTo(STATE.currentPath[i].x, STATE.currentPath[i].y);
-  }
-  ctx.stroke();
+  drawSmoothedPath(STATE.currentPath, {
+    alpha: () => 1,
+    style: () => instrument.hex,
+  });
+
   ctx.restore();
 }
 
@@ -578,7 +653,14 @@ function checkWaveComplete() {
 
   STATE.phase = 'WAVE_COMPLETE';
 
+  const beatDur = 60 / STATE.song.genre.bpm;
+  // Full duration of the song actually being played: the last beat's start
+  // time, plus the longest possible note tail (pad notes: dur=8 beats, plus
+  // the ~0.35s attack/release envelope in scheduleNote).
+  const songDurationSec = STATE.song.totalBeats * beatDur + 8 * beatDur + 0.5;
+
   playFullSong();
+  STATE.beatSync = { startTime: performance.now(), bpm: STATE.song.genre.bpm };
 
   haptic('waveComplete');
 
@@ -588,9 +670,14 @@ function checkWaveComplete() {
   STATE.score += STATE.wave * 100;
 
   setTimeout(() => {
-    hideMessage();
-    startWave(STATE.wave + 1);
-  }, CONFIG.WAVE_COMPLETE_DELAY);
+    STATE.beatSync = null;
+    startFadeToBlack(() => {
+      hideMessage();
+      STATE.stars = [];
+      startWave(STATE.wave + 1);
+      startFadeFromBlack();
+    });
+  }, songDurationSec * 1000 + CONFIG.WAVE_COMPLETE_LINGER);
 }
 
 function startWave(waveNumber) {
@@ -610,6 +697,41 @@ function startWave(waveNumber) {
   updateWaveDisplay();
 
   if (!STATE.beatInterval) startBeat();
+}
+
+// ============================================================
+// SECTION 7D: WAVE TRANSITION FADE
+// ============================================================
+function startFadeToBlack(onComplete) {
+  STATE.fade = { alpha: 0, direction: 'out', onComplete };
+}
+
+function startFadeFromBlack() {
+  STATE.fade = { alpha: 1, direction: 'in', onComplete: null };
+}
+
+function updateFade() {
+  if (!STATE.fade) return;
+
+  if (STATE.fade.direction === 'out') {
+    STATE.fade.alpha = Math.min(1, STATE.fade.alpha + FADE_CONFIG.STEP);
+    if (STATE.fade.alpha >= 1) {
+      const cb = STATE.fade.onComplete;
+      STATE.fade = { alpha: 1, direction: 'idle', onComplete: null };
+      if (cb) cb();
+    }
+  } else if (STATE.fade.direction === 'in') {
+    STATE.fade.alpha = Math.max(0, STATE.fade.alpha - FADE_CONFIG.STEP);
+    if (STATE.fade.alpha <= 0) {
+      STATE.fade = null;
+    }
+  }
+}
+
+function drawFadeOverlay() {
+  if (!STATE.fade || STATE.fade.alpha <= 0) return;
+  ctx.fillStyle = `rgba(0,0,0,${STATE.fade.alpha})`;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
 // ============================================================
@@ -677,10 +799,10 @@ function pathCrossesBarriers(path) {
 function drawBarriers() {
   ctx.save();
   ctx.lineCap = 'round';
-  ctx.lineWidth = 3;
-  ctx.setLineDash([10, 8]);
-  ctx.strokeStyle = 'rgba(255,60,60,0.55)';
-  ctx.shadowBlur = 12;
+  ctx.lineWidth = 8;
+  ctx.setLineDash([14, 10]);
+  ctx.strokeStyle = 'rgba(255,60,60,0.6)';
+  ctx.shadowBlur = 18;
   ctx.shadowColor = '#ff3c3c';
   for (const b of STATE.barriers) {
     ctx.beginPath();
@@ -906,6 +1028,7 @@ function update() {
 
   updateStars();
   updateSpaceObjects();
+  updateFade();
 }
 
 function render() {
@@ -924,6 +1047,8 @@ function render() {
   for (const dot of STATE.dots) {
     drawDot(dot);
   }
+
+  drawFadeOverlay();
 }
 
 function gameLoop() {
