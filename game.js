@@ -18,6 +18,7 @@ const CONFIG = {
   LINE_GLOW_BLUR: 18,
   LINE_FADE_SPEED: 0.003,    // Alpha decrement per frame per point
   LINE_POINT_INTERVAL: 4,    // Record a point every N pixels of movement
+  LINE_SMOOTHING: 0.18,      // Low-pass filter strength on raw input (lower = smoother, laggier)
 
   // Audio
   BEAT_BPM: 60,
@@ -110,6 +111,14 @@ const GENRES = [
 // the University of Iowa Electronic Music Studios (free for any use — see
 // sounds/CREDITS.md), pitch-shifted at playback via playbackRate to cover
 // notes between the ones actually sampled.
+// Vertical-layering role order (see generateSong): each connected pair opens
+// one of these as a persistent "stem," all locked to the same shared chord
+// progression and beat clock — the standard adaptive-game-music technique
+// (used by FMOD/Wwise-style systems) for making independently-triggered
+// layers always sound like one arrangement rather than random fragments.
+// Max 6 pairs, one role each: melody, then harmony support, then percussion.
+const CHUNK_ROLES = ['lead', 'bass', 'pad', 'kick', 'snare', 'hihat'];
+
 const SAMPLE_MANIFEST = {
   piano: ['A3', 'C4', 'E4', 'Ab4', 'C5', 'E5', 'Ab5', 'C6'],
   flute: ['B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6', 'Db6', 'D6', 'Eb6', 'E6', 'F6', 'Gb6', 'G6', 'Ab6', 'A6', 'Bb6', 'B6'],
@@ -119,9 +128,9 @@ const SAMPLE_MANIFEST = {
 };
 
 const STARFIELD_CONFIG = {
-  MAX_STARS: 500,
-  STARS_PER_CONNECTION: 10,
-  CONNECTION_STAR_RADIUS: 70,   // scatter radius around each connected dot
+  MAX_STARS: 900,
+  STARS_PER_CONNECTION: 40,
+  CONNECTION_STAR_RADIUS: 100,   // scatter radius around each connected dot
   WAVE_COMPLETE_FILL_COUNT: 60, // additional stars scattered on wave complete
   STAR_FADE_IN_SPEED: 0.02,
   TWINKLE_SPEED_MIN: 0.01,
@@ -132,6 +141,16 @@ const SPACE_CONFIG = {
   MAX_OBJECTS: 4,
   SPAWN_INTERVAL_FRAMES: 360, // ~6s at 60fps
   TYPES: ['asteroid', 'asteroid', 'satellite', 'comet'],
+};
+
+// The traveling "drip" light shown on each connection once the whole wave
+// is connected and the dots are pulsing to the beat — a small bead of light
+// that slides along the drawn line like wax dripping down a fishing line,
+// slow-to-fast per beat, then reversing direction on the next beat.
+const TRAVELING_LIGHT_CONFIG = {
+  RADIUS: 5,
+  TAIL_STEPS: 4,
+  TAIL_BEAT_SPACING: 0.045,
 };
 
 const BARRIER_CONFIG = {
@@ -160,6 +179,7 @@ const STATE = {
   activeDot: null,     // The dot currently being dragged from
   currentPath: [],     // Points being drawn right now [{x, y}]
   isDrawing: false,
+  smoothedCursor: { x: 0, y: 0 }, // low-pass-filtered pointer position, tracks raw input each move
 
   audioCtx: null,      // Created on first gesture
   beatInterval: null,  // setInterval reference for beat pulse
@@ -526,18 +546,19 @@ function playHihat(t, dest) {
 
 function playScheduledNote(note, startTime, beatDur, dest) {
   const t = startTime + note.beat * beatDur;
+  const vel = note.vel || 1;
   switch (note.role) {
     case 'lead':
-      if (note.instrument === 'synth-square') playSquareLead(note.freq, t, note.dur * beatDur, 0.16, dest);
-      else playSample(note.instrument, note.midi, t, 0.7, dest);
+      if (note.instrument === 'synth-square') playSquareLead(note.freq, t, note.dur * beatDur, 0.16 * vel, dest);
+      else playSample(note.instrument, note.midi, t, 0.7 * vel, dest);
       break;
     case 'bass':
-      if (note.instrument === 'synth-bass') playBassNote(note.freq, t, note.dur * beatDur, 0.24, dest);
-      else playSample(note.instrument, note.midi, t, 0.55, dest);
+      if (note.instrument === 'synth-bass') playBassNote(note.freq, t, note.dur * beatDur, 0.24 * vel, dest);
+      else playSample(note.instrument, note.midi, t, 0.55 * vel, dest);
       break;
     case 'pad':
-      if (note.instrument === 'synth-pad') playPadChord(note.freqs, t, note.dur * beatDur, 0.09, dest);
-      else playSampleChord(note.instrument, note.midiList, t, 0.28, dest);
+      if (note.instrument === 'synth-pad') playPadChord(note.freqs, t, note.dur * beatDur, 0.09 * vel, dest);
+      else playSampleChord(note.instrument, note.midiList, t, 0.28 * vel, dest);
       break;
     case 'kick': playKick(t, dest); break;
     case 'snare': playSnare(t, dest); break;
@@ -545,69 +566,108 @@ function playScheduledNote(note, startTime, beatDur, dest) {
   }
 }
 
-// Generates a full multi-instrument song: a chord progression (one chord
-// per bar, one bar per dot pair) drives a chord-aware "lead" melody, a
-// bassline that follows the chord roots, sustained pad chords, and a
-// genre-specific drum pattern. Every note — melody, bass, pad, and drums
-// alike — is tagged with the bar (chunkIndex) it falls in, so each dot
-// pair owns a genuine equal slice of the ENTIRE arrangement (not just its
-// melody line): connecting pair N reveals bar N in full.
+// Humanizes a scheduled beat position with a small random offset so notes
+// don't land on a perfectly robotic grid — real players (and a conductor
+// keeping an ensemble loosely together, not a metronome) never do.
+function humanizeBeat(beat, amountBeats) {
+  return beat + (Math.random() * 2 - 1) * amountBeats;
+}
+
+// Small per-note volume variance ("dynamics") so repeated notes don't sound
+// like an identical sample fired on a loop.
+function humanizeVelocity() {
+  return 0.85 + Math.random() * 0.3;
+}
+
+// Generates a full arrangement using "vertical layering" — the standard
+// adaptive-game-music technique (as used by FMOD/Wwise-style systems): every
+// role (melody, bass, harmony pad, and each drum voice) is composed across
+// the ENTIRE shared chord progression and beat clock, not just a private
+// slice of it. Each dot pair is assigned one whole role as its permanent
+// "stem" (chunkIndex). Because every stem is written against the exact same
+// underlying chords and tempo, any subset of opened stems always sounds like
+// one coherent arrangement — the connection order doesn't matter, and each
+// stem is audible within a beat or two of being opened instead of waiting
+// for a private slot to come around in a shared timeline.
 function generateSong(pairCount) {
   const genre = GENRES[Math.floor(Math.random() * GENRES.length)];
-  const beatsPerPair = 4; // one bar per pair
-  const totalBars = pairCount;
-  const totalBeats = totalBars * beatsPerPair;
+  const beatsPerBar = 4;
+  const progressionBars = genre.chordProgression.length; // the shared harmonic cycle every stem plays over
+  const totalBeats = progressionBars * beatsPerBar;
   const stepsPerBar = 8; // eighth notes
 
+  const roles = CHUNK_ROLES.slice(0, pairCount);
   const notes = [];
 
-  for (let bar = 0; bar < totalBars; bar++) {
-    const chordRoot = genre.chordProgression[bar % genre.chordProgression.length];
-    const chordDegrees = [chordRoot, chordRoot + 2, chordRoot + 4];
-    const barStartBeat = bar * beatsPerPair;
-    const chunkIndex = bar;
+  roles.forEach((role, chunkIndex) => {
+    for (let bar = 0; bar < progressionBars; bar++) {
+      const chordRoot = genre.chordProgression[bar % genre.chordProgression.length];
+      const chordDegrees = [chordRoot, chordRoot + 2, chordRoot + 4];
+      const barStartBeat = bar * beatsPerBar;
 
-    for (let step = 0; step < stepsPerBar; step++) {
-      if (Math.random() < genre.grooveWeights[step]) {
-        const baseDeg = chordDegrees[Math.floor(Math.random() * chordDegrees.length)];
-        const useChordTone = Math.random() < 0.7;
-        const deg = useChordTone ? baseDeg : baseDeg + (Math.random() < 0.5 ? 1 : -1);
+      if (role === 'lead') {
+        let barHadNote = false;
+        for (let step = 0; step < stepsPerBar; step++) {
+          if (Math.random() < genre.grooveWeights[step]) {
+            const baseDeg = chordDegrees[Math.floor(Math.random() * chordDegrees.length)];
+            const useChordTone = Math.random() < 0.7;
+            const deg = useChordTone ? baseDeg : baseDeg + (Math.random() < 0.5 ? 1 : -1);
+            notes.push({
+              beat: humanizeBeat(barStartBeat + step * 0.5, 0.03),
+              dur: 0.5,
+              midi: scaleMidi(genre, deg, 1),
+              freq: scaleFreq(genre, deg, 1),
+              role: 'lead',
+              instrument: genre.instruments.lead,
+              vel: humanizeVelocity(),
+              chunkIndex,
+            });
+            barHadNote = true;
+          }
+        }
+        // Sparser genres' groove weights can roll an empty bar by chance,
+        // which would leave the lead stem silent for a stretch after it's
+        // opened. Guarantee at least a downbeat chord tone every bar so the
+        // wait to hear something after connecting a pair is always short.
+        if (!barHadNote) {
+          notes.push({
+            beat: barStartBeat,
+            dur: 0.9,
+            midi: scaleMidi(genre, chordRoot, 1),
+            freq: scaleFreq(genre, chordRoot, 1),
+            role: 'lead',
+            instrument: genre.instruments.lead,
+            vel: humanizeVelocity(),
+            chunkIndex,
+          });
+        }
+      } else if (role === 'bass') {
+        notes.push({ beat: barStartBeat, dur: 1.8, midi: scaleMidi(genre, chordRoot, -1), freq: scaleFreq(genre, chordRoot, -1), role: 'bass', instrument: genre.instruments.bass, vel: humanizeVelocity(), chunkIndex });
+        if (genre.bassOnBeatThree) {
+          notes.push({ beat: humanizeBeat(barStartBeat + 2, 0.02), dur: 1.8, midi: scaleMidi(genre, chordDegrees[2], -1), freq: scaleFreq(genre, chordDegrees[2], -1), role: 'bass', instrument: genre.instruments.bass, vel: humanizeVelocity(), chunkIndex });
+        }
+      } else if (role === 'pad') {
         notes.push({
-          beat: barStartBeat + step * 0.5,
-          dur: 0.5,
-          midi: scaleMidi(genre, deg, 1),
-          freq: scaleFreq(genre, deg, 1),
-          role: 'lead',
-          instrument: genre.instruments.lead,
+          beat: barStartBeat,
+          dur: 4,
+          midiList: chordDegrees.map(d => scaleMidi(genre, d, 0)),
+          freqs: chordDegrees.map(d => scaleFreq(genre, d, 0)),
+          role: 'pad',
+          instrument: genre.instruments.pad,
+          vel: 0.9 + Math.random() * 0.15,
           chunkIndex,
         });
+      } else { // kick, snare, hihat
+        for (let step = 0; step < stepsPerBar; step++) {
+          if (genre.drumPattern[role][step]) {
+            notes.push({ beat: humanizeBeat(barStartBeat + step * 0.5, 0.015), role, vel: humanizeVelocity(), chunkIndex });
+          }
+        }
       }
     }
+  });
 
-    notes.push({ beat: barStartBeat, dur: 1.8, midi: scaleMidi(genre, chordRoot, -1), freq: scaleFreq(genre, chordRoot, -1), role: 'bass', instrument: genre.instruments.bass, chunkIndex });
-    if (genre.bassOnBeatThree) {
-      notes.push({ beat: barStartBeat + 2, dur: 1.8, midi: scaleMidi(genre, chordDegrees[2], -1), freq: scaleFreq(genre, chordDegrees[2], -1), role: 'bass', instrument: genre.instruments.bass, chunkIndex });
-    }
-
-    notes.push({
-      beat: barStartBeat,
-      dur: 4,
-      midiList: chordDegrees.map(d => scaleMidi(genre, d, 0)),
-      freqs: chordDegrees.map(d => scaleFreq(genre, d, 0)),
-      role: 'pad',
-      instrument: genre.instruments.pad,
-      chunkIndex,
-    });
-
-    for (let step = 0; step < stepsPerBar; step++) {
-      const beat = barStartBeat + step * 0.5;
-      if (genre.drumPattern.kick[step]) notes.push({ beat, role: 'kick', chunkIndex });
-      if (genre.drumPattern.snare[step]) notes.push({ beat, role: 'snare', chunkIndex });
-      if (genre.drumPattern.hihat[step]) notes.push({ beat, role: 'hihat', chunkIndex });
-    }
-  }
-
-  return { genre, totalBeats, beatsPerPair, pairCount, notes };
+  return { genre, totalBeats, pairCount, notes };
 }
 
 const SONG_LOOP_ITERATIONS = 10; // generous coverage for a full wave's play session
@@ -791,6 +851,79 @@ function drawActiveLine() {
   ctx.restore();
 }
 
+// Walks a connection's segments and returns the point at fractional arc-length
+// progress t (0 = dotA end, 1 = dotB end).
+function pointAtProgress(segments, t) {
+  if (!segments.length) return null;
+  let totalLen = 0;
+  for (const s of segments) totalLen += Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+  if (totalLen === 0) return { x: segments[0].x1, y: segments[0].y1 };
+
+  const targetDist = totalLen * Math.min(1, Math.max(0, t));
+  let acc = 0;
+  for (const s of segments) {
+    const segLen = Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+    if (acc + segLen >= targetDist) {
+      const localT = segLen === 0 ? 0 : (targetDist - acc) / segLen;
+      return { x: s.x1 + (s.x2 - s.x1) * localT, y: s.y1 + (s.y2 - s.y1) * localT };
+    }
+    acc += segLen;
+  }
+  const last = segments[segments.length - 1];
+  return { x: last.x2, y: last.y2 };
+}
+
+// A "drip" easing curve — slow to start, accelerating toward the end, like a
+// bead of wax sliding down a fishing line — instead of a constant-speed glide.
+function dripEase(t) {
+  return t * t;
+}
+
+// Once every dot in the wave is connected and the dots are pulsing to the
+// beat, each connection also grows a small bead of light that slides back
+// and forth along its line in time with the music, with a short fading tail
+// behind it for that dripping-wax look.
+function drawTravelingLights() {
+  if (!STATE.beatSync) return;
+  const beatDur = 60 / STATE.beatSync.bpm;
+  const elapsedBeats = (performance.now() - STATE.beatSync.startTime) / 1000 / beatDur;
+
+  STATE.connections.forEach((connection, i) => {
+    if (!connection.segments.length) return;
+    const instrument = INSTRUMENTS[connection.colorIndex];
+    // Stagger each connection's drip cycle a little so the whole galaxy
+    // doesn't move in perfect lockstep — still on the same beat clock.
+    const offset = (i * 0.37) % 1;
+
+    const posForBeats = (beats) => {
+      const local = beats + offset;
+      const cycle = Math.floor(local);
+      const frac = local - cycle;
+      const eased = dripEase(frac);
+      const forward = cycle % 2 === 0;
+      const t = forward ? eased : 1 - eased;
+      return pointAtProgress(connection.segments, t);
+    };
+
+    ctx.save();
+    ctx.shadowColor = instrument.hex;
+
+    for (let step = TRAVELING_LIGHT_CONFIG.TAIL_STEPS; step >= 0; step--) {
+      const pos = posForBeats(elapsedBeats - step * TRAVELING_LIGHT_CONFIG.TAIL_BEAT_SPACING);
+      if (!pos) continue;
+      const tailFrac = 1 - step / (TRAVELING_LIGHT_CONFIG.TAIL_STEPS + 1); // 0 (oldest) .. ~1 (head)
+      ctx.shadowBlur = 10 + 16 * tailFrac;
+      ctx.globalAlpha = 0.15 + 0.8 * tailFrac;
+      ctx.beginPath();
+      ctx.fillStyle = step === 0 ? '#ffffff' : instrument.hex;
+      ctx.arc(pos.x, pos.y, TRAVELING_LIGHT_CONFIG.RADIUS * (0.5 + 0.5 * tailFrac), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  });
+}
+
 // ============================================================
 // SECTION 5: DOT GENERATION
 // ============================================================
@@ -894,6 +1027,7 @@ function onInputStart(e) {
   STATE.activeDot = dot;
   STATE.isDrawing = true;
   STATE.currentPath = [{ x: dot.x, y: dot.y }];
+  STATE.smoothedCursor = { x: dot.x, y: dot.y };
 }
 
 function onInputMove(e) {
@@ -901,11 +1035,19 @@ function onInputMove(e) {
   if (!STATE.isDrawing || STATE.phase !== 'PLAYING') return;
 
   const pos = getEventPos(e);
+
+  // Low-pass filter the raw pointer position every move event (not just
+  // every recorded path point) so hand tremor is damped out at the source —
+  // curving through noisy points after the fact still looks jagged, but
+  // filtering before recording actually removes the shake.
+  STATE.smoothedCursor.x += (pos.x - STATE.smoothedCursor.x) * CONFIG.LINE_SMOOTHING;
+  STATE.smoothedCursor.y += (pos.y - STATE.smoothedCursor.y) * CONFIG.LINE_SMOOTHING;
+
   const lastPoint = STATE.currentPath[STATE.currentPath.length - 1];
-  const dist = Math.hypot(pos.x - lastPoint.x, pos.y - lastPoint.y);
+  const dist = Math.hypot(STATE.smoothedCursor.x - lastPoint.x, STATE.smoothedCursor.y - lastPoint.y);
 
   if (dist >= CONFIG.LINE_POINT_INTERVAL) {
-    STATE.currentPath.push({ x: pos.x, y: pos.y });
+    STATE.currentPath.push({ x: STATE.smoothedCursor.x, y: STATE.smoothedCursor.y });
   }
 }
 
@@ -1077,6 +1219,8 @@ function startWave(waveNumber) {
   STATE.activeDot = null;
   STATE.currentPath = [];
   STATE.isDrawing = false;
+  STATE.spaceObjects = [];
+  STATE.spaceSpawnTimer = 0;
 
   const pairCount = getPairCountForWave(waveNumber);
   STATE.song = generateSong(pairCount);
@@ -1469,7 +1613,9 @@ function update() {
   STATE.lines = STATE.lines.filter(l => !l.complete);
 
   updateStars();
-  updateSpaceObjects();
+  // Asteroids/satellites/comets only drift through once the whole wave's
+  // line-galaxy is complete — they'd be a distraction while still connecting.
+  if (STATE.phase === 'WAVE_COMPLETE') updateSpaceObjects();
   updateFade();
 }
 
@@ -1477,7 +1623,7 @@ function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   drawStars();
-  drawSpaceObjects();
+  if (STATE.phase === 'WAVE_COMPLETE') drawSpaceObjects();
   drawBarriers();
 
   for (const line of STATE.lines) {
@@ -1489,6 +1635,8 @@ function render() {
   for (const dot of STATE.dots) {
     drawDot(dot);
   }
+
+  drawTravelingLights();
 
   drawFadeOverlay();
 }
