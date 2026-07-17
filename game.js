@@ -44,14 +44,65 @@ const INSTRUMENTS = [
   { hex: '#AA88FF', glow: 'rgba(170,136,255,', name: 'violet'  },
 ];
 
-// Procedural song genres — each defines a scale, tempo and a distinct
-// instrument palette (waveform per role) so every wave's song sounds
-// different, but internally consistent when all its pieces are layered.
+// Procedural song genres. Each defines a proper 7-note scale (so diatonic
+// triads are well-formed), a chord progression (scale degrees, cycled one
+// chord per bar), a lead synthesis style, a per-bar rhythmic "groove" that
+// biases where melody notes land, and a drum pattern — this is what gives
+// each genre real harmonic movement and rhythmic identity instead of an
+// undirected random walk over a scale.
 const GENRES = [
-  { name: 'ambient',   bpm: 68,  rootMidi: 60, scaleIntervals: [0, 2, 4, 7, 9],          leadWave: 'sine',     padWave: 'sine',     bassWave: 'sine',     noteDensity: 0.5  },
-  { name: 'synthwave', bpm: 100, rootMidi: 57, scaleIntervals: [0, 2, 3, 5, 7, 8, 10],   leadWave: 'sawtooth', padWave: 'triangle', bassWave: 'triangle', noteDensity: 0.7  },
-  { name: 'lofi',      bpm: 78,  rootMidi: 62, scaleIntervals: [0, 2, 3, 5, 7, 9, 10],   leadWave: 'sine',     padWave: 'sine',     bassWave: 'sine',     noteDensity: 0.45 },
-  { name: 'chiptune',  bpm: 128, rootMidi: 64, scaleIntervals: [0, 2, 4, 5, 7, 9, 11],   leadWave: 'square',   padWave: 'triangle', bassWave: 'square',   noteDensity: 0.8  },
+  {
+    name: 'ambient', bpm: 68, rootMidi: 60,
+    scaleIntervals: [0, 2, 4, 5, 7, 9, 11], // Ionian
+    chordProgression: [0, 5, 3, 4],          // I - vi - IV - V
+    leadStyle: 'pluck',
+    bassOnBeatThree: false,
+    grooveWeights: [0.5, 0.1, 0.3, 0.1, 0.4, 0.1, 0.3, 0.1],
+    drumPattern: {
+      kick:  [1, 0, 0, 0, 0, 0, 0, 0],
+      snare: [0, 0, 0, 0, 0, 0, 0, 0],
+      hihat: [0, 0, 1, 0, 0, 0, 1, 0],
+    },
+  },
+  {
+    name: 'synthwave', bpm: 100, rootMidi: 57,
+    scaleIntervals: [0, 2, 3, 5, 7, 8, 10], // Aeolian (natural minor)
+    chordProgression: [0, 5, 2, 6],          // i - VI - III - VII
+    leadStyle: 'saw',
+    bassOnBeatThree: true,
+    grooveWeights: [0.8, 0.3, 0.6, 0.3, 0.8, 0.3, 0.6, 0.4],
+    drumPattern: {
+      kick:  [1, 0, 1, 0, 1, 0, 1, 0],
+      snare: [0, 0, 1, 0, 0, 0, 1, 0],
+      hihat: [0, 1, 0, 1, 0, 1, 0, 1],
+    },
+  },
+  {
+    name: 'lofi', bpm: 78, rootMidi: 62,
+    scaleIntervals: [0, 2, 3, 5, 7, 9, 10], // Dorian
+    chordProgression: [1, 4, 0, 5],          // ii - V - I - vi
+    leadStyle: 'pluck',
+    bassOnBeatThree: false,
+    grooveWeights: [0.6, 0.2, 0.4, 0.5, 0.5, 0.2, 0.4, 0.6],
+    drumPattern: {
+      kick:  [1, 0, 0, 0, 1, 0, 0, 0],
+      snare: [0, 0, 0, 1, 0, 0, 1, 0],
+      hihat: [1, 0, 1, 0, 1, 0, 1, 1],
+    },
+  },
+  {
+    name: 'chiptune', bpm: 128, rootMidi: 64,
+    scaleIntervals: [0, 2, 4, 5, 7, 9, 11], // Ionian
+    chordProgression: [0, 4, 5, 3],          // I - V - vi - IV
+    leadStyle: 'square',
+    bassOnBeatThree: true,
+    grooveWeights: [0.9, 0.5, 0.7, 0.5, 0.9, 0.5, 0.7, 0.6],
+    drumPattern: {
+      kick:  [1, 0, 0, 1, 1, 0, 0, 1],
+      snare: [0, 0, 1, 0, 0, 0, 1, 0],
+      hihat: [1, 1, 1, 1, 1, 1, 1, 1],
+    },
+  },
 ];
 
 const STARFIELD_CONFIG = {
@@ -155,55 +206,312 @@ function scaleFreq(genre, degreeIndex, octaveOffset) {
   return midiToFreq(genre.rootMidi + octave * 12 + genre.scaleIntervals[degree]);
 }
 
-// Generates a full multi-instrument song: a "lead" melody spanning
-// pairCount bars (one bar per dot pair) plus a "bass" and "pad"
-// background that spans the whole song. The lead melody is then sliced
-// into pairCount segments — one per dot pair — so each pair "owns" a
-// short phrase, while bass/pad remain unattributed to any single pair.
+function makeNoiseBuffer(durSec) {
+  const ctx = STATE.audioCtx;
+  const n = Math.max(1, Math.round(ctx.sampleRate * durSec));
+  const buffer = ctx.createBuffer(1, n, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < n; i++) data[i] = Math.random() * 2 - 1;
+  return buffer;
+}
+
+// --- Instrument voices -----------------------------------------------
+// Each of these is a small self-contained synthesis patch built entirely
+// from native AudioNodes (no samples, no libraries) — shaped envelopes and
+// filters chosen to read as a genuine instrument role rather than a bare
+// oscillator beep.
+
+// Karplus-Strong plucked string: a noise burst excites a delay-line/lowpass
+// feedback loop tuned to the note's period, so the signal resonates and
+// decays like a plucked string/piano note instead of a synthesized tone.
+function playPluck(freq, t, peak) {
+  const ctx = STATE.audioCtx;
+  const burstDur = 0.02;
+  const noise = ctx.createBufferSource();
+  noise.buffer = makeNoiseBuffer(burstDur);
+
+  const delay = ctx.createDelay(1.0);
+  delay.delayTime.value = 1 / freq;
+
+  const damping = ctx.createBiquadFilter();
+  damping.type = 'lowpass';
+  damping.frequency.value = Math.min(8000, freq * 10 + 1500);
+
+  const feedback = ctx.createGain();
+  feedback.gain.value = 0.975;
+
+  const outputGain = ctx.createGain();
+  outputGain.gain.setValueAtTime(0, t);
+  outputGain.gain.linearRampToValueAtTime(peak, t + 0.005);
+  outputGain.gain.exponentialRampToValueAtTime(0.001, t + 1.6);
+
+  noise.connect(delay);
+  delay.connect(damping);
+  damping.connect(feedback);
+  feedback.connect(delay);
+  damping.connect(outputGain);
+  outputGain.connect(STATE.masterBus);
+
+  noise.start(t);
+  noise.stop(t + burstDur);
+
+  const cleanupDelayMs = Math.max(0, (t - ctx.currentTime + 2.0) * 1000);
+  setTimeout(() => {
+    try { feedback.disconnect(); delay.disconnect(); damping.disconnect(); outputGain.disconnect(); } catch (e) { /* already gone */ }
+  }, cleanupDelayMs);
+}
+
+// Filtered sawtooth with a closing filter sweep — the bright-to-mellow
+// motion is what reads as an analog synth lead/brass rather than a flat
+// buzzy tone.
+function playFilteredSaw(freq, t, dur, peak) {
+  const ctx = STATE.audioCtx;
+  const osc = ctx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(freq, t);
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.Q.value = 3;
+  filter.frequency.setValueAtTime(freq * 6, t);
+  filter.frequency.exponentialRampToValueAtTime(Math.max(200, freq * 1.5), t + dur * 0.8);
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(peak, t + 0.015);
+  gain.gain.setValueAtTime(peak, t + Math.max(0.015, dur * 0.6));
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur + 0.2);
+
+  osc.connect(filter);
+  filter.connect(gain);
+  gain.connect(STATE.masterBus);
+  osc.start(t);
+  osc.stop(t + dur + 0.25);
+}
+
+// Punchy square/triangle lead — kept deliberately "chip" in character since
+// that 8-bit voice is genuinely what defines the chiptune genre.
+function playSquareLead(freq, t, dur, peak) {
+  const ctx = STATE.audioCtx;
+  const osc = ctx.createOscillator();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(freq, t);
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(peak, t + 0.008);
+  gain.gain.setValueAtTime(peak, t + Math.max(0.008, dur * 0.5));
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur + 0.05);
+
+  osc.connect(gain);
+  gain.connect(STATE.masterBus);
+  osc.start(t);
+  osc.stop(t + dur + 0.08);
+}
+
+// Bass: a sawtooth + sub-octave sine through a filter that snaps closed
+// right after the attack, giving the note a percussive "thump" instead of
+// a static drone.
+function playBassNote(freq, t, dur, peak) {
+  const ctx = STATE.audioCtx;
+  const osc = ctx.createOscillator();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(freq, t);
+
+  const sub = ctx.createOscillator();
+  sub.type = 'sine';
+  sub.frequency.setValueAtTime(freq / 2, t);
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.Q.value = 1;
+  filter.frequency.setValueAtTime(freq * 4, t);
+  filter.frequency.exponentialRampToValueAtTime(freq * 1.2, t + 0.15);
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(peak, t + 0.008);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+  osc.connect(filter);
+  sub.connect(filter);
+  filter.connect(gain);
+  gain.connect(STATE.masterBus);
+  osc.start(t); osc.stop(t + dur + 0.1);
+  sub.start(t); sub.stop(t + dur + 0.1);
+}
+
+// Pad: three detuned triangle voices (root/3rd/5th of the chord) through a
+// soft lowpass with a slow attack, for a warm sustained wash under everything.
+function playPadChord(freqs, t, dur, peak) {
+  const ctx = STATE.audioCtx;
+  freqs.forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(freq * (1 + (i - 1) * 0.0015), t);
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.Q.value = 0.7;
+    filter.frequency.value = freq * 3;
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(peak, t + 0.5);
+    gain.gain.setValueAtTime(peak, t + Math.max(0.5, dur * 0.7));
+    gain.gain.exponentialRampToValueAtTime(0.001, t + dur + 0.6);
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(STATE.masterBus);
+    osc.start(t);
+    osc.stop(t + dur + 0.7);
+  });
+}
+
+function playKick(t) {
+  const ctx = STATE.audioCtx;
+  const osc = ctx.createOscillator();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(150, t);
+  osc.frequency.exponentialRampToValueAtTime(40, t + 0.12);
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.9, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+
+  osc.connect(gain);
+  gain.connect(STATE.masterBus);
+  osc.start(t);
+  osc.stop(t + 0.25);
+}
+
+function playSnare(t) {
+  const ctx = STATE.audioCtx;
+  const noise = ctx.createBufferSource();
+  noise.buffer = makeNoiseBuffer(0.15);
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = 1800;
+  filter.Q.value = 0.8;
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.5, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+
+  noise.connect(filter);
+  filter.connect(gain);
+  gain.connect(STATE.masterBus);
+  noise.start(t);
+  noise.stop(t + 0.16);
+
+  const osc = ctx.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(200, t);
+  const oscGain = ctx.createGain();
+  oscGain.gain.setValueAtTime(0.25, t);
+  oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+  osc.connect(oscGain);
+  oscGain.connect(STATE.masterBus);
+  osc.start(t);
+  osc.stop(t + 0.09);
+}
+
+function playHihat(t) {
+  const ctx = STATE.audioCtx;
+  const noise = ctx.createBufferSource();
+  noise.buffer = makeNoiseBuffer(0.06);
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'highpass';
+  filter.frequency.value = 7500;
+
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0.22, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+
+  noise.connect(filter);
+  filter.connect(gain);
+  gain.connect(STATE.masterBus);
+  noise.start(t);
+  noise.stop(t + 0.06);
+}
+
+function playScheduledNote(note, startTime, beatDur) {
+  const t = startTime + note.beat * beatDur;
+  switch (note.role) {
+    case 'lead':
+      if (note.synth === 'pluck') playPluck(note.freq, t, 0.22);
+      else if (note.synth === 'square') playSquareLead(note.freq, t, note.dur * beatDur, 0.16);
+      else playFilteredSaw(note.freq, t, note.dur * beatDur, 0.18);
+      break;
+    case 'bass':
+      playBassNote(note.freq, t, note.dur * beatDur, 0.24);
+      break;
+    case 'pad':
+      playPadChord(note.freqs, t, note.dur * beatDur, 0.09);
+      break;
+    case 'kick': playKick(t); break;
+    case 'snare': playSnare(t); break;
+    case 'hihat': playHihat(t); break;
+  }
+}
+
+// Generates a full multi-instrument song: a chord progression (one chord
+// per bar, one bar per dot pair) drives a chord-aware "lead" melody, a
+// bassline that follows the chord roots, sustained pad chords, and a
+// genre-specific drum pattern. The lead melody is sliced into pairCount
+// segments — one per dot pair — so each pair "owns" a short phrase, while
+// bass/pad/drums remain unattributed to any single pair.
 function generateSong(pairCount) {
   const genre = GENRES[Math.floor(Math.random() * GENRES.length)];
-  const beatsPerPair = 4; // one bar of melody per pair
-  const totalBeats = pairCount * beatsPerPair;
-  const stepsPerBeat = 2;
-  const totalSteps = totalBeats * stepsPerBeat;
+  const beatsPerPair = 4; // one bar per pair
+  const totalBars = pairCount;
+  const totalBeats = totalBars * beatsPerPair;
+  const stepsPerBar = 8; // eighth notes
 
   const melodyNotes = [];
-  let degree = Math.floor(Math.random() * genre.scaleIntervals.length);
-  for (let step = 0; step < totalSteps; step++) {
-    if (Math.random() < genre.noteDensity) {
-      degree += Math.floor(Math.random() * 5) - 2; // random walk
-      degree = Math.max(0, Math.min(degree, genre.scaleIntervals.length * 2 - 1));
-      melodyNotes.push({
-        beat: step / stepsPerBeat,
-        dur: 1 / stepsPerBeat,
-        freq: scaleFreq(genre, degree, 1),
-        wave: genre.leadWave,
-        role: 'lead',
-      });
-    }
-  }
-
   const backgroundNotes = [];
-  const totalBars = totalBeats / 4;
+
   for (let bar = 0; bar < totalBars; bar++) {
+    const chordRoot = genre.chordProgression[bar % genre.chordProgression.length];
+    const chordDegrees = [chordRoot, chordRoot + 2, chordRoot + 4];
+    const barStartBeat = bar * beatsPerPair;
+
+    for (let step = 0; step < stepsPerBar; step++) {
+      if (Math.random() < genre.grooveWeights[step]) {
+        const baseDeg = chordDegrees[Math.floor(Math.random() * chordDegrees.length)];
+        const useChordTone = Math.random() < 0.7;
+        const deg = useChordTone ? baseDeg : baseDeg + (Math.random() < 0.5 ? 1 : -1);
+        melodyNotes.push({
+          beat: barStartBeat + step * 0.5,
+          dur: 0.5,
+          freq: scaleFreq(genre, deg, 1),
+          role: 'lead',
+          synth: genre.leadStyle,
+        });
+      }
+    }
+
+    backgroundNotes.push({ beat: barStartBeat, dur: 1.8, freq: scaleFreq(genre, chordRoot, -1), role: 'bass' });
+    if (genre.bassOnBeatThree) {
+      backgroundNotes.push({ beat: barStartBeat + 2, dur: 1.8, freq: scaleFreq(genre, chordDegrees[2], -1), role: 'bass' });
+    }
+
     backgroundNotes.push({
-      beat: bar * 4,
-      dur: 2,
-      freq: scaleFreq(genre, 0, 0),
-      wave: genre.bassWave,
-      role: 'bass',
+      beat: barStartBeat,
+      dur: 4,
+      freqs: chordDegrees.map(d => scaleFreq(genre, d, 0)),
+      role: 'pad',
     });
-  }
-  for (let bar = 0; bar < totalBars; bar += 2) {
-    [0, 2, 4].forEach(deg => {
-      backgroundNotes.push({
-        beat: bar * 4,
-        dur: 8,
-        freq: scaleFreq(genre, deg, 0),
-        wave: genre.padWave,
-        role: 'pad',
-      });
-    });
+
+    for (let step = 0; step < stepsPerBar; step++) {
+      const beat = barStartBeat + step * 0.5;
+      if (genre.drumPattern.kick[step]) backgroundNotes.push({ beat, role: 'kick' });
+      if (genre.drumPattern.snare[step]) backgroundNotes.push({ beat, role: 'snare' });
+      if (genre.drumPattern.hihat[step]) backgroundNotes.push({ beat, role: 'hihat' });
+    }
   }
 
   const segments = [];
@@ -214,28 +522,6 @@ function generateSong(pairCount) {
   }
 
   return { genre, totalBeats, beatsPerPair, segments, backgroundNotes };
-}
-
-function scheduleNote(note, startTime, beatDur) {
-  const ctx = STATE.audioCtx;
-  const t = startTime + note.beat * beatDur;
-  const dur = note.dur * beatDur;
-
-  const osc = ctx.createOscillator();
-  osc.type = note.wave;
-  osc.frequency.setValueAtTime(note.freq, t);
-
-  const gain = ctx.createGain();
-  const peak = note.role === 'pad' ? 0.10 : note.role === 'bass' ? 0.20 : 0.18;
-  gain.gain.setValueAtTime(0, t);
-  gain.gain.linearRampToValueAtTime(peak, t + 0.02);
-  gain.gain.setValueAtTime(peak, t + Math.max(0.02, dur * 0.6));
-  gain.gain.exponentialRampToValueAtTime(0.001, t + dur + 0.15);
-
-  osc.connect(gain);
-  gain.connect(STATE.masterBus || ctx.destination);
-  osc.start(t);
-  osc.stop(t + dur + 0.2);
 }
 
 // Plays the short musical phrase "owned" by this pair as immediate
@@ -249,21 +535,21 @@ function playPairSegment(pairId) {
   const beatDur = 60 / STATE.song.genre.bpm;
   const now = STATE.audioCtx.currentTime;
   const segStartBeat = pairId * STATE.song.beatsPerPair;
-  seg.forEach(n => scheduleNote({ ...n, beat: n.beat - segStartBeat }, now, beatDur));
+  seg.forEach(n => playScheduledNote({ ...n, beat: n.beat - segStartBeat }, now, beatDur));
 }
 
 // The finale: plays the ENTIRE song in its original timeline — every
-// pair's phrase in its proper place, plus the bass/pad that was never
-// attributed to any single pair. Individually each pair only ever heard
-// its own isolated phrase; together, with the background underneath,
-// it becomes one coherent arrangement.
+// pair's phrase in its proper place, plus the bass/pad/drums that were
+// never attributed to any single pair. Individually each pair only ever
+// heard its own isolated phrase; together, with the rhythm section
+// underneath, it becomes one coherent arrangement.
 function playFullSong() {
   if (!STATE.audioCtx || !STATE.song) return;
   if (STATE.audioCtx.state === 'suspended') STATE.audioCtx.resume();
   const beatDur = 60 / STATE.song.genre.bpm;
   const now = STATE.audioCtx.currentTime + 0.05;
-  STATE.song.backgroundNotes.forEach(n => scheduleNote(n, now, beatDur));
-  STATE.song.segments.forEach(seg => seg.forEach(n => scheduleNote(n, now, beatDur)));
+  STATE.song.backgroundNotes.forEach(n => playScheduledNote(n, now, beatDur));
+  STATE.song.segments.forEach(seg => seg.forEach(n => playScheduledNote(n, now, beatDur)));
 }
 
 function startBeat() {
