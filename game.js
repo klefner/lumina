@@ -26,11 +26,12 @@ const CONFIG = {
   STARTING_PAIRS: 3,         // Number of color pairs in Wave 1
   PAIRS_PER_WAVE_INCREASE: 2,// Add one pair every N waves
   MAX_PAIRS: 6,              // Maximum color pairs ever shown
-  WAVE_COMPLETE_LINGER: 900, // ms the message lingers in silence after the song ends, before fading out
+  WAVE_COMPLETE_LISTEN_SEC: 3.5, // how long the full song plays before the fade-out begins
 };
 
 const FADE_CONFIG = {
-  STEP: 0.015, // canvas fade-to-black / fade-from-black speed per frame
+  OUT_DURATION_SEC: 0.6, // fade-to-black speed — the song's volume ramps down over the same span
+  IN_DURATION_SEC: 0.6,  // fade-from-black speed for the new wave
 };
 
 // Color palette — each index is one instrument/color
@@ -125,6 +126,7 @@ function initAudio() {
     compressor.connect(masterGain);
     masterGain.connect(STATE.audioCtx.destination);
     STATE.masterBus = compressor;
+    STATE.masterGain = masterGain;
   }
 
   // iOS Safari (especially standalone/home-screen PWAs) frequently leaves the
@@ -653,12 +655,6 @@ function checkWaveComplete() {
 
   STATE.phase = 'WAVE_COMPLETE';
 
-  const beatDur = 60 / STATE.song.genre.bpm;
-  // Full duration of the song actually being played: the last beat's start
-  // time, plus the longest possible note tail (pad notes: dur=8 beats, plus
-  // the ~0.35s attack/release envelope in scheduleNote).
-  const songDurationSec = STATE.song.totalBeats * beatDur + 8 * beatDur + 0.5;
-
   playFullSong();
   STATE.beatSync = { startTime: performance.now(), bpm: STATE.song.genre.bpm };
 
@@ -669,6 +665,9 @@ function checkWaveComplete() {
 
   STATE.score += STATE.wave * 100;
 
+  // The song plays for a short listen window, then the fade-out begins —
+  // the fade cuts the song off gracefully (volume ramps to silence in sync
+  // with the visual fade) rather than waiting for the whole song to finish.
   setTimeout(() => {
     STATE.beatSync = null;
     startFadeToBlack(() => {
@@ -677,7 +676,7 @@ function checkWaveComplete() {
       startWave(STATE.wave + 1);
       startFadeFromBlack();
     });
-  }, songDurationSec * 1000 + CONFIG.WAVE_COMPLETE_LINGER);
+  }, CONFIG.WAVE_COMPLETE_LISTEN_SEC * 1000);
 }
 
 function startWave(waveNumber) {
@@ -703,26 +702,58 @@ function startWave(waveNumber) {
 // SECTION 7D: WAVE TRANSITION FADE
 // ============================================================
 function startFadeToBlack(onComplete) {
-  STATE.fade = { alpha: 0, direction: 'out', onComplete };
+  STATE.fade = {
+    startTime: performance.now(),
+    duration: FADE_CONFIG.OUT_DURATION_SEC * 1000,
+    direction: 'out',
+    alpha: 0,
+    onComplete,
+  };
+
+  // Ramp the still-playing song down to silence in perfect sync with the
+  // visual fade, via Web Audio's own sample-accurate scheduling — rather
+  // than waiting for the song to finish first and fading a silent screen.
+  if (STATE.audioCtx && STATE.masterGain) {
+    const t = STATE.audioCtx.currentTime;
+    STATE.masterGain.gain.cancelScheduledValues(t);
+    STATE.masterGain.gain.setValueAtTime(STATE.masterGain.gain.value, t);
+    STATE.masterGain.gain.linearRampToValueAtTime(0.0001, t + FADE_CONFIG.OUT_DURATION_SEC);
+  }
 }
 
 function startFadeFromBlack() {
-  STATE.fade = { alpha: 1, direction: 'in', onComplete: null };
+  STATE.fade = {
+    startTime: performance.now(),
+    duration: FADE_CONFIG.IN_DURATION_SEC * 1000,
+    direction: 'in',
+    alpha: 1,
+    onComplete: null,
+  };
+
+  // Restore full volume instantly — the new wave starts silent anyway
+  // until the player makes its first connection.
+  if (STATE.audioCtx && STATE.masterGain) {
+    const t = STATE.audioCtx.currentTime;
+    STATE.masterGain.gain.cancelScheduledValues(t);
+    STATE.masterGain.gain.setValueAtTime(1.0, t);
+  }
 }
 
 function updateFade() {
   if (!STATE.fade) return;
 
+  const progress = Math.min(1, (performance.now() - STATE.fade.startTime) / STATE.fade.duration);
+
   if (STATE.fade.direction === 'out') {
-    STATE.fade.alpha = Math.min(1, STATE.fade.alpha + FADE_CONFIG.STEP);
-    if (STATE.fade.alpha >= 1) {
+    STATE.fade.alpha = progress;
+    if (progress >= 1) {
       const cb = STATE.fade.onComplete;
       STATE.fade = { alpha: 1, direction: 'idle', onComplete: null };
       if (cb) cb();
     }
   } else if (STATE.fade.direction === 'in') {
-    STATE.fade.alpha = Math.max(0, STATE.fade.alpha - FADE_CONFIG.STEP);
-    if (STATE.fade.alpha <= 0) {
+    STATE.fade.alpha = 1 - progress;
+    if (progress >= 1) {
       STATE.fade = null;
     }
   }
