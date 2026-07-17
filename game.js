@@ -100,7 +100,7 @@ const GENRES = [
     drumPattern: {
       kick:  [1, 0, 0, 1, 1, 0, 0, 1],
       snare: [0, 0, 1, 0, 0, 0, 1, 0],
-      hihat: [1, 1, 1, 1, 1, 1, 1, 1],
+      hihat: [1, 0, 1, 0, 1, 0, 1, 0],
     },
   },
 ];
@@ -156,6 +156,9 @@ const STATE = {
   beatSync: null,      // { startTime, bpm } — drives unison dot pulsing while the full song plays
   fade: null,          // { alpha, direction: 'out'|'in'|'idle', onComplete } — canvas black transition between waves
 
+  activeSources: [],   // Every scheduled oscillator/buffer source currently pending or playing —
+                        // tracked so a wave transition can hard-stop everything, not just mute it.
+
   stars: [],           // Background starfield for the current wave — resets each wave
   spaceObjects: [],    // Drifting asteroids / comets / satellites
   spaceSpawnTimer: 0,
@@ -170,8 +173,14 @@ function initAudio() {
 
     // Master bus: gain + compressor so many overlapping notes (the full-song
     // finale) don't clip, and so per-note volumes can stay comfortably audible
-    // on phone speakers.
+    // on phone speakers. Tuned aggressively (low threshold, high ratio, fast
+    // attack) to act as a safety limiter against dense polyphony.
     const compressor = STATE.audioCtx.createDynamicsCompressor();
+    compressor.threshold.value = -32;
+    compressor.knee.value = 12;
+    compressor.ratio.value = 16;
+    compressor.attack.value = 0.002;
+    compressor.release.value = 0.2;
     const masterGain = STATE.audioCtx.createGain();
     masterGain.gain.value = 1.0;
     compressor.connect(masterGain);
@@ -215,50 +224,64 @@ function makeNoiseBuffer(durSec) {
   return buffer;
 }
 
+// Registers a scheduled source node so a wave transition can hard-stop it
+// later, even if it was scheduled far in the future (the whole song is
+// scheduled up front). Without this, notes queued for beats past the
+// transition point would still fire into the next wave once volume returns.
+function trackSource(node) {
+  STATE.activeSources.push(node);
+  return node;
+}
+
+// Hard-stops every pending/playing note at the given time and clears
+// tracking. Called when a wave's fade-to-black begins, timed to finish
+// exactly as the fade completes, so nothing from this wave's song can ever
+// leak into the next one.
+function stopAllScheduledAudio(atTime) {
+  for (const node of STATE.activeSources) {
+    try { node.stop(atTime); } catch (e) { /* already stopped */ }
+  }
+  STATE.activeSources = [];
+}
+
 // --- Instrument voices -----------------------------------------------
 // Each of these is a small self-contained synthesis patch built entirely
 // from native AudioNodes (no samples, no libraries) — shaped envelopes and
 // filters chosen to read as a genuine instrument role rather than a bare
 // oscillator beep.
 
-// Karplus-Strong plucked string: a noise burst excites a delay-line/lowpass
-// feedback loop tuned to the note's period, so the signal resonates and
-// decays like a plucked string/piano note instead of a synthesized tone.
+// Plucked/mallet-like voice: a triangle fundamental plus a quiet octave-up
+// sine for a touch of attack "click", with a fast attack and a natural
+// exponential decay — reads as a soft mallet/pluck without any feedback-loop
+// DSP (a native delay/feedback Karplus-Strong loop turned out to overload
+// mobile audio processing under polyphony and produced harsh artifacts).
 function playPluck(freq, t, peak) {
   const ctx = STATE.audioCtx;
-  const burstDur = 0.02;
-  const noise = ctx.createBufferSource();
-  noise.buffer = makeNoiseBuffer(burstDur);
+  const osc = ctx.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(freq, t);
 
-  const delay = ctx.createDelay(1.0);
-  delay.delayTime.value = 1 / freq;
+  const overtone = ctx.createOscillator();
+  overtone.type = 'sine';
+  overtone.frequency.setValueAtTime(freq * 2, t);
 
-  const damping = ctx.createBiquadFilter();
-  damping.type = 'lowpass';
-  damping.frequency.value = Math.min(8000, freq * 10 + 1500);
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(peak, t + 0.006);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
 
-  const feedback = ctx.createGain();
-  feedback.gain.value = 0.975;
+  const overtoneGain = ctx.createGain();
+  overtoneGain.gain.setValueAtTime(0, t);
+  overtoneGain.gain.linearRampToValueAtTime(peak * 0.25, t + 0.004);
+  overtoneGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
 
-  const outputGain = ctx.createGain();
-  outputGain.gain.setValueAtTime(0, t);
-  outputGain.gain.linearRampToValueAtTime(peak, t + 0.005);
-  outputGain.gain.exponentialRampToValueAtTime(0.001, t + 1.6);
+  osc.connect(gain);
+  gain.connect(STATE.masterBus);
+  overtone.connect(overtoneGain);
+  overtoneGain.connect(STATE.masterBus);
 
-  noise.connect(delay);
-  delay.connect(damping);
-  damping.connect(feedback);
-  feedback.connect(delay);
-  damping.connect(outputGain);
-  outputGain.connect(STATE.masterBus);
-
-  noise.start(t);
-  noise.stop(t + burstDur);
-
-  const cleanupDelayMs = Math.max(0, (t - ctx.currentTime + 2.0) * 1000);
-  setTimeout(() => {
-    try { feedback.disconnect(); delay.disconnect(); damping.disconnect(); outputGain.disconnect(); } catch (e) { /* already gone */ }
-  }, cleanupDelayMs);
+  trackSource(osc).start(t); osc.stop(t + 0.6);
+  trackSource(overtone).start(t); overtone.stop(t + 0.15);
 }
 
 // Filtered sawtooth with a closing filter sweep — the bright-to-mellow
@@ -285,7 +308,7 @@ function playFilteredSaw(freq, t, dur, peak) {
   osc.connect(filter);
   filter.connect(gain);
   gain.connect(STATE.masterBus);
-  osc.start(t);
+  trackSource(osc).start(t);
   osc.stop(t + dur + 0.25);
 }
 
@@ -305,7 +328,7 @@ function playSquareLead(freq, t, dur, peak) {
 
   osc.connect(gain);
   gain.connect(STATE.masterBus);
-  osc.start(t);
+  trackSource(osc).start(t);
   osc.stop(t + dur + 0.08);
 }
 
@@ -337,8 +360,8 @@ function playBassNote(freq, t, dur, peak) {
   sub.connect(filter);
   filter.connect(gain);
   gain.connect(STATE.masterBus);
-  osc.start(t); osc.stop(t + dur + 0.1);
-  sub.start(t); sub.stop(t + dur + 0.1);
+  trackSource(osc).start(t); osc.stop(t + dur + 0.1);
+  trackSource(sub).start(t); sub.stop(t + dur + 0.1);
 }
 
 // Pad: three detuned triangle voices (root/3rd/5th of the chord) through a
@@ -364,7 +387,7 @@ function playPadChord(freqs, t, dur, peak) {
     osc.connect(filter);
     filter.connect(gain);
     gain.connect(STATE.masterBus);
-    osc.start(t);
+    trackSource(osc).start(t);
     osc.stop(t + dur + 0.7);
   });
 }
@@ -382,7 +405,7 @@ function playKick(t) {
 
   osc.connect(gain);
   gain.connect(STATE.masterBus);
-  osc.start(t);
+  trackSource(osc).start(t);
   osc.stop(t + 0.25);
 }
 
@@ -403,7 +426,7 @@ function playSnare(t) {
   noise.connect(filter);
   filter.connect(gain);
   gain.connect(STATE.masterBus);
-  noise.start(t);
+  trackSource(noise).start(t);
   noise.stop(t + 0.16);
 
   const osc = ctx.createOscillator();
@@ -414,7 +437,7 @@ function playSnare(t) {
   oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
   osc.connect(oscGain);
   oscGain.connect(STATE.masterBus);
-  osc.start(t);
+  trackSource(osc).start(t);
   osc.stop(t + 0.09);
 }
 
@@ -428,13 +451,13 @@ function playHihat(t) {
   filter.frequency.value = 7500;
 
   const gain = ctx.createGain();
-  gain.gain.setValueAtTime(0.22, t);
+  gain.gain.setValueAtTime(0.14, t);
   gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
 
   noise.connect(filter);
   filter.connect(gain);
   gain.connect(STATE.masterBus);
-  noise.start(t);
+  trackSource(noise).start(t);
   noise.stop(t + 0.06);
 }
 
@@ -1004,6 +1027,13 @@ function startFadeToBlack(onComplete) {
     STATE.masterGain.gain.cancelScheduledValues(t);
     STATE.masterGain.gain.setValueAtTime(STATE.masterGain.gain.value, t);
     STATE.masterGain.gain.linearRampToValueAtTime(0.0001, t + FADE_CONFIG.OUT_DURATION_SEC);
+
+    // playFullSong schedules notes across the ENTIRE song up front — some
+    // land well past this listen window. Muting alone doesn't stop them;
+    // they'd still fire later and become audible again once the next
+    // wave's fade-in restores volume. Hard-stop everything exactly when
+    // the fade finishes so nothing can bleed into the next wave.
+    stopAllScheduledAudio(t + FADE_CONFIG.OUT_DURATION_SEC);
   }
 }
 
