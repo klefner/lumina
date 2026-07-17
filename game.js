@@ -20,10 +20,6 @@ const CONFIG = {
   LINE_POINT_INTERVAL: 4,    // Record a point every N pixels of movement
 
   // Audio
-  MASTER_VOLUME: 0.28,
-  TONE_ATTACK: 0.025,        // seconds
-  TONE_SUSTAIN: 0.4,         // seconds
-  TONE_RELEASE: 1.4,         // seconds
   BEAT_BPM: 60,
 
   // Wave
@@ -31,18 +27,53 @@ const CONFIG = {
   PAIRS_PER_WAVE_INCREASE: 2,// Add one pair every N waves
   MAX_PAIRS: 6,              // Maximum color pairs ever shown
   WAVE_COMPLETE_DELAY: 2200, // ms before starting next wave
-  ARPEGGIO_INTERVAL: 130,    // ms between tones in wave complete arpeggio
 };
 
 // Color palette — each index is one instrument/color
 const INSTRUMENTS = [
-  { hex: '#00FFFF', glow: 'rgba(0,255,255,',   freq: 261.63, name: 'crystal' },  // C4
-  { hex: '#FF00FF', glow: 'rgba(255,0,255,',   freq: 329.63, name: 'bloom'   },  // E4
-  { hex: '#FFD700', glow: 'rgba(255,215,0,',   freq: 392.00, name: 'gold'    },  // G4
-  { hex: '#00FF88', glow: 'rgba(0,255,136,',   freq: 523.25, name: 'jade'    },  // C5
-  { hex: '#FF6644', glow: 'rgba(255,102,68,',  freq: 659.25, name: 'ember'   },  // E5
-  { hex: '#AA88FF', glow: 'rgba(170,136,255,', freq: 783.99, name: 'violet'  },  // G5
+  { hex: '#00FFFF', glow: 'rgba(0,255,255,',   name: 'crystal' },
+  { hex: '#FF00FF', glow: 'rgba(255,0,255,',   name: 'bloom'   },
+  { hex: '#FFD700', glow: 'rgba(255,215,0,',   name: 'gold'    },
+  { hex: '#00FF88', glow: 'rgba(0,255,136,',   name: 'jade'    },
+  { hex: '#FF6644', glow: 'rgba(255,102,68,',  name: 'ember'   },
+  { hex: '#AA88FF', glow: 'rgba(170,136,255,', name: 'violet'  },
 ];
+
+// Procedural song genres — each defines a scale, tempo and a distinct
+// instrument palette (waveform per role) so every wave's song sounds
+// different, but internally consistent when all its pieces are layered.
+const GENRES = [
+  { name: 'ambient',   bpm: 68,  rootMidi: 60, scaleIntervals: [0, 2, 4, 7, 9],          leadWave: 'sine',     padWave: 'sine',     bassWave: 'sine',     noteDensity: 0.5  },
+  { name: 'synthwave', bpm: 100, rootMidi: 57, scaleIntervals: [0, 2, 3, 5, 7, 8, 10],   leadWave: 'sawtooth', padWave: 'triangle', bassWave: 'triangle', noteDensity: 0.7  },
+  { name: 'lofi',      bpm: 78,  rootMidi: 62, scaleIntervals: [0, 2, 3, 5, 7, 9, 10],   leadWave: 'sine',     padWave: 'sine',     bassWave: 'sine',     noteDensity: 0.45 },
+  { name: 'chiptune',  bpm: 128, rootMidi: 64, scaleIntervals: [0, 2, 4, 5, 7, 9, 11],   leadWave: 'square',   padWave: 'triangle', bassWave: 'square',   noteDensity: 0.8  },
+];
+
+const STARFIELD_CONFIG = {
+  MAX_STARS: 500,
+  STARS_PER_CONNECTION: 10,
+  CONNECTION_STAR_RADIUS: 70,   // scatter radius around each connected dot
+  WAVE_COMPLETE_FILL_COUNT: 60, // additional stars scattered on wave complete
+  STAR_FADE_IN_SPEED: 0.02,
+  TWINKLE_SPEED_MIN: 0.01,
+  TWINKLE_SPEED_MAX: 0.03,
+};
+
+const SPACE_CONFIG = {
+  MAX_OBJECTS: 4,
+  SPAWN_INTERVAL_FRAMES: 360, // ~6s at 60fps
+  TYPES: ['asteroid', 'asteroid', 'satellite', 'comet'],
+};
+
+const BARRIER_CONFIG = {
+  START_WAVE: 3,          // barriers begin appearing at this wave
+  WAVES_PER_BARRIER: 2,   // one more barrier every N waves after START_WAVE
+  MAX_BARRIERS: 4,
+  MIN_LENGTH: 130,
+  MAX_LENGTH: 240,
+  DOT_CLEARANCE: 60,      // keep barriers this far from any dot center
+  SCREEN_CLEARANCE: 10,
+};
 
 // ============================================================
 // SECTION 2: STATE
@@ -55,6 +86,7 @@ const STATE = {
   dots: [],            // Array of dot objects
   connections: [],     // Array of completed connection objects
   lines: [],           // Array of fading line objects
+  barriers: [],        // Array of static obstacle segments for this wave
 
   activeDot: null,     // The dot currently being dragged from
   currentPath: [],     // Points being drawn right now [{x, y}]
@@ -62,45 +94,141 @@ const STATE = {
 
   audioCtx: null,      // Created on first gesture
   beatInterval: null,  // setInterval reference for beat pulse
-  beatTick: 0,          // Increments each beat
+  beatTick: 0,         // Increments each beat
+
+  song: null,          // Procedurally generated song for the current wave
+
+  stars: [],           // Persistent background starfield (accumulates across waves)
+  spaceObjects: [],    // Drifting asteroids / comets / satellites
+  spaceSpawnTimer: 0,
 };
 
 // ============================================================
-// SECTION 3: AUDIO ENGINE
+// SECTION 3: MUSIC ENGINE (procedural song generation & playback)
 // ============================================================
 function initAudio() {
   if (STATE.audioCtx) return;
   STATE.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 }
 
-function playTone(colorIndex) {
-  if (!STATE.audioCtx) return;
+function midiToFreq(midi) {
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
 
-  const instrument = INSTRUMENTS[colorIndex];
+function scaleFreq(genre, degreeIndex, octaveOffset) {
+  const scaleLen = genre.scaleIntervals.length;
+  const octave = Math.floor(degreeIndex / scaleLen) + octaveOffset;
+  const degree = ((degreeIndex % scaleLen) + scaleLen) % scaleLen;
+  return midiToFreq(genre.rootMidi + octave * 12 + genre.scaleIntervals[degree]);
+}
+
+// Generates a full multi-instrument song: a "lead" melody spanning
+// pairCount bars (one bar per dot pair) plus a "bass" and "pad"
+// background that spans the whole song. The lead melody is then sliced
+// into pairCount segments — one per dot pair — so each pair "owns" a
+// short phrase, while bass/pad remain unattributed to any single pair.
+function generateSong(pairCount) {
+  const genre = GENRES[Math.floor(Math.random() * GENRES.length)];
+  const beatsPerPair = 4; // one bar of melody per pair
+  const totalBeats = pairCount * beatsPerPair;
+  const stepsPerBeat = 2;
+  const totalSteps = totalBeats * stepsPerBeat;
+
+  const melodyNotes = [];
+  let degree = Math.floor(Math.random() * genre.scaleIntervals.length);
+  for (let step = 0; step < totalSteps; step++) {
+    if (Math.random() < genre.noteDensity) {
+      degree += Math.floor(Math.random() * 5) - 2; // random walk
+      degree = Math.max(0, Math.min(degree, genre.scaleIntervals.length * 2 - 1));
+      melodyNotes.push({
+        beat: step / stepsPerBeat,
+        dur: 1 / stepsPerBeat,
+        freq: scaleFreq(genre, degree, 1),
+        wave: genre.leadWave,
+        role: 'lead',
+      });
+    }
+  }
+
+  const backgroundNotes = [];
+  const totalBars = totalBeats / 4;
+  for (let bar = 0; bar < totalBars; bar++) {
+    backgroundNotes.push({
+      beat: bar * 4,
+      dur: 2,
+      freq: scaleFreq(genre, 0, 0),
+      wave: genre.bassWave,
+      role: 'bass',
+    });
+  }
+  for (let bar = 0; bar < totalBars; bar += 2) {
+    [0, 2, 4].forEach(deg => {
+      backgroundNotes.push({
+        beat: bar * 4,
+        dur: 8,
+        freq: scaleFreq(genre, deg, 0),
+        wave: genre.padWave,
+        role: 'pad',
+      });
+    });
+  }
+
+  const segments = [];
+  for (let i = 0; i < pairCount; i++) {
+    const segStart = i * beatsPerPair;
+    const segEnd = (i + 1) * beatsPerPair;
+    segments.push(melodyNotes.filter(n => n.beat >= segStart && n.beat < segEnd));
+  }
+
+  return { genre, totalBeats, beatsPerPair, segments, backgroundNotes };
+}
+
+function scheduleNote(note, startTime, beatDur) {
   const ctx = STATE.audioCtx;
-  const now = ctx.currentTime;
+  const t = startTime + note.beat * beatDur;
+  const dur = note.dur * beatDur;
 
   const osc = ctx.createOscillator();
-  osc.type = 'sine';
-  osc.frequency.setValueAtTime(instrument.freq, now);
+  osc.type = note.wave;
+  osc.frequency.setValueAtTime(note.freq, t);
 
   const gain = ctx.createGain();
-  gain.gain.setValueAtTime(0, now);
-  gain.gain.linearRampToValueAtTime(CONFIG.MASTER_VOLUME, now + CONFIG.TONE_ATTACK);
-  gain.gain.setValueAtTime(CONFIG.MASTER_VOLUME, now + CONFIG.TONE_ATTACK + CONFIG.TONE_SUSTAIN);
-  gain.gain.exponentialRampToValueAtTime(0.001, now + CONFIG.TONE_ATTACK + CONFIG.TONE_SUSTAIN + CONFIG.TONE_RELEASE);
+  const peak = note.role === 'pad' ? 0.10 : note.role === 'bass' ? 0.20 : 0.18;
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(peak, t + 0.02);
+  gain.gain.setValueAtTime(peak, t + Math.max(0.02, dur * 0.6));
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur + 0.15);
 
   osc.connect(gain);
   gain.connect(ctx.destination);
-  osc.start(now);
-  osc.stop(now + CONFIG.TONE_ATTACK + CONFIG.TONE_SUSTAIN + CONFIG.TONE_RELEASE + 0.1);
+  osc.start(t);
+  osc.stop(t + dur + 0.2);
 }
 
-function playWaveCompleteArpeggio() {
-  const colorIndexes = STATE.connections.map(c => c.colorIndex).sort((a, b) => a - b);
-  colorIndexes.forEach((ci, i) => {
-    setTimeout(() => playTone(ci), i * CONFIG.ARPEGGIO_INTERVAL);
-  });
+// Plays the short musical phrase "owned" by this pair as immediate
+// feedback — normalized to start right now regardless of where it
+// falls in the full song's timeline.
+function playPairSegment(pairId) {
+  if (!STATE.audioCtx || !STATE.song) return;
+  const seg = STATE.song.segments[pairId];
+  if (!seg || !seg.length) return;
+  const beatDur = 60 / STATE.song.genre.bpm;
+  const now = STATE.audioCtx.currentTime;
+  const segStartBeat = pairId * STATE.song.beatsPerPair;
+  seg.forEach(n => scheduleNote({ ...n, beat: n.beat - segStartBeat }, now, beatDur));
+}
+
+// The finale: plays the ENTIRE song in its original timeline — every
+// pair's phrase in its proper place, plus the bass/pad that was never
+// attributed to any single pair. Individually each pair only ever heard
+// its own isolated phrase; together, with the background underneath,
+// it becomes one coherent arrangement.
+function playFullSong() {
+  if (!STATE.audioCtx || !STATE.song) return;
+  const beatDur = 60 / STATE.song.genre.bpm;
+  const now = STATE.audioCtx.currentTime + 0.05;
+  STATE.song.backgroundNotes.forEach(n => scheduleNote(n, now, beatDur));
+  STATE.song.segments.forEach(seg => seg.forEach(n => scheduleNote(n, now, beatDur)));
 }
 
 function startBeat() {
@@ -287,6 +415,7 @@ function onInputStart(e) {
   initAudio();
 
   if (STATE.phase === 'TITLE') {
+    hideMessage();
     startWave(1);
     return;
   }
@@ -345,7 +474,7 @@ function onInputEnd(e) {
     return;
   }
 
-  if (pathCrossesExistingConnections(STATE.currentPath)) {
+  if (pathCrossesExistingConnections(STATE.currentPath) || pathCrossesBarriers(STATE.currentPath)) {
     rejectConnection();
     return;
   }
@@ -384,7 +513,9 @@ function completeConnection(dotA, dotB) {
   };
   STATE.lines.push(fadingLine);
 
-  playTone(dotA.colorIndex);
+  spawnStarsAroundDots(dotA, dotB);
+
+  playPairSegment(dotA.pairId);
 
   haptic('connect');
 
@@ -447,11 +578,12 @@ function checkWaveComplete() {
 
   STATE.phase = 'WAVE_COMPLETE';
 
-  playWaveCompleteArpeggio();
+  playFullSong();
 
   haptic('waveComplete');
 
   showMessage('WAVE COMPLETE', 'wave ' + STATE.wave);
+  fillRemainingStarfield();
 
   STATE.score += STATE.wave * 100;
 
@@ -471,9 +603,246 @@ function startWave(waveNumber) {
   STATE.currentPath = [];
   STATE.isDrawing = false;
 
+  const pairCount = getPairCountForWave(waveNumber);
+  STATE.song = generateSong(pairCount);
+  STATE.barriers = generateBarriers(waveNumber, STATE.dots);
+
   updateWaveDisplay();
 
   if (!STATE.beatInterval) startBeat();
+}
+
+// ============================================================
+// SECTION 7B: BARRIERS (difficulty scaling obstacles)
+// ============================================================
+function getBarrierCountForWave(wave) {
+  if (wave < BARRIER_CONFIG.START_WAVE) return 0;
+  const extra = Math.floor((wave - BARRIER_CONFIG.START_WAVE) / BARRIER_CONFIG.WAVES_PER_BARRIER);
+  return Math.min(1 + extra, BARRIER_CONFIG.MAX_BARRIERS);
+}
+
+function distPointToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq === 0 ? 0 : ((px - x1) * dx + (py - y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const cx = x1 + t * dx, cy = y1 + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+function segmentClearsAllDots(x1, y1, x2, y2, dots) {
+  for (const d of dots) {
+    if (distPointToSegment(d.x, d.y, x1, y1, x2, y2) < BARRIER_CONFIG.DOT_CLEARANCE) return false;
+  }
+  return true;
+}
+
+function generateBarriers(wave, dots) {
+  const count = getBarrierCountForWave(wave);
+  const barriers = [];
+  let attempts = 0;
+
+  while (barriers.length < count && attempts < 300) {
+    attempts++;
+    const angle = Math.random() * Math.PI * 2;
+    const length = BARRIER_CONFIG.MIN_LENGTH + Math.random() * (BARRIER_CONFIG.MAX_LENGTH - BARRIER_CONFIG.MIN_LENGTH);
+    const cx = CONFIG.EDGE_MARGIN + Math.random() * (canvas.width - CONFIG.EDGE_MARGIN * 2);
+    const cy = CONFIG.EDGE_MARGIN + Math.random() * (canvas.height - CONFIG.EDGE_MARGIN * 2);
+    const x1 = cx - Math.cos(angle) * length / 2;
+    const y1 = cy - Math.sin(angle) * length / 2;
+    const x2 = cx + Math.cos(angle) * length / 2;
+    const y2 = cy + Math.sin(angle) * length / 2;
+
+    const c = BARRIER_CONFIG.SCREEN_CLEARANCE;
+    if (x1 < c || x1 > canvas.width - c || x2 < c || x2 > canvas.width - c) continue;
+    if (y1 < c || y1 > canvas.height - c || y2 < c || y2 > canvas.height - c) continue;
+    if (!segmentClearsAllDots(x1, y1, x2, y2, dots)) continue;
+
+    barriers.push({ x1, y1, x2, y2 });
+  }
+
+  return barriers;
+}
+
+function pathCrossesBarriers(path) {
+  const segs = pathToSegments(path);
+  for (const b of STATE.barriers) {
+    for (const seg of segs) {
+      if (segmentsIntersect(seg, { x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 })) return true;
+    }
+  }
+  return false;
+}
+
+function drawBarriers() {
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineWidth = 3;
+  ctx.setLineDash([10, 8]);
+  ctx.strokeStyle = 'rgba(255,60,60,0.55)';
+  ctx.shadowBlur = 12;
+  ctx.shadowColor = '#ff3c3c';
+  for (const b of STATE.barriers) {
+    ctx.beginPath();
+    ctx.moveTo(b.x1, b.y1);
+    ctx.lineTo(b.x2, b.y2);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ============================================================
+// SECTION 7C: STARFIELD & SPACE BACKGROUND
+// ============================================================
+function makeStar(x, y) {
+  return {
+    x, y,
+    radius: 0.6 + Math.random() * 1.6,
+    targetAlpha: 0.35 + Math.random() * 0.55,
+    alpha: 0,
+    twinklePhase: Math.random() * Math.PI * 2,
+    twinkleSpeed: STARFIELD_CONFIG.TWINKLE_SPEED_MIN + Math.random() * (STARFIELD_CONFIG.TWINKLE_SPEED_MAX - STARFIELD_CONFIG.TWINKLE_SPEED_MIN),
+  };
+}
+
+function spawnStarsAroundDots(dotA, dotB) {
+  const perDot = Math.round(STARFIELD_CONFIG.STARS_PER_CONNECTION / 2);
+  for (const dot of [dotA, dotB]) {
+    for (let i = 0; i < perDot; i++) {
+      if (STATE.stars.length >= STARFIELD_CONFIG.MAX_STARS) return;
+      const angle = Math.random() * Math.PI * 2;
+      const dist = Math.random() * STARFIELD_CONFIG.CONNECTION_STAR_RADIUS;
+      STATE.stars.push(makeStar(dot.x + Math.cos(angle) * dist, dot.y + Math.sin(angle) * dist));
+    }
+  }
+}
+
+function fillRemainingStarfield() {
+  const count = Math.min(STARFIELD_CONFIG.WAVE_COMPLETE_FILL_COUNT, STARFIELD_CONFIG.MAX_STARS - STATE.stars.length);
+  for (let i = 0; i < count; i++) {
+    STATE.stars.push(makeStar(Math.random() * canvas.width, Math.random() * canvas.height));
+  }
+}
+
+function updateStars() {
+  for (const s of STATE.stars) {
+    if (s.alpha < s.targetAlpha) s.alpha = Math.min(s.targetAlpha, s.alpha + STARFIELD_CONFIG.STAR_FADE_IN_SPEED);
+    s.twinklePhase += s.twinkleSpeed;
+  }
+}
+
+function drawStars() {
+  for (const s of STATE.stars) {
+    const twinkle = 0.7 + 0.3 * Math.sin(s.twinklePhase);
+    ctx.beginPath();
+    ctx.fillStyle = `rgba(255,255,255,${(s.alpha * twinkle).toFixed(3)})`;
+    ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function spawnSpaceObject() {
+  const type = SPACE_CONFIG.TYPES[Math.floor(Math.random() * SPACE_CONFIG.TYPES.length)];
+  const fromLeft = Math.random() < 0.5;
+  const y = Math.random() * canvas.height;
+  const speed = 0.15 + Math.random() * 0.3;
+
+  const obj = {
+    type,
+    x: fromLeft ? -40 : canvas.width + 40,
+    y,
+    vx: (fromLeft ? 1 : -1) * speed * (type === 'comet' ? 2.2 : 1),
+    vy: (Math.random() - 0.5) * 0.05,
+    rotation: Math.random() * Math.PI * 2,
+    rotSpeed: (Math.random() - 0.5) * 0.01,
+  };
+
+  if (type === 'asteroid') {
+    obj.radius = 6 + Math.random() * 10;
+    obj.verts = [];
+    const vertCount = 7 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < vertCount; i++) obj.verts.push(0.7 + Math.random() * 0.5);
+  } else if (type === 'satellite') {
+    obj.size = 8 + Math.random() * 4;
+    obj.blinkPhase = Math.random() * Math.PI * 2;
+  } else if (type === 'comet') {
+    obj.tail = [];
+  }
+
+  STATE.spaceObjects.push(obj);
+}
+
+function updateSpaceObjects() {
+  STATE.spaceSpawnTimer++;
+  if (STATE.spaceSpawnTimer > SPACE_CONFIG.SPAWN_INTERVAL_FRAMES && STATE.spaceObjects.length < SPACE_CONFIG.MAX_OBJECTS) {
+    spawnSpaceObject();
+    STATE.spaceSpawnTimer = 0;
+  }
+
+  for (const obj of STATE.spaceObjects) {
+    obj.x += obj.vx;
+    obj.y += obj.vy;
+    obj.rotation += obj.rotSpeed || 0;
+    if (obj.type === 'comet') {
+      obj.tail.push({ x: obj.x, y: obj.y });
+      if (obj.tail.length > 18) obj.tail.shift();
+    }
+    if (obj.type === 'satellite') obj.blinkPhase += 0.05;
+  }
+
+  STATE.spaceObjects = STATE.spaceObjects.filter(o => o.x > -60 && o.x < canvas.width + 60);
+}
+
+function drawSpaceObjects() {
+  for (const obj of STATE.spaceObjects) {
+    ctx.save();
+    if (obj.type === 'asteroid') {
+      ctx.translate(obj.x, obj.y);
+      ctx.rotate(obj.rotation);
+      ctx.beginPath();
+      const n = obj.verts.length;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2;
+        const r = obj.radius * obj.verts[i];
+        const x = Math.cos(a) * r, y = Math.sin(a) * r;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(120,120,130,0.35)';
+      ctx.strokeStyle = 'rgba(180,180,190,0.25)';
+      ctx.lineWidth = 1;
+      ctx.fill();
+      ctx.stroke();
+    } else if (obj.type === 'satellite') {
+      ctx.translate(obj.x, obj.y);
+      ctx.rotate(obj.rotation);
+      ctx.fillStyle = 'rgba(200,200,210,0.4)';
+      ctx.fillRect(-obj.size * 0.15, -obj.size * 0.4, obj.size * 0.3, obj.size * 0.8);
+      ctx.fillRect(-obj.size * 0.9, -obj.size * 0.12, obj.size * 0.6, obj.size * 0.24);
+      ctx.fillRect(obj.size * 0.3, -obj.size * 0.12, obj.size * 0.6, obj.size * 0.24);
+      const blink = 0.3 + 0.7 * Math.max(0, Math.sin(obj.blinkPhase));
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(255,80,80,${blink.toFixed(2)})`;
+      ctx.arc(0, 0, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (obj.type === 'comet') {
+      for (let i = 0; i < obj.tail.length; i++) {
+        const t = obj.tail[i];
+        const alpha = (i / obj.tail.length) * 0.5;
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(180,220,255,${alpha.toFixed(2)})`;
+        ctx.arc(t.x, t.y, 1.6 * (i / obj.tail.length), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.beginPath();
+      ctx.shadowBlur = 12;
+      ctx.shadowColor = '#bfe4ff';
+      ctx.fillStyle = '#eaf6ff';
+      ctx.arc(obj.x, obj.y, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
 }
 
 // ============================================================
@@ -534,10 +903,17 @@ function update() {
   }
 
   STATE.lines = STATE.lines.filter(l => !l.complete);
+
+  updateStars();
+  updateSpaceObjects();
 }
 
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  drawStars();
+  drawSpaceObjects();
+  drawBarriers();
 
   for (const line of STATE.lines) {
     drawFadingLine(line);
