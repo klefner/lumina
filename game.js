@@ -201,6 +201,8 @@ const STATE = {
   beatTick: 0,         // Increments each beat
 
   song: null,          // Procedurally generated song for the current wave
+  songStartTime: null, // audioCtx.currentTime the current song loop was scheduled from — lets
+                        // unmuteChunk find the next clean note onset instead of a mid-decay moment
   beatSync: null,      // { startTime, bpm } — drives unison dot pulsing while the full song plays
   fade: null,          // { alpha, direction: 'out'|'in'|'idle', onComplete } — canvas black transition between waves
 
@@ -627,6 +629,7 @@ function scheduleLoopingSong(song) {
   const beatDur = 60 / song.genre.bpm;
   const loopDuration = song.totalBeats * beatDur;
   const startTime = ctx.currentTime + 0.05;
+  STATE.songStartTime = startTime;
 
   STATE.chunkGains.forEach(g => { try { g.disconnect(); } catch (e) { /* already gone */ } });
   STATE.chunkGains = [];
@@ -650,16 +653,51 @@ function scheduleLoopingSong(song) {
   }
 }
 
+// Finds the next time (>= now) that this chunk has a note scheduled to
+// START — i.e. the next clean onset, not wherever an in-flight note
+// currently happens to be in its decay.
+function nextNoteTimeForChunk(pairId) {
+  const song = STATE.song;
+  const ctx = STATE.audioCtx;
+  if (!song || !ctx || STATE.songStartTime == null) return null;
+  const beatDur = 60 / song.genre.bpm;
+  const loopDuration = song.totalBeats * beatDur;
+  const chunkBeats = song.notes.filter(n => n.chunkIndex === pairId).map(n => n.beat);
+  if (!chunkBeats.length) return null;
+
+  const elapsed = ctx.currentTime - STATE.songStartTime;
+  const elapsedInLoop = ((elapsed % loopDuration) + loopDuration) % loopDuration;
+  let bestOffset = Infinity;
+  for (const beat of chunkBeats) {
+    let delta = beat * beatDur - elapsedInLoop;
+    if (delta < 0) delta += loopDuration; // wraps to this beat's occurrence in the next loop pass
+    if (delta < bestOffset) bestOffset = delta;
+  }
+  return ctx.currentTime + bestOffset;
+}
+
 // Opens this pair's gate — its slice of the song (already playing, silent)
 // becomes audible from here on, every loop, layering with whatever other
-// pairs have already been connected.
+// pairs have already been connected. Every note in every chunk has already
+// been scheduled since the wave started (see scheduleLoopingSong), muted —
+// simply ramping the gate open right now would reveal whatever note
+// happens to be mid-decay at this exact instant, faded in from the middle
+// of its envelope instead of its natural attack, which can sound like a
+// jarring swell instead of a clean note. Instead, stay silent until this
+// chunk's next scheduled note actually begins, so every reveal is a clean
+// onset.
 function unmuteChunk(pairId) {
   if (!STATE.audioCtx || !STATE.chunkGains[pairId]) return;
-  const t = STATE.audioCtx.currentTime;
+  const ctx = STATE.audioCtx;
+  const now = ctx.currentTime;
   const g = STATE.chunkGains[pairId].gain;
-  g.cancelScheduledValues(t);
-  g.setValueAtTime(g.value, t);
-  g.linearRampToValueAtTime(1.0, t + 0.12);
+  const nextNote = nextNoteTimeForChunk(pairId);
+  const rampStart = nextNote != null ? Math.max(now, nextNote - 0.03) : now;
+
+  g.cancelScheduledValues(now);
+  g.setValueAtTime(0, now);
+  g.setValueAtTime(0, rampStart);
+  g.linearRampToValueAtTime(1.0, rampStart + 0.06);
 }
 
 // Closes this pair's gate again — used when a rotating barrier snaps a
