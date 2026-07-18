@@ -46,35 +46,39 @@ const INSTRUMENTS = [
 ];
 
 // ============================================================
-// TEMPORARY DIAGNOSTIC BUILD — isolates candidate cello pitch-shift amounts
-// to identify the source of a reported bad "string" sound. Each of the 6
-// dot pairs plays ONE candidate note in isolation, repeated, cello only,
-// no chords — so whichever one sounds bad can be pinned down precisely.
-// The real 4-genre spa arrangement (serenity/moonlit pool/warm stone/ocean
-// mist) is preserved below, commented out, and this whole change will be
-// reverted via `git revert` once the candidate is identified.
+// TEMPORARY DIAGNOSTIC BUILD v2 — v1 tested each candidate note ALONE and
+// none of them sounded bad. That was a flawed test: nearestSampleNote picks
+// the truly closest sample when a note plays solo, so a note that only
+// gets pushed to a distant sample when COMPETING with other simultaneous
+// notes (a real chord) played fine in isolation — it was silently testing
+// a different, easier case. This build instead reproduces the actual
+// SIMULTANEOUS multi-voice moments from real gameplay: full pad chords
+// (3 cello voices at once) and pad+drone stacked together (4 voices at
+// once), taken directly from real generated songs, not guessed. The real
+// 4-genre spa arrangement is preserved further below, commented out, and
+// this whole change will be reverted via `git revert` once identified.
 //
-// Dot color -> candidate (colors are NOT shuffled in this build, so the
-// mapping is fixed and reportable by color):
-//   crystal (cyan)   -> A4 exact match, NO pitch shift (clean reference)
-//   bloom (magenta)  -> Ab4 sample shifted +8 semitones (up a minor 6th)
-//   gold             -> A4 sample shifted +7 semitones (up a fifth)
-//   jade (green)     -> D3 sample shifted -5 semitones (down a fourth)
-//   ember (orange)   -> A4 sample shifted +5 semitones (up a fourth)
-//   violet           -> D3 sample shifted -2 semitones (down a whole step)
+// Dot color -> candidate (colors are NOT shuffled, mapping is fixed):
+//   crystal (cyan)   -> single clean note, no shift (baseline reference)
+//   bloom (magenta)  -> "warm stone" bar-1 pad chord: A4 + Bb4(->Db5,+3) + Ab4(->E5,+8)
+//   gold             -> "ocean mist" bar-2 pad chord: Bb4(->C5,+2) + A4(->E5,+7) + G4
+//   jade (green)     -> the warm stone chord PLUS its drone note, 4 voices at once
+//   ember (orange)   -> a "comfortable" pad chord for comparison: C4+E4+G4, no shifts
+//   violet           -> the warm stone chord repeated fast (every beat, not every bar)
+//     to test whether overlapping decay tails from rapid retriggering is the issue
 // ============================================================
 const GENRES = [
   {
-    name: 'diagnostic', bpm: 40, rootMidi: 69,
+    name: 'diagnostic', bpm: 50, rootMidi: 69,
     scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
     chordProgression: [0],
     roles: [
-      { kind: 'diag', instrument: 'cello', diagMidi: 69, label: 'clean reference (A4, no shift)' },
-      { kind: 'diag', instrument: 'cello', diagMidi: 64, label: 'Ab4 +8 semitones' },
-      { kind: 'diag', instrument: 'cello', diagMidi: 76, label: 'A4 +7 semitones' },
-      { kind: 'diag', instrument: 'cello', diagMidi: 33, label: 'D3 -5 semitones' },
-      { kind: 'diag', instrument: 'cello', diagMidi: 74, label: 'A4 +5 semitones' },
-      { kind: 'diag', instrument: 'cello', diagMidi: 36, label: 'D3 -2 semitones' },
+      { kind: 'diagNote',  instrument: 'cello', diagMidi: 69, label: 'clean reference (A4, no shift)' },
+      { kind: 'diagChord', instrument: 'cello', diagMidiList: [69, 73, 76], label: 'warm stone bar1 chord' },
+      { kind: 'diagChord', instrument: 'cello', diagMidiList: [70, 74, 67], label: 'ocean mist bar2 chord' },
+      { kind: 'diagStack', instrument: 'cello', diagMidiList: [69, 73, 76], diagDrone: 57, label: 'chord + drone, 4 voices' },
+      { kind: 'diagChord', instrument: 'cello', diagMidiList: [60, 64, 67], label: 'comfortable chord (no shifts)' },
+      { kind: 'diagFast',  instrument: 'cello', diagMidiList: [69, 73, 76], label: 'warm stone chord, fast retrigger' },
     ],
   },
 ];
@@ -606,16 +610,27 @@ function generateSong(pairCount) {
           midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 1)),
           role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
         });
-      } else if (kind === 'diag') {
-        // DIAGNOSTIC: repeat the literal target note every quarter note,
-        // unfolded/unshifted-by-theory — reproduces the exact real-game
-        // pitch-shift amount continuously so it's easy to isolate by ear.
+      } else if (kind === 'diagNote') {
+        // DIAGNOSTIC: a single note repeated every quarter note, isolated.
         for (let step = 0; step < stepsPerBar; step += 2) {
-          notes.push({
-            beat: barStartBeat + step * 0.5,
-            midi: roleDef.diagMidi,
-            role: 'melody', instrument, vel: 1.0, chunkIndex,
-          });
+          notes.push({ beat: barStartBeat + step * 0.5, midi: roleDef.diagMidi, role: 'melody', instrument, vel: 1.0, chunkIndex });
+        }
+      } else if (kind === 'diagChord') {
+        // DIAGNOSTIC: the literal 3-note chord repeated every bar, exactly
+        // as the real pad role would play it (via playSampleChord).
+        notes.push({ beat: barStartBeat, midiList: roleDef.diagMidiList, role: 'pad', instrument, vel: 1.0, chunkIndex });
+      } else if (kind === 'diagStack') {
+        // DIAGNOSTIC: the chord PLUS a simultaneous drone note — 4 cello
+        // voices attacking at the exact same instant, every bar.
+        notes.push({ beat: barStartBeat, midiList: roleDef.diagMidiList, role: 'pad', instrument, vel: 1.0, chunkIndex });
+        notes.push({ beat: barStartBeat, midi: roleDef.diagDrone, role: 'drone', instrument, vel: 1.0, chunkIndex });
+      } else if (kind === 'diagFast') {
+        // DIAGNOSTIC: same chord as diagChord but retriggered every beat
+        // instead of every bar, to test whether overlapping decay tails
+        // from rapid repetition (not present in a slower real bar-length
+        // gap) is the source of the bad sound.
+        for (let step = 0; step < stepsPerBar; step += 2) {
+          notes.push({ beat: barStartBeat + step * 0.5, midiList: roleDef.diagMidiList, role: 'pad', instrument, vel: 1.0, chunkIndex });
         }
       }
     }
