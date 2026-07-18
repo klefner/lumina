@@ -122,11 +122,12 @@ const SAMPLE_MANIFEST = {
 const STARFIELD_CONFIG = {
   // Density-based, not a fixed count — a fixed star count looks fine on a
   // narrow phone screen and leaves huge empty gaps on a wide desktop one.
+  // Only used for the wave-complete reveal (fillBaseStarfield) — while
+  // still playing, only the sparse per-connection stars are visible.
   AREA_PER_BASE_STAR: 2600,  // one ambient star per this many px^2 of canvas
   MAX_STARS: 3000,
   STARS_PER_CONNECTION: 40,
   CONNECTION_STAR_RADIUS: 100,   // scatter radius around each connected dot
-  WAVE_COMPLETE_FILL_COUNT: 60, // additional stars scattered on wave complete
   STAR_FADE_IN_SPEED: 0.02,
   TWINKLE_FRACTION: 0.25,     // only a minority of stars twinkle — the rest sit still
   TWINKLE_SPEED_MIN: 0.01,
@@ -343,6 +344,40 @@ function stopAllScheduledAudio(atTime) {
   STATE.activeSources = [];
 }
 
+const _instrumentRangeCache = {};
+function instrumentMidiRange(instrument) {
+  if (_instrumentRangeCache[instrument]) return _instrumentRangeCache[instrument];
+  const notes = SAMPLE_MANIFEST[instrument];
+  if (!notes) return null;
+  let min = Infinity, max = -Infinity;
+  for (const name of notes) {
+    const m = noteNameToMidi(name);
+    if (m < min) min = m;
+    if (m > max) max = m;
+  }
+  const range = { min, max };
+  _instrumentRangeCache[instrument] = range;
+  return range;
+}
+
+// Folds a target note toward the instrument's actual sampled range by whole
+// octaves, so playback never needs a pitch shift much larger than half an
+// octave. Without this, a chord voiced above/below an instrument's range
+// (easy to hit with a 5-6 role song spanning several octaves of theory)
+// has multiple tones collapse onto the SAME nearest sample and play
+// simultaneously at different speeds — the same recording layered against
+// itself, which beats/phases into a blaring, unnatural honk instead of a
+// clean chord. Called at generation time, before a note's midi is stored.
+function foldToInstrumentRange(instrument, midi) {
+  const range = instrumentMidiRange(instrument);
+  if (!range) return midi;
+  const headroom = 6; // semitones of slack allowed beyond the sampled range
+  let m = midi;
+  while (m > range.max + headroom) m -= 12;
+  while (m < range.min - headroom) m += 12;
+  return m;
+}
+
 // --- Real instrument sample playback -----------------------------------
 // Recorded, individually-pitched note samples (see SAMPLE_MANIFEST), pitch-
 // shifted via playbackRate to reach notes between the ones actually
@@ -360,11 +395,32 @@ function nearestSampleNote(instrument, targetMidi) {
   return best;
 }
 
-function playSample(instrument, targetMidi, t, peak, dest) {
+// Resolves a whole chord to DISTINCT samples where possible. Two chord
+// tones landing near the same edge of an instrument's range (e.g. both
+// just above its highest sample) would otherwise both resolve to that same
+// nearest sample independently and play simultaneously at different
+// speeds — the same recording layered against itself, phasing into an
+// unnatural honk instead of a clean chord.
+function nearestDistinctSampleNotes(instrument, midiList) {
+  const notes = SAMPLE_MANIFEST[instrument];
+  if (!notes) return midiList.map(() => null);
+  const used = new Set();
+  return midiList.map(targetMidi => {
+    let best = null, bestDist = Infinity;
+    for (const name of notes) {
+      if (used.has(name)) continue;
+      const dist = Math.abs(noteNameToMidi(name) - targetMidi);
+      if (dist < bestDist) { bestDist = dist; best = name; }
+    }
+    if (best === null) best = nearestSampleNote(instrument, targetMidi); // more chord tones than samples — reuse
+    used.add(best);
+    return best;
+  });
+}
+
+function playResolvedSample(instrument, nearestName, targetMidi, t, peak, dest) {
   const buffers = STATE.sampleBuffers[instrument];
-  if (!buffers) return;
-  const nearestName = nearestSampleNote(instrument, targetMidi);
-  if (!nearestName) return;
+  if (!buffers || !nearestName) return;
   const buffer = buffers[nearestName];
   if (!buffer) return;
 
@@ -381,8 +437,13 @@ function playSample(instrument, targetMidi, t, peak, dest) {
   trackSource(src).start(t);
 }
 
+function playSample(instrument, targetMidi, t, peak, dest) {
+  playResolvedSample(instrument, nearestSampleNote(instrument, targetMidi), targetMidi, t, peak, dest);
+}
+
 function playSampleChord(instrument, midiList, t, peak, dest) {
-  midiList.forEach(midi => playSample(instrument, midi, t, peak, dest));
+  const names = nearestDistinctSampleNotes(instrument, midiList);
+  midiList.forEach((midi, i) => playResolvedSample(instrument, names[i], midi, t, peak, dest));
 }
 
 // Peak output level per role kind — pad/drone sit quietly underneath,
@@ -463,7 +524,7 @@ function generateSong(pairCount) {
             const deg = useChordTone ? baseDeg : baseDeg + (Math.random() < 0.5 ? 1 : -1);
             notes.push({
               beat: humanizeBeat(barStartBeat + step * 0.5, 0.03),
-              midi: scaleMidi(genre, deg, 1),
+              midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 1)),
               role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
             });
             barHadNote = true;
@@ -476,7 +537,7 @@ function generateSong(pairCount) {
         if (!barHadNote) {
           notes.push({
             beat: barStartBeat,
-            midi: scaleMidi(genre, chordRoot, 1),
+            midi: foldToInstrumentRange(instrument, scaleMidi(genre, chordRoot, 1)),
             role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
           });
         }
@@ -486,21 +547,25 @@ function generateSong(pairCount) {
             const deg = chordDegrees[arpeggioPattern[step]];
             notes.push({
               beat: humanizeBeat(barStartBeat + step * 0.5, 0.02),
-              midi: scaleMidi(genre, deg, 0),
+              midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 0)),
               role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
             });
           }
         }
       } else if (kind === 'pad') {
+        // Fold each chord tone toward the instrument's range independently
+        // (not just the chord as a block) — otherwise a chord voiced above
+        // or below the sampled range has multiple tones collapse onto the
+        // SAME nearest sample and play at once, phasing into a honk.
         notes.push({
           beat: barStartBeat,
-          midiList: chordDegrees.map(d => scaleMidi(genre, d, 0)),
+          midiList: chordDegrees.map(d => foldToInstrumentRange(instrument, scaleMidi(genre, d, 0))),
           role: kind, instrument, vel: 0.9 + Math.random() * 0.15, chunkIndex,
         });
       } else if (kind === 'drone') {
         notes.push({
           beat: barStartBeat,
-          midi: scaleMidi(genre, chordRoot, -1),
+          midi: foldToInstrumentRange(instrument, scaleMidi(genre, chordRoot, -1)),
           role: kind, instrument, vel: 0.85 + Math.random() * 0.2, chunkIndex,
         });
       } else if (kind === 'accent') {
@@ -510,7 +575,7 @@ function generateSong(pairCount) {
         const deg = chordDegrees[Math.floor(Math.random() * chordDegrees.length)];
         notes.push({
           beat: humanizeBeat(barStartBeat + step * 0.5, 0.04),
-          midi: scaleMidi(genre, deg, 1),
+          midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 1)),
           role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
         });
       }
@@ -1106,7 +1171,10 @@ function checkWaveComplete() {
   haptic('waveComplete');
 
   showMessage('WAVE COMPLETE', 'wave ' + STATE.wave + '  —  tap or press a key to continue');
-  fillRemainingStarfield();
+  // The rest of the galaxy reveals itself as a reward for finishing the
+  // wave — only the sparse stars scattered around each connected dot are
+  // visible while still playing (see spawnStarsAroundDots).
+  fillBaseStarfield();
   fillSpaceGalaxy();
 
   STATE.score += STATE.wave * 100;
@@ -1152,7 +1220,6 @@ function startWave(waveNumber) {
   STATE.isDrawing = false;
   STATE.spaceObjects = [];
   STATE.spaceSpawnTimer = 0;
-  fillBaseStarfield();
 
   const pairCount = getPairCountForWave(waveNumber);
   STATE.song = generateSong(pairCount);
@@ -1502,10 +1569,11 @@ function makeStar(x, y) {
   };
 }
 
-// An ambient starfield covering the whole canvas, scaled to its area so a
-// wide desktop window looks as full as a narrow phone screen instead of
-// showing big empty gaps — filled once at the start of every wave, before
-// any connection-triggered bursts add more on top.
+// Fills the rest of the canvas with an ambient starfield, scaled to its
+// area so a wide desktop window ends up as full as a narrow phone screen
+// instead of showing big empty gaps. Called when the wave completes, as a
+// reveal — while still playing, only the sparse stars scattered around
+// each connected dot (spawnStarsAroundDots) are visible.
 function fillBaseStarfield() {
   const targetCount = Math.min(
     STARFIELD_CONFIG.MAX_STARS,
@@ -1525,13 +1593,6 @@ function spawnStarsAroundDots(dotA, dotB) {
       const dist = Math.random() * STARFIELD_CONFIG.CONNECTION_STAR_RADIUS;
       STATE.stars.push(makeStar(dot.x + Math.cos(angle) * dist, dot.y + Math.sin(angle) * dist));
     }
-  }
-}
-
-function fillRemainingStarfield() {
-  const count = Math.min(STARFIELD_CONFIG.WAVE_COMPLETE_FILL_COUNT, STARFIELD_CONFIG.MAX_STARS - STATE.stars.length);
-  for (let i = 0; i < count; i++) {
-    STATE.stars.push(makeStar(Math.random() * canvas.width, Math.random() * canvas.height));
   }
 }
 
