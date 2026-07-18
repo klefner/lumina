@@ -113,18 +113,22 @@ const GENRES = [
 // fetched/decoded) since no active genre references them any more.
 const SAMPLE_MANIFEST = {
   piano: ['A3', 'C4', 'E4', 'Ab4', 'C5', 'E5', 'Ab5', 'C6'],
-  flute: ['B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6', 'Db6', 'D6', 'Eb6', 'E6', 'F6', 'Gb6', 'G6', 'Ab6', 'A6', 'Bb6', 'B6'],
+  flute: ['B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'C6', 'Db6', 'D6', 'Eb6', 'E6', 'F6', 'Gb6', 'G6', 'Ab6', 'A6', 'Bb6'],
   cello: ['D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4'],
   marimba: ['C3', 'Db3', 'D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6'],
   vibraphone: ['C3', 'Db3', 'D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6'],
 };
 
 const STARFIELD_CONFIG = {
-  MAX_STARS: 900,
+  // Density-based, not a fixed count — a fixed star count looks fine on a
+  // narrow phone screen and leaves huge empty gaps on a wide desktop one.
+  AREA_PER_BASE_STAR: 2600,  // one ambient star per this many px^2 of canvas
+  MAX_STARS: 3000,
   STARS_PER_CONNECTION: 40,
   CONNECTION_STAR_RADIUS: 100,   // scatter radius around each connected dot
   WAVE_COMPLETE_FILL_COUNT: 60, // additional stars scattered on wave complete
   STAR_FADE_IN_SPEED: 0.02,
+  TWINKLE_FRACTION: 0.25,     // only a minority of stars twinkle — the rest sit still
   TWINKLE_SPEED_MIN: 0.01,
   TWINKLE_SPEED_MAX: 0.03,
 };
@@ -148,11 +152,29 @@ const TRAVELING_LIGHT_CONFIG = {
 const BARRIER_CONFIG = {
   START_WAVE: 3,          // barriers begin appearing at this wave
   WAVES_PER_BARRIER: 2,   // one more barrier every N waves after START_WAVE
-  MAX_BARRIERS: 4,
-  MIN_LENGTH: 130,
-  MAX_LENGTH: 240,
+  MAX_BARRIERS: 5,
+  MIN_LENGTH: 90,
+  MAX_LENGTH: 260,
   DOT_CLEARANCE: 60,      // keep barriers this far from any dot center
   SCREEN_CLEARANCE: 10,
+  // Barriers are placed to cross the straight line between one color pair's
+  // two dots, at a random point along it (not always the midpoint) and at
+  // a near-perpendicular angle, so they genuinely block the direct path
+  // instead of landing wherever random chance puts them.
+  PAIR_LINE_MIN_T: 0.28,
+  PAIR_LINE_MAX_T: 0.72,
+  ANGLE_JITTER: Math.PI / 2.2, // +/- spread off perpendicular-to-the-pair-line
+
+  // Rotating barriers: introduced at higher waves, slowly spin around their
+  // midpoint, and snap (break) any already-completed connection they sweep
+  // through — forcing the player to route around them while they're still
+  // finishing the puzzle, and to re-draw anything they cut.
+  ROTATION_START_WAVE: 6,
+  ROTATION_WAVES_PER_BARRIER: 3, // one more rotating barrier every N waves after ROTATION_START_WAVE
+  MAX_ROTATING: 2,
+  ROTATION_SPEED_BASE: 0.0045,   // radians/frame (~60fps) — a full turn every ~23s
+  ROTATION_SPEED_PER_WAVE: 0.00025,
+  ROTATION_SPEED_MAX: 0.009,
 };
 
 // ============================================================
@@ -178,8 +200,13 @@ const STATE = {
   beatTick: 0,         // Increments each beat
 
   song: null,          // Procedurally generated song for the current wave
+  songStartTime: null, // audioCtx.currentTime the current song loop was scheduled from
   beatSync: null,      // { startTime, bpm } — drives unison dot pulsing while the full song plays
   fade: null,          // { alpha, direction: 'out'|'in'|'idle', onComplete } — canvas black transition between waves
+
+  waveCompleteAdvanceFn: null, // set while WAVE_COMPLETE; call to advance early (tap/key), null once fired
+  waveCompleteTimer: null,     // fallback timer that fires when the song's current loop pass ends
+  waveCompleteAdvancing: false, // guards against the timer and a tap/key both triggering the advance
 
   activeSources: [],   // Every scheduled oscillator/buffer source currently pending or playing —
                         // tracked so a wave transition can hard-stop everything, not just mute it.
@@ -192,6 +219,8 @@ const STATE = {
   stars: [],           // Background starfield for the current wave — resets each wave
   spaceObjects: [],    // Drifting asteroids / comets / satellites
   spaceSpawnTimer: 0,
+
+  breakSparks: [],     // Short-lived particle bursts where a rotating barrier snaps a connection
 };
 
 // ============================================================
@@ -535,6 +564,7 @@ function scheduleLoopingSong(song) {
   const beatDur = 60 / song.genre.bpm;
   const loopDuration = song.totalBeats * beatDur;
   const startTime = ctx.currentTime + 0.05;
+  STATE.songStartTime = startTime; // lets checkWaveComplete find when the current loop pass ends
 
   STATE.chunkGains.forEach(g => { try { g.disconnect(); } catch (e) { /* already gone */ } });
   STATE.chunkGains = [];
@@ -568,6 +598,18 @@ function unmuteChunk(pairId) {
   g.cancelScheduledValues(t);
   g.setValueAtTime(g.value, t);
   g.linearRampToValueAtTime(1.0, t + 0.12);
+}
+
+// Closes this pair's gate again — used when a rotating barrier snaps a
+// completed connection, so its stem drops back out of the arrangement
+// until the player redraws it.
+function remuteChunk(pairId) {
+  if (!STATE.audioCtx || !STATE.chunkGains[pairId]) return;
+  const t = STATE.audioCtx.currentTime;
+  const g = STATE.chunkGains[pairId].gain;
+  g.cancelScheduledValues(t);
+  g.setValueAtTime(g.value, t);
+  g.linearRampToValueAtTime(0.0, t + 0.15);
 }
 
 function startBeat() {
@@ -849,6 +891,13 @@ canvas.addEventListener('mousedown', onInputStart, { passive: false });
 canvas.addEventListener('mousemove', onInputMove, { passive: false });
 canvas.addEventListener('mouseup', onInputEnd, { passive: false });
 
+// A key press also advances past the WAVE_COMPLETE screen, same as a tap.
+window.addEventListener('keydown', () => {
+  if (STATE.phase === 'WAVE_COMPLETE' && STATE.waveCompleteAdvanceFn) {
+    STATE.waveCompleteAdvanceFn();
+  }
+});
+
 function getEventPos(e) {
   const rect = canvas.getBoundingClientRect();
   if (e.touches && e.touches.length > 0) {
@@ -871,6 +920,11 @@ function onInputStart(e) {
   if (STATE.phase === 'TITLE') {
     hideMessage();
     startWave(1);
+    return;
+  }
+
+  if (STATE.phase === 'WAVE_COMPLETE') {
+    if (STATE.waveCompleteAdvanceFn) STATE.waveCompleteAdvanceFn();
     return;
   }
 
@@ -965,11 +1019,13 @@ function completeConnection(dotA, dotB) {
     dotA: dotA.id,
     dotB: dotB.id,
     colorIndex: dotA.colorIndex,
+    pairId: dotA.pairId,
     segments: pathToSegments(STATE.currentPath),
   });
 
   const fadingLine = {
     colorIndex: dotA.colorIndex,
+    pairId: dotA.pairId,
     points: STATE.currentPath.map(p => ({ x: p.x, y: p.y, alpha: 1.0 })),
     fadeIndex: 0,
     complete: false,
@@ -1040,6 +1096,7 @@ function checkWaveComplete() {
   if (!allConnected) return;
 
   STATE.phase = 'WAVE_COMPLETE';
+  STATE.waveCompleteAdvancing = false;
 
   // The full song is already playing at this point — every pair's chunk
   // was unmuted as it connected, so the last connection simply completes
@@ -1048,24 +1105,40 @@ function checkWaveComplete() {
 
   haptic('waveComplete');
 
-  showMessage('WAVE COMPLETE', 'wave ' + STATE.wave);
+  showMessage('WAVE COMPLETE', 'wave ' + STATE.wave + '  —  tap or press a key to continue');
   fillRemainingStarfield();
   fillSpaceGalaxy();
 
   STATE.score += STATE.wave * 100;
 
-  // The song plays for a short listen window, then the fade-out begins —
-  // the fade cuts the song off gracefully (volume ramps to silence in sync
-  // with the visual fade) rather than waiting for the whole song to finish.
-  setTimeout(() => {
+  const advance = () => {
+    if (STATE.waveCompleteAdvancing) return; // timer and a tap/key both fired — only run once
+    STATE.waveCompleteAdvancing = true;
+    STATE.waveCompleteAdvanceFn = null;
+    if (STATE.waveCompleteTimer) { clearTimeout(STATE.waveCompleteTimer); STATE.waveCompleteTimer = null; }
     STATE.beatSync = null;
     startFadeToBlack(() => {
       hideMessage();
       STATE.stars = [];
+      STATE.waveCompleteAdvancing = false;
       startWave(STATE.wave + 1);
       startFadeFromBlack();
     });
-  }, CONFIG.WAVE_COMPLETE_LISTEN_SEC * 1000);
+  };
+  STATE.waveCompleteAdvanceFn = advance; // callable from a tap/click/key press
+
+  // Let the song play out to the end of its current pass through the loop
+  // rather than cutting it off after a fixed window — the player can still
+  // advance early with a tap or key press.
+  let waitSec = CONFIG.WAVE_COMPLETE_LISTEN_SEC; // fallback if audio never unlocked
+  if (STATE.audioCtx && STATE.songStartTime != null) {
+    const beatDur = 60 / STATE.song.genre.bpm;
+    const loopDuration = STATE.song.totalBeats * beatDur;
+    const elapsed = STATE.audioCtx.currentTime - STATE.songStartTime;
+    const elapsedInLoop = ((elapsed % loopDuration) + loopDuration) % loopDuration;
+    waitSec = loopDuration - elapsedInLoop;
+  }
+  STATE.waveCompleteTimer = setTimeout(advance, waitSec * 1000);
 }
 
 function startWave(waveNumber) {
@@ -1079,6 +1152,7 @@ function startWave(waveNumber) {
   STATE.isDrawing = false;
   STATE.spaceObjects = [];
   STATE.spaceSpawnTimer = 0;
+  fillBaseStarfield();
 
   const pairCount = getPairCountForWave(waveNumber);
   STATE.song = generateSong(pairCount);
@@ -1184,7 +1258,16 @@ function drawFadeOverlay() {
 function getBarrierCountForWave(wave) {
   if (wave < BARRIER_CONFIG.START_WAVE) return 0;
   const extra = Math.floor((wave - BARRIER_CONFIG.START_WAVE) / BARRIER_CONFIG.WAVES_PER_BARRIER);
-  return Math.min(1 + extra, BARRIER_CONFIG.MAX_BARRIERS);
+  const base = Math.min(1 + extra, BARRIER_CONFIG.MAX_BARRIERS);
+  // A little per-wave variance so the count isn't perfectly predictable.
+  const jitter = Math.random() < 0.3 ? (Math.random() < 0.5 ? -1 : 1) : 0;
+  return Math.max(0, Math.min(BARRIER_CONFIG.MAX_BARRIERS, base + jitter));
+}
+
+function getRotatingCountForWave(wave) {
+  if (wave < BARRIER_CONFIG.ROTATION_START_WAVE) return 0;
+  const extra = Math.floor((wave - BARRIER_CONFIG.ROTATION_START_WAVE) / BARRIER_CONFIG.ROTATION_WAVES_PER_BARRIER);
+  return Math.min(1 + extra, BARRIER_CONFIG.MAX_ROTATING);
 }
 
 function distPointToSegment(px, py, x1, y1, x2, y2) {
@@ -1203,31 +1286,113 @@ function segmentClearsAllDots(x1, y1, x2, y2, dots) {
   return true;
 }
 
+function barrierEndpoints(pivotX, pivotY, angle, length) {
+  const hx = Math.cos(angle) * length / 2;
+  const hy = Math.sin(angle) * length / 2;
+  return { x1: pivotX - hx, y1: pivotY - hy, x2: pivotX + hx, y2: pivotY + hy };
+}
+
+// Places each barrier to actually cross the straight line between one
+// color pair's two dots — at a random point along that line (not always
+// the middle) and at a near-perpendicular angle — so it genuinely blocks
+// the direct path between them instead of landing wherever chance puts it.
+// Higher waves add slowly-rotating barriers that break any already-drawn
+// connection they sweep through (see checkRotatingBarrierBreaks).
 function generateBarriers(wave, dots) {
   const count = getBarrierCountForWave(wave);
+  const rotatingCount = Math.min(count, getRotatingCountForWave(wave));
+  const pairCount = dots.length / 2;
   const barriers = [];
+  const targetedPairs = new Set();
   let attempts = 0;
 
-  while (barriers.length < count && attempts < 300) {
+  while (barriers.length < count && attempts < 400) {
     attempts++;
-    const angle = Math.random() * Math.PI * 2;
+    const untargeted = [];
+    for (let p = 0; p < pairCount; p++) if (!targetedPairs.has(p)) untargeted.push(p);
+    const pool = untargeted.length ? untargeted : [...Array(pairCount).keys()];
+    const pairId = pool[Math.floor(Math.random() * pool.length)];
+
+    const [a, b] = dots.filter(d => d.pairId === pairId);
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const pairDist = Math.hypot(dx, dy);
+    if (pairDist < 40) continue; // too close together to usefully block
+
+    const t = BARRIER_CONFIG.PAIR_LINE_MIN_T + Math.random() * (BARRIER_CONFIG.PAIR_LINE_MAX_T - BARRIER_CONFIG.PAIR_LINE_MIN_T);
+    const pivotX = a.x + dx * t, pivotY = a.y + dy * t;
+
+    const lineAngle = Math.atan2(dy, dx);
+    const angle = lineAngle + Math.PI / 2 + (Math.random() - 0.5) * BARRIER_CONFIG.ANGLE_JITTER;
     const length = BARRIER_CONFIG.MIN_LENGTH + Math.random() * (BARRIER_CONFIG.MAX_LENGTH - BARRIER_CONFIG.MIN_LENGTH);
-    const cx = CONFIG.EDGE_MARGIN + Math.random() * (canvas.width - CONFIG.EDGE_MARGIN * 2);
-    const cy = CONFIG.EDGE_MARGIN + Math.random() * (canvas.height - CONFIG.EDGE_MARGIN * 2);
-    const x1 = cx - Math.cos(angle) * length / 2;
-    const y1 = cy - Math.sin(angle) * length / 2;
-    const x2 = cx + Math.cos(angle) * length / 2;
-    const y2 = cy + Math.sin(angle) * length / 2;
+
+    const { x1, y1, x2, y2 } = barrierEndpoints(pivotX, pivotY, angle, length);
 
     const c = BARRIER_CONFIG.SCREEN_CLEARANCE;
     if (x1 < c || x1 > canvas.width - c || x2 < c || x2 > canvas.width - c) continue;
     if (y1 < c || y1 > canvas.height - c || y2 < c || y2 > canvas.height - c) continue;
     if (!segmentClearsAllDots(x1, y1, x2, y2, dots)) continue;
 
-    barriers.push({ x1, y1, x2, y2 });
+    const rotating = barriers.length < rotatingCount;
+    const speed = Math.min(
+      BARRIER_CONFIG.ROTATION_SPEED_MAX,
+      BARRIER_CONFIG.ROTATION_SPEED_BASE + wave * BARRIER_CONFIG.ROTATION_SPEED_PER_WAVE
+    );
+    barriers.push({
+      x1, y1, x2, y2,
+      pivotX, pivotY, angle, length,
+      rotating,
+      angularSpeed: rotating ? speed * (Math.random() < 0.5 ? -1 : 1) : 0,
+      targetPairId: pairId,
+    });
+    targetedPairs.add(pairId);
   }
 
   return barriers;
+}
+
+// Advances every rotating barrier's angle and recomputes its endpoints —
+// called once per frame from update().
+function updateBarriers() {
+  for (const b of STATE.barriers) {
+    if (!b.rotating) continue;
+    b.angle += b.angularSpeed;
+    const { x1, y1, x2, y2 } = barrierEndpoints(b.pivotX, b.pivotY, b.angle, b.length);
+    b.x1 = x1; b.y1 = y1; b.x2 = x2; b.y2 = y2;
+  }
+}
+
+// A spinning barrier that sweeps into an already-completed connection snaps
+// it — the player has to route around rotating barriers while still
+// finishing the puzzle, not just avoid them once and forget about them.
+// Only checked while still actively playing (not during the post-completion
+// listen/fade), since by then the puzzle's already been solved.
+function checkRotatingBarrierBreaks() {
+  if (STATE.phase !== 'PLAYING') return;
+  for (const b of STATE.barriers) {
+    if (!b.rotating) continue;
+    for (let i = STATE.connections.length - 1; i >= 0; i--) {
+      const conn = STATE.connections[i];
+      for (const seg of conn.segments) {
+        if (segmentsIntersect(seg, { x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 })) {
+          breakConnection(conn, i, (b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2);
+          break;
+        }
+      }
+    }
+  }
+}
+
+function breakConnection(conn, index, sparkX, sparkY) {
+  const dotA = STATE.dots.find(d => d.id === conn.dotA);
+  const dotB = STATE.dots.find(d => d.id === conn.dotB);
+  if (dotA) dotA.connected = false;
+  if (dotB) dotB.connected = false;
+
+  STATE.connections.splice(index, 1);
+  STATE.lines = STATE.lines.filter(l => l.pairId !== conn.pairId);
+  spawnBreakSparks(sparkX, sparkY, conn.colorIndex);
+  remuteChunk(conn.pairId);
+  haptic('break');
 }
 
 function pathCrossesBarriers(path) {
@@ -1243,32 +1408,112 @@ function pathCrossesBarriers(path) {
 function drawBarriers() {
   ctx.save();
   ctx.lineCap = 'round';
-  ctx.lineWidth = 8;
-  ctx.setLineDash([14, 10]);
-  ctx.strokeStyle = 'rgba(255,60,60,0.6)';
-  ctx.shadowBlur = 18;
-  ctx.shadowColor = '#ff3c3c';
   for (const b of STATE.barriers) {
+    if (b.rotating) {
+      ctx.lineWidth = 7;
+      ctx.setLineDash([]);
+      ctx.strokeStyle = 'rgba(255,140,40,0.75)';
+      ctx.shadowBlur = 24;
+      ctx.shadowColor = '#ff8c28';
+    } else {
+      ctx.lineWidth = 8;
+      ctx.setLineDash([14, 10]);
+      ctx.strokeStyle = 'rgba(255,60,60,0.6)';
+      ctx.shadowBlur = 18;
+      ctx.shadowColor = '#ff3c3c';
+    }
     ctx.beginPath();
     ctx.moveTo(b.x1, b.y1);
     ctx.lineTo(b.x2, b.y2);
     ctx.stroke();
+
+    if (b.rotating) {
+      // Small end-caps read as a spinning blade/pendulum rather than a wall.
+      ctx.shadowBlur = 10;
+      for (const [ex, ey] of [[b.x1, b.y1], [b.x2, b.y2]]) {
+        ctx.beginPath();
+        ctx.fillStyle = '#ffcf9e';
+        ctx.arc(ex, ey, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   }
   ctx.restore();
+}
+
+// Brief radial particle burst marking where a rotating barrier snapped a
+// connection — the visual "snap" to go with the line disappearing instantly
+// instead of its usual slow ambient fade.
+function spawnBreakSparks(x, y, colorIndex) {
+  const count = 10;
+  for (let i = 0; i < count; i++) {
+    const angle = (i / count) * Math.PI * 2 + Math.random() * 0.3;
+    const speed = 1.5 + Math.random() * 2.5;
+    STATE.breakSparks.push({
+      x, y, colorIndex,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1.0,
+    });
+  }
+}
+
+function updateBreakSparks() {
+  for (const s of STATE.breakSparks) {
+    s.x += s.vx;
+    s.y += s.vy;
+    s.vx *= 0.94;
+    s.vy *= 0.94;
+    s.life -= 0.045;
+  }
+  STATE.breakSparks = STATE.breakSparks.filter(s => s.life > 0);
+}
+
+function drawBreakSparks() {
+  for (const s of STATE.breakSparks) {
+    const instrument = INSTRUMENTS[s.colorIndex];
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, s.life);
+    ctx.shadowBlur = 14;
+    ctx.shadowColor = instrument.hex;
+    ctx.beginPath();
+    ctx.fillStyle = '#ffffff';
+    ctx.arc(s.x, s.y, 3 * s.life + 1, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
 }
 
 // ============================================================
 // SECTION 7C: STARFIELD & SPACE BACKGROUND
 // ============================================================
 function makeStar(x, y) {
+  const twinkling = Math.random() < STARFIELD_CONFIG.TWINKLE_FRACTION;
   return {
     x, y,
     radius: 0.6 + Math.random() * 1.6,
     targetAlpha: 0.35 + Math.random() * 0.55,
     alpha: 0,
+    twinkling,
     twinklePhase: Math.random() * Math.PI * 2,
-    twinkleSpeed: STARFIELD_CONFIG.TWINKLE_SPEED_MIN + Math.random() * (STARFIELD_CONFIG.TWINKLE_SPEED_MAX - STARFIELD_CONFIG.TWINKLE_SPEED_MIN),
+    twinkleSpeed: twinkling
+      ? STARFIELD_CONFIG.TWINKLE_SPEED_MIN + Math.random() * (STARFIELD_CONFIG.TWINKLE_SPEED_MAX - STARFIELD_CONFIG.TWINKLE_SPEED_MIN)
+      : 0,
   };
+}
+
+// An ambient starfield covering the whole canvas, scaled to its area so a
+// wide desktop window looks as full as a narrow phone screen instead of
+// showing big empty gaps — filled once at the start of every wave, before
+// any connection-triggered bursts add more on top.
+function fillBaseStarfield() {
+  const targetCount = Math.min(
+    STARFIELD_CONFIG.MAX_STARS,
+    Math.round((canvas.width * canvas.height) / STARFIELD_CONFIG.AREA_PER_BASE_STAR)
+  );
+  while (STATE.stars.length < targetCount) {
+    STATE.stars.push(makeStar(Math.random() * canvas.width, Math.random() * canvas.height));
+  }
 }
 
 function spawnStarsAroundDots(dotA, dotB) {
@@ -1293,13 +1538,13 @@ function fillRemainingStarfield() {
 function updateStars() {
   for (const s of STATE.stars) {
     if (s.alpha < s.targetAlpha) s.alpha = Math.min(s.targetAlpha, s.alpha + STARFIELD_CONFIG.STAR_FADE_IN_SPEED);
-    s.twinklePhase += s.twinkleSpeed;
+    if (s.twinkling) s.twinklePhase += s.twinkleSpeed;
   }
 }
 
 function drawStars() {
   for (const s of STATE.stars) {
-    const twinkle = 0.7 + 0.3 * Math.sin(s.twinklePhase);
+    const twinkle = s.twinkling ? 0.7 + 0.3 * Math.sin(s.twinklePhase) : 1;
     ctx.beginPath();
     ctx.fillStyle = `rgba(255,255,255,${(s.alpha * twinkle).toFixed(3)})`;
     ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
@@ -1435,6 +1680,7 @@ function haptic(type) {
     switch (type) {
       case 'connect': navigator.vibrate(40); break;
       case 'reject': navigator.vibrate([20, 30, 20]); break;
+      case 'break': navigator.vibrate([15, 25, 40]); break;
       case 'waveComplete': navigator.vibrate([80, 40, 80, 40, 120]); break;
     }
   } catch (e) {
@@ -1489,6 +1735,9 @@ function update() {
   // Asteroids/satellites/comets only drift through once the whole wave's
   // line-galaxy is complete — they'd be a distraction while still connecting.
   if (STATE.phase === 'WAVE_COMPLETE') updateSpaceObjects();
+  updateBarriers();
+  checkRotatingBarrierBreaks();
+  updateBreakSparks();
   updateFade();
 }
 
@@ -1504,6 +1753,7 @@ function render() {
   }
 
   drawActiveLine();
+  drawBreakSparks();
 
   for (const dot of STATE.dots) {
     drawDot(dot);

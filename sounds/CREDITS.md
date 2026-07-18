@@ -28,9 +28,11 @@ recorded as chromatic-scale takes (12+ notes per file, anechoic chamber,
 already one note per file. Each was trimmed to ~1.8-2.2s with a fade-out,
 downmixed to mono, and compressed to Ogg Vorbis.
 
-Dynamics used: piano/cello/trumpet at mf ("mezzo-forte"), flute at ff
-("forte"), double bass at mf pizzicato, marimba (yarn mallet) and
-vibraphone (sustain, motor off) at ff.
+Dynamics used: piano/cello/trumpet at mf ("mezzo-forte"), flute at pp
+("pianissimo", non-vibrato — the original ff/forte take was bright enough
+to read as a car horn to some listeners, so it was re-extracted quieter),
+double bass at mf pizzicato, marimba (yarn mallet) and vibraphone
+(sustain, motor off) at ff.
 
 In-game, these samples are pitch-shifted (via Web Audio's
 `playbackRate`) to notes between the ones actually sampled, so a
