@@ -24,10 +24,9 @@ const CONFIG = {
   BEAT_BPM: 60,
 
   // Wave
-  STARTING_PAIRS: 6,         // TEMP DIAGNOSTIC: all 6 candidates visible on wave 1 — revert to 3
+  STARTING_PAIRS: 3,         // Number of color pairs in Wave 1
   PAIRS_PER_WAVE_INCREASE: 2,// Add one pair every N waves
   MAX_PAIRS: 6,              // Maximum color pairs ever shown
-  WAVE_COMPLETE_LISTEN_SEC: 3.5, // how long the full song plays before the fade-out begins
 };
 
 const FADE_CONFIG = {
@@ -45,45 +44,14 @@ const INSTRUMENTS = [
   { hex: '#AA88FF', glow: 'rgba(170,136,255,', name: 'violet'  },
 ];
 
-// ============================================================
-// TEMPORARY DIAGNOSTIC BUILD v2 — v1 tested each candidate note ALONE and
-// none of them sounded bad. That was a flawed test: nearestSampleNote picks
-// the truly closest sample when a note plays solo, so a note that only
-// gets pushed to a distant sample when COMPETING with other simultaneous
-// notes (a real chord) played fine in isolation — it was silently testing
-// a different, easier case. This build instead reproduces the actual
-// SIMULTANEOUS multi-voice moments from real gameplay: full pad chords
-// (3 cello voices at once) and pad+drone stacked together (4 voices at
-// once), taken directly from real generated songs, not guessed. The real
-// 4-genre spa arrangement is preserved further below, commented out, and
-// this whole change will be reverted via `git revert` once identified.
-//
-// Dot color -> candidate (colors are NOT shuffled, mapping is fixed):
-//   crystal (cyan)   -> single clean note, no shift (baseline reference)
-//   bloom (magenta)  -> "warm stone" bar-1 pad chord: A4 + Bb4(->Db5,+3) + Ab4(->E5,+8)
-//   gold             -> "ocean mist" bar-2 pad chord: Bb4(->C5,+2) + A4(->E5,+7) + G4
-//   jade (green)     -> the warm stone chord PLUS its drone note, 4 voices at once
-//   ember (orange)   -> a "comfortable" pad chord for comparison: C4+E4+G4, no shifts
-//   violet           -> the warm stone chord repeated fast (every beat, not every bar)
-//     to test whether overlapping decay tails from rapid retriggering is the issue
-// ============================================================
-const GENRES = [
-  {
-    name: 'diagnostic', bpm: 50, rootMidi: 69,
-    scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
-    chordProgression: [0],
-    roles: [
-      { kind: 'diagNote',  instrument: 'cello', diagMidi: 69, label: 'clean reference (A4, no shift)' },
-      { kind: 'diagChord', instrument: 'cello', diagMidiList: [69, 73, 76], label: 'warm stone bar1 chord' },
-      { kind: 'diagChord', instrument: 'cello', diagMidiList: [70, 74, 67], label: 'ocean mist bar2 chord' },
-      { kind: 'diagStack', instrument: 'cello', diagMidiList: [69, 73, 76], diagDrone: 57, label: 'chord + drone, 4 voices' },
-      { kind: 'diagChord', instrument: 'cello', diagMidiList: [60, 64, 67], label: 'comfortable chord (no shifts)' },
-      { kind: 'diagFast',  instrument: 'cello', diagMidiList: [69, 73, 76], label: 'warm stone chord, fast retrigger' },
-    ],
-  },
-];
-
-/* --- REAL GENRES (restore this on revert) ---
+// Procedural song genres — all tuned to sound like something you'd hear
+// during a spa treatment or massage: slow tempo, a plain major scale, and
+// chord progressions restricted to I/IV/V/vi (every triad consonant, no
+// diminished/tense chords). Each genre is a different combination of real
+// instrument voices in different registers/roles so replaying gives a
+// different-sounding but equally calm arrangement — the same curated
+// palette, recombined. See sounds/CREDITS.md for instrument sourcing
+// (University of Iowa Musical Instrument Samples, free for any use).
 const GENRES = [
   {
     name: 'serenity', bpm: 56, rootMidi: 60,
@@ -138,7 +106,6 @@ const GENRES = [
     ],
   },
 ];
---- END REAL GENRES --- */
 
 // Note: trumpet and double bass sample files remain in sounds/ from an
 // earlier, more upbeat set of genres but are omitted here (and so never
@@ -160,7 +127,8 @@ const STARFIELD_CONFIG = {
   MAX_STARS: 3000,
   STARS_PER_CONNECTION: 40,
   CONNECTION_STAR_RADIUS: 100,   // scatter radius around each connected dot
-  STAR_FADE_IN_SPEED: 0.02,
+  STAR_FADE_IN_SPEED: 0.02,      // per-connection sparkle — quick, so it reads as immediate feedback
+  REVEAL_FADE_IN_SPEED: 0.004,   // wave-complete galaxy reveal — slow, so it reads as a gradual unveiling
   TWINKLE_FRACTION: 0.25,     // only a minority of stars twinkle — the rest sit still
   TWINKLE_SPEED_MIN: 0.01,
   TWINKLE_SPEED_MAX: 0.03,
@@ -233,13 +201,11 @@ const STATE = {
   beatTick: 0,         // Increments each beat
 
   song: null,          // Procedurally generated song for the current wave
-  songStartTime: null, // audioCtx.currentTime the current song loop was scheduled from
   beatSync: null,      // { startTime, bpm } — drives unison dot pulsing while the full song plays
   fade: null,          // { alpha, direction: 'out'|'in'|'idle', onComplete } — canvas black transition between waves
 
-  waveCompleteAdvanceFn: null, // set while WAVE_COMPLETE; call to advance early (tap/key), null once fired
-  waveCompleteTimer: null,     // fallback timer that fires when the song's current loop pass ends
-  waveCompleteAdvancing: false, // guards against the timer and a tap/key both triggering the advance
+  waveCompleteAdvanceFn: null,  // set while WAVE_COMPLETE; call to advance to the next wave (tap/key)
+  waveCompleteAdvancing: false, // guards against a tap and a key press both triggering the advance at once
 
   activeSources: [],   // Every scheduled oscillator/buffer source currently pending or playing —
                         // tracked so a wave transition can hard-stop everything, not just mute it.
@@ -610,28 +576,6 @@ function generateSong(pairCount) {
           midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 1)),
           role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
         });
-      } else if (kind === 'diagNote') {
-        // DIAGNOSTIC: a single note repeated every quarter note, isolated.
-        for (let step = 0; step < stepsPerBar; step += 2) {
-          notes.push({ beat: barStartBeat + step * 0.5, midi: roleDef.diagMidi, role: 'melody', instrument, vel: 1.0, chunkIndex });
-        }
-      } else if (kind === 'diagChord') {
-        // DIAGNOSTIC: the literal 3-note chord repeated every bar, exactly
-        // as the real pad role would play it (via playSampleChord).
-        notes.push({ beat: barStartBeat, midiList: roleDef.diagMidiList, role: 'pad', instrument, vel: 1.0, chunkIndex });
-      } else if (kind === 'diagStack') {
-        // DIAGNOSTIC: the chord PLUS a simultaneous drone note — 4 cello
-        // voices attacking at the exact same instant, every bar.
-        notes.push({ beat: barStartBeat, midiList: roleDef.diagMidiList, role: 'pad', instrument, vel: 1.0, chunkIndex });
-        notes.push({ beat: barStartBeat, midi: roleDef.diagDrone, role: 'drone', instrument, vel: 1.0, chunkIndex });
-      } else if (kind === 'diagFast') {
-        // DIAGNOSTIC: same chord as diagChord but retriggered every beat
-        // instead of every bar, to test whether overlapping decay tails
-        // from rapid repetition (not present in a slower real bar-length
-        // gap) is the source of the bad sound.
-        for (let step = 0; step < stepsPerBar; step += 2) {
-          notes.push({ beat: barStartBeat + step * 0.5, midiList: roleDef.diagMidiList, role: 'pad', instrument, vel: 1.0, chunkIndex });
-        }
       }
     }
   });
@@ -683,7 +627,6 @@ function scheduleLoopingSong(song) {
   const beatDur = 60 / song.genre.bpm;
   const loopDuration = song.totalBeats * beatDur;
   const startTime = ctx.currentTime + 0.05;
-  STATE.songStartTime = startTime; // lets checkWaveComplete find when the current loop pass ends
 
   STATE.chunkGains.forEach(g => { try { g.disconnect(); } catch (e) { /* already gone */ } });
   STATE.chunkGains = [];
@@ -955,9 +898,7 @@ function generateDots(wave) {
   const dots = [];
   let idCounter = 0;
 
-  // TEMP DIAGNOSTIC: unshuffled so color -> candidate mapping is fixed and
-  // reportable (see the GENRES comment above) — revert to the shuffled line.
-  const shuffledInstruments = [...Array(INSTRUMENTS.length).keys()].slice(0, pairCount);
+  const shuffledInstruments = shuffleArray([...Array(INSTRUMENTS.length).keys()]).slice(0, pairCount);
 
   for (let pairId = 0; pairId < pairCount; pairId++) {
     const colorIndex = shuffledInstruments[pairId];
@@ -1235,11 +1176,13 @@ function checkWaveComplete() {
 
   STATE.score += STATE.wave * 100;
 
+  // The song keeps looping (already playing in full) for as long as the
+  // player lingers here — there's no auto-advance. Only a tap, click, or
+  // key press moves on to the next wave.
   const advance = () => {
-    if (STATE.waveCompleteAdvancing) return; // timer and a tap/key both fired — only run once
+    if (STATE.waveCompleteAdvancing) return; // guard against a double-fire from tap + key together
     STATE.waveCompleteAdvancing = true;
     STATE.waveCompleteAdvanceFn = null;
-    if (STATE.waveCompleteTimer) { clearTimeout(STATE.waveCompleteTimer); STATE.waveCompleteTimer = null; }
     STATE.beatSync = null;
     startFadeToBlack(() => {
       hideMessage();
@@ -1250,19 +1193,6 @@ function checkWaveComplete() {
     });
   };
   STATE.waveCompleteAdvanceFn = advance; // callable from a tap/click/key press
-
-  // Let the song play out to the end of its current pass through the loop
-  // rather than cutting it off after a fixed window — the player can still
-  // advance early with a tap or key press.
-  let waitSec = CONFIG.WAVE_COMPLETE_LISTEN_SEC; // fallback if audio never unlocked
-  if (STATE.audioCtx && STATE.songStartTime != null) {
-    const beatDur = 60 / STATE.song.genre.bpm;
-    const loopDuration = STATE.song.totalBeats * beatDur;
-    const elapsed = STATE.audioCtx.currentTime - STATE.songStartTime;
-    const elapsedInLoop = ((elapsed % loopDuration) + loopDuration) % loopDuration;
-    waitSec = loopDuration - elapsedInLoop;
-  }
-  STATE.waveCompleteTimer = setTimeout(advance, waitSec * 1000);
 }
 
 function startWave(waveNumber) {
@@ -1610,13 +1540,14 @@ function drawBreakSparks() {
 // ============================================================
 // SECTION 7C: STARFIELD & SPACE BACKGROUND
 // ============================================================
-function makeStar(x, y) {
+function makeStar(x, y, fadeSpeed) {
   const twinkling = Math.random() < STARFIELD_CONFIG.TWINKLE_FRACTION;
   return {
     x, y,
     radius: 0.6 + Math.random() * 1.6,
     targetAlpha: 0.35 + Math.random() * 0.55,
     alpha: 0,
+    fadeSpeed,
     twinkling,
     twinklePhase: Math.random() * Math.PI * 2,
     twinkleSpeed: twinkling
@@ -1629,14 +1560,16 @@ function makeStar(x, y) {
 // area so a wide desktop window ends up as full as a narrow phone screen
 // instead of showing big empty gaps. Called when the wave completes, as a
 // reveal — while still playing, only the sparse stars scattered around
-// each connected dot (spawnStarsAroundDots) are visible.
+// each connected dot (spawnStarsAroundDots) are visible. Fades in slowly
+// (REVEAL_FADE_IN_SPEED) so it reads as a gradual unveiling rather than a
+// sudden pop-in.
 function fillBaseStarfield() {
   const targetCount = Math.min(
     STARFIELD_CONFIG.MAX_STARS,
     Math.round((canvas.width * canvas.height) / STARFIELD_CONFIG.AREA_PER_BASE_STAR)
   );
   while (STATE.stars.length < targetCount) {
-    STATE.stars.push(makeStar(Math.random() * canvas.width, Math.random() * canvas.height));
+    STATE.stars.push(makeStar(Math.random() * canvas.width, Math.random() * canvas.height, STARFIELD_CONFIG.REVEAL_FADE_IN_SPEED));
   }
 }
 
@@ -1647,14 +1580,14 @@ function spawnStarsAroundDots(dotA, dotB) {
       if (STATE.stars.length >= STARFIELD_CONFIG.MAX_STARS) return;
       const angle = Math.random() * Math.PI * 2;
       const dist = Math.random() * STARFIELD_CONFIG.CONNECTION_STAR_RADIUS;
-      STATE.stars.push(makeStar(dot.x + Math.cos(angle) * dist, dot.y + Math.sin(angle) * dist));
+      STATE.stars.push(makeStar(dot.x + Math.cos(angle) * dist, dot.y + Math.sin(angle) * dist, STARFIELD_CONFIG.STAR_FADE_IN_SPEED));
     }
   }
 }
 
 function updateStars() {
   for (const s of STATE.stars) {
-    if (s.alpha < s.targetAlpha) s.alpha = Math.min(s.targetAlpha, s.alpha + STARFIELD_CONFIG.STAR_FADE_IN_SPEED);
+    if (s.alpha < s.targetAlpha) s.alpha = Math.min(s.targetAlpha, s.alpha + s.fadeSpeed);
     if (s.twinkling) s.twinklePhase += s.twinkleSpeed;
   }
 }
@@ -1702,11 +1635,9 @@ function spawnSpaceObject(startX) {
   STATE.spaceObjects.push(obj);
 }
 
-// The wave-complete listen window (CONFIG.WAVE_COMPLETE_LISTEN_SEC) is
-// shorter than the normal trickle-spawn interval, so objects gated to only
-// appear post-completion would otherwise never have time to show up at all.
-// Populate the whole galaxy at once, already scattered on-screen, right
-// when the wave completes.
+// The normal trickle-spawn is too slow to populate the sky in a reasonable
+// time on its own. Populate the whole galaxy at once, already scattered
+// on-screen, right when the wave completes.
 function fillSpaceGalaxy() {
   STATE.spaceObjects = [];
   for (let i = 0; i < SPACE_CONFIG.MAX_OBJECTS; i++) {
