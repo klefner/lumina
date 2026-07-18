@@ -231,16 +231,34 @@ function initAudio() {
   if (!STATE.audioCtx) {
     STATE.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-    // Master bus: gain + compressor so many overlapping notes (the full-song
-    // finale) don't clip, and so per-note volumes can stay comfortably audible
-    // on phone speakers. Tuned aggressively (low threshold, high ratio, fast
-    // attack) to act as a safety limiter against dense polyphony.
+    // Master bus: gain + compressor, tuned as a true peak LIMITER rather
+    // than an always-on processor. This was originally tuned aggressively
+    // (threshold -32dB, ratio 16:1) back when the game used loud
+    // synthesized voices, and never revisited after the move to real
+    // sample-based instruments, whose per-note peaks were carefully tuned
+    // down to ~0.35-0.6 (roughly -9 to -4dB). At -32dB, that old threshold
+    // sat far BELOW our actual signal level, so the compressor was engaged
+    // almost constantly, applying ~20+dB of gain reduction that varied
+    // sharply with how many voices were simultaneously active — i.e. it
+    // was crushing and pumping hardest exactly when a new voice entered,
+    // such as right when connecting a pair. That's a very plausible source
+    // of an unnatural, blaring swell on sustained instruments (cello/
+    // strings) — likely the actual "car horn" cause diagnostic note/chord
+    // isolation testing could never reproduce, since those tests never had
+    // the rest of the arrangement playing to trigger heavy compression
+    // alongside them. Threshold is now set just below where the signal
+    // would actually clip, with a hard knee and a heavy ratio, so it's
+    // fully transparent (zero gain reduction) for the vast majority of
+    // normal playback and only clamps down on the rare moment several
+    // voices' peaks genuinely stack up close to 0dBFS — verified against
+    // a real overload case (see test notes) that the old settings were
+    // otherwise silently relying on to avoid hard clipping.
     const compressor = STATE.audioCtx.createDynamicsCompressor();
-    compressor.threshold.value = -32;
-    compressor.knee.value = 12;
-    compressor.ratio.value = 16;
-    compressor.attack.value = 0.002;
-    compressor.release.value = 0.2;
+    compressor.threshold.value = -3;
+    compressor.knee.value = 0;
+    compressor.ratio.value = 20;
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.15;
     const masterGain = STATE.audioCtx.createGain();
     masterGain.gain.value = 1.0;
     compressor.connect(masterGain);
