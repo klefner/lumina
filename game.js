@@ -24,7 +24,7 @@ const CONFIG = {
   BEAT_BPM: 60,
 
   // Wave
-  STARTING_PAIRS: 3,         // Number of color pairs in Wave 1
+  STARTING_PAIRS: 6,         // TEMP DIAGNOSTIC: all 6 candidates visible on wave 1 — revert to 3
   PAIRS_PER_WAVE_INCREASE: 2,// Add one pair every N waves
   MAX_PAIRS: 6,              // Maximum color pairs ever shown
   WAVE_COMPLETE_LISTEN_SEC: 3.5, // how long the full song plays before the fade-out begins
@@ -45,14 +45,41 @@ const INSTRUMENTS = [
   { hex: '#AA88FF', glow: 'rgba(170,136,255,', name: 'violet'  },
 ];
 
-// Procedural song genres — all tuned to sound like something you'd hear
-// during a spa treatment or massage: slow tempo, a plain major scale, and
-// chord progressions restricted to I/IV/V/vi (every triad consonant, no
-// diminished/tense chords). Each genre is a different combination of real
-// instrument voices in different registers/roles (see ROLE_KINDS below) so
-// replaying gives a different-sounding but equally calm arrangement — the
-// same curated palette, recombined. See sounds/CREDITS.md for instrument
-// sourcing (University of Iowa Musical Instrument Samples, free for any use).
+// ============================================================
+// TEMPORARY DIAGNOSTIC BUILD — isolates candidate cello pitch-shift amounts
+// to identify the source of a reported bad "string" sound. Each of the 6
+// dot pairs plays ONE candidate note in isolation, repeated, cello only,
+// no chords — so whichever one sounds bad can be pinned down precisely.
+// The real 4-genre spa arrangement (serenity/moonlit pool/warm stone/ocean
+// mist) is preserved below, commented out, and this whole change will be
+// reverted via `git revert` once the candidate is identified.
+//
+// Dot color -> candidate (colors are NOT shuffled in this build, so the
+// mapping is fixed and reportable by color):
+//   crystal (cyan)   -> A4 exact match, NO pitch shift (clean reference)
+//   bloom (magenta)  -> Ab4 sample shifted +8 semitones (up a minor 6th)
+//   gold             -> A4 sample shifted +7 semitones (up a fifth)
+//   jade (green)     -> D3 sample shifted -5 semitones (down a fourth)
+//   ember (orange)   -> A4 sample shifted +5 semitones (up a fourth)
+//   violet           -> D3 sample shifted -2 semitones (down a whole step)
+// ============================================================
+const GENRES = [
+  {
+    name: 'diagnostic', bpm: 40, rootMidi: 69,
+    scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+    chordProgression: [0],
+    roles: [
+      { kind: 'diag', instrument: 'cello', diagMidi: 69, label: 'clean reference (A4, no shift)' },
+      { kind: 'diag', instrument: 'cello', diagMidi: 64, label: 'Ab4 +8 semitones' },
+      { kind: 'diag', instrument: 'cello', diagMidi: 76, label: 'A4 +7 semitones' },
+      { kind: 'diag', instrument: 'cello', diagMidi: 33, label: 'D3 -5 semitones' },
+      { kind: 'diag', instrument: 'cello', diagMidi: 74, label: 'A4 +5 semitones' },
+      { kind: 'diag', instrument: 'cello', diagMidi: 36, label: 'D3 -2 semitones' },
+    ],
+  },
+];
+
+/* --- REAL GENRES (restore this on revert) ---
 const GENRES = [
   {
     name: 'serenity', bpm: 56, rootMidi: 60,
@@ -107,6 +134,7 @@ const GENRES = [
     ],
   },
 ];
+--- END REAL GENRES --- */
 
 // Note: trumpet and double bass sample files remain in sounds/ from an
 // earlier, more upbeat set of genres but are omitted here (and so never
@@ -578,6 +606,17 @@ function generateSong(pairCount) {
           midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 1)),
           role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
         });
+      } else if (kind === 'diag') {
+        // DIAGNOSTIC: repeat the literal target note every quarter note,
+        // unfolded/unshifted-by-theory — reproduces the exact real-game
+        // pitch-shift amount continuously so it's easy to isolate by ear.
+        for (let step = 0; step < stepsPerBar; step += 2) {
+          notes.push({
+            beat: barStartBeat + step * 0.5,
+            midi: roleDef.diagMidi,
+            role: 'melody', instrument, vel: 1.0, chunkIndex,
+          });
+        }
       }
     }
   });
@@ -901,7 +940,9 @@ function generateDots(wave) {
   const dots = [];
   let idCounter = 0;
 
-  const shuffledInstruments = shuffleArray([...Array(INSTRUMENTS.length).keys()]).slice(0, pairCount);
+  // TEMP DIAGNOSTIC: unshuffled so color -> candidate mapping is fixed and
+  // reportable (see the GENRES comment above) — revert to the shuffled line.
+  const shuffledInstruments = [...Array(INSTRUMENTS.length).keys()].slice(0, pairCount);
 
   for (let pairId = 0; pairId < pairCount; pairId++) {
     const colorIndex = shuffledInstruments[pairId];
