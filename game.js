@@ -203,6 +203,8 @@ const STATE = {
   song: null,          // Procedurally generated song for the current wave
   songStartTime: null, // audioCtx.currentTime the current song loop was scheduled from — lets
                         // unmuteChunk find the next clean note onset instead of a mid-decay moment
+  songNextLoopIndex: 0, // how many loop passes have been scheduled so far — incremented as
+                         // maybeTopUpSongSchedule extends the schedule bit by bit over time
   beatSync: null,      // { startTime, bpm } — drives unison dot pulsing while the full song plays
   fade: null,          // { alpha, direction: 'out'|'in'|'idle', onComplete } — canvas black transition between waves
 
@@ -634,20 +636,68 @@ function capNoteGaps(notes, pairCount, totalBeats, maxGapBeats) {
   notes.push(...fillers);
 }
 
-const SONG_LOOP_ITERATIONS = 10; // generous coverage for a full wave's play session
+// A song can have ~40-90 notes per loop pass, several of which are chords
+// (multiple AudioBufferSourceNodes each). Scheduling many loop passes at
+// once used to mean creating and starting several hundred nodes in a single
+// synchronous burst the moment a wave starts — real gameplay audio capture
+// (spectrogram + waveform analysis of an actual recorded session) showed a
+// dense, off-grid glitch artifact starting exactly at the first audible
+// moment, consistent with the audio thread struggling to absorb a burst
+// that large. Scheduling is now spread out over time instead: a small
+// number of loop passes up front, topped up incrementally as playback
+// approaches running out (see maybeTopUpSongSchedule, called every frame).
+const INITIAL_LOOP_ITERATIONS = 2;
+const TOPUP_LOOP_ITERATIONS = 2;
 
-// Schedules the whole song, looped, for the entire wave up front — routed
-// through one persistent, initially-muted GainNode per pair (chunkGains).
-// Nothing is audible yet; connecting a pair just opens its gate. Because
-// the whole loop is already running underneath, every unmuted chunk stays
-// in perfect sync with every other one, and the build-up is continuous
-// rather than a one-shot replay.
-function scheduleLoopingSong(song) {
-  const ctx = STATE.audioCtx;
+// Schedules more loop passes of the current song, starting from wherever
+// scheduling last left off (STATE.songNextLoopIndex) — routed through the
+// persistent per-pair chunkGains, same as always. Nothing new is audible
+// from this alone; it just extends how far into the future notes exist.
+function scheduleMoreLoops(count) {
+  const song = STATE.song;
+  if (!song || STATE.songStartTime == null) return;
   const beatDur = 60 / song.genre.bpm;
   const loopDuration = song.totalBeats * beatDur;
+  for (let i = 0; i < count; i++) {
+    const loop = STATE.songNextLoopIndex;
+    const loopStart = STATE.songStartTime + loop * loopDuration;
+    song.notes.forEach(note => {
+      playScheduledNote(note, loopStart, beatDur, STATE.chunkGains[note.chunkIndex]);
+    });
+    STATE.songNextLoopIndex++;
+  }
+}
+
+// Called every frame (see update()) — schedules another batch of loop
+// passes once playback is within one loop-duration of running out of
+// already-scheduled notes, so the burst of node creation stays small and
+// spread out instead of happening all at once. One loop of safety margin
+// is exactly as far as nextNoteTimeForChunk ever looks ahead, so a
+// freshly-opened gate's next note is always already scheduled by the time
+// it needs to play, never landing on an as-yet-unscheduled gap. (Must stay
+// strictly less than INITIAL_LOOP_ITERATIONS's coverage, or the first
+// top-up fires immediately after the initial scheduling instead of later.)
+function maybeTopUpSongSchedule() {
+  if (!STATE.audioCtx || !STATE.song || STATE.songStartTime == null) return;
+  const beatDur = 60 / STATE.song.genre.bpm;
+  const loopDuration = STATE.song.totalBeats * beatDur;
+  const scheduledUntil = STATE.songStartTime + STATE.songNextLoopIndex * loopDuration;
+  if (scheduledUntil - STATE.audioCtx.currentTime < loopDuration) {
+    scheduleMoreLoops(TOPUP_LOOP_ITERATIONS);
+  }
+}
+
+// Sets up the persistent per-pair gate (chunkGains) and schedules the first
+// couple of loop passes — routed through one persistent, initially-muted
+// GainNode per pair. Nothing is audible yet; connecting a pair just opens
+// its gate. Because the whole loop is already running underneath, every
+// unmuted chunk stays in perfect sync with every other one, and the
+// build-up is continuous rather than a one-shot replay.
+function scheduleLoopingSong(song) {
+  const ctx = STATE.audioCtx;
   const startTime = ctx.currentTime + 0.05;
   STATE.songStartTime = startTime;
+  STATE.songNextLoopIndex = 0;
 
   STATE.chunkGains.forEach(g => { try { g.disconnect(); } catch (e) { /* already gone */ } });
   STATE.chunkGains = [];
@@ -663,12 +713,7 @@ function scheduleLoopingSong(song) {
     STATE.chunkGains.push(g);
   }
 
-  for (let loop = 0; loop < SONG_LOOP_ITERATIONS; loop++) {
-    const loopStart = startTime + loop * loopDuration;
-    song.notes.forEach(note => {
-      playScheduledNote(note, loopStart, beatDur, STATE.chunkGains[note.chunkIndex]);
-    });
-  }
+  scheduleMoreLoops(INITIAL_LOOP_ITERATIONS);
 }
 
 // Finds the next time (>= now) that this chunk has a note scheduled to
@@ -1843,6 +1888,7 @@ function update() {
   checkRotatingBarrierBreaks();
   updateBreakSparks();
   updateFade();
+  maybeTopUpSongSchedule();
 }
 
 function render() {
