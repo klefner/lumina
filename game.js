@@ -507,17 +507,17 @@ const CELESTIAL_TYPES = [
 // end at a constant speed, slow-to-fast per drip like a drop of wax
 // releasing and falling, rather than bouncing back and forth.
 const TRAVELING_LIGHT_CONFIG = {
-  RADIUS: 5,           // radius of the fat leading head
-  TAIL_LENGTH: 13,      // how far the tapered tail drags behind the head
+  RADIUS: 5,            // radius of the fat leading head
+  TAIL_LENGTH: 26,      // how far the tapered tail drags behind the head — long enough to read as clinging, wet wax, not a comet's spark
   // Constant physical speed for every connection's drip, regardless of the
   // line's own length — a long line's drip just takes proportionally
   // longer to cross it, rather than visibly outrunning a short line's.
   SPEED_PX_PER_BEAT: 50,
   MIN_BEATS_PER_TRAVERSAL: 0.8, // keeps a very short line from cycling absurdly fast
   // A new drip is born this often (in beats), same interval on every
-  // connection — smaller than MIN_BEATS_PER_TRAVERSAL so even the
-  // shortest line always has more than one drip in flight at a time.
-  SPAWN_INTERVAL_BEATS: 0.4,
+  // connection — wider than before specifically to leave the longer tail
+  // above room to stretch out without the next drip behind it crowding in.
+  SPAWN_INTERVAL_BEATS: 0.7,
 };
 
 const BARRIER_CONFIG = {
