@@ -2957,7 +2957,7 @@ function haptic(type) {
   if (!navigator.vibrate) return;
   try {
     switch (type) {
-      case 'connect': navigator.vibrate(40); break;
+      case 'connect': navigator.vibrate([16, 14, 16]); break; // a quick double-tap "ping" instead of one flat buzz
       case 'reject': navigator.vibrate([20, 30, 20]); break;
       case 'break': navigator.vibrate([15, 25, 40]); break;
       case 'waveComplete': navigator.vibrate([80, 40, 80, 40, 120]); break;
