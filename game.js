@@ -3014,6 +3014,10 @@ function exitToTitle() {
   STATE.celestialBodies = [];
   STATE.beatSync = null;
   STATE.song = null;
+  hideTutorialHint(); // in-wave UI must never linger over the title screen
+  document.getElementById('achievement-toast').classList.remove('visible');
+  STATE.achievementQueue = [];
+  STATE.achievementToastActive = false;
   if (STATE.audioCtx) stopAllScheduledAudio(STATE.audioCtx.currentTime);
 
   // Re-check for a save (e.g. one made via "Save Game" earlier this
