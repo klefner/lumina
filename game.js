@@ -340,68 +340,147 @@ const INSTRUMENTS = [
   { hex: '#AA88FF', glow: 'rgba(170,136,255,', name: 'violet'  },
 ];
 
-// Procedural song genres — all tuned to sound like something you'd hear
-// during a spa treatment or massage: slow tempo, a plain major scale, and
-// chord progressions restricted to I/IV/V/vi (every triad consonant, no
-// diminished/tense chords). Each genre is a different combination of real
-// instrument voices in different registers/roles so replaying gives a
-// different-sounding but equally calm arrangement — the same curated
-// palette, recombined. See sounds/CREDITS.md for instrument sourcing
-// (University of Iowa Musical Instrument Samples, free for any use).
-const GENRES = [
+// Genre FAMILIES bundle everything that should stay consistent across an
+// entire style (which chord types it uses, its rhythmic feel) — SEEDS
+// within a family vary tempo/key/chord-progression-order/instrument-role
+// assignment, same as a single "genre" always has. generateSong() picks a
+// family, then a seed within it, then merges the two into one flat
+// `genre` object so every existing call site (song.genre.bpm, etc.) keeps
+// working unchanged regardless of how many families exist.
+//
+// 'spa' is the only family right now — tuned to sound like something
+// you'd hear during a spa treatment or massage: slow tempo, a plain major
+// scale, chord progressions restricted to I/IV/V/vi (every triad
+// consonant, no diminished/tense chords). Each seed is a different
+// combination of real instrument voices in different registers/roles so
+// replaying gives a different-sounding but equally calm arrangement — the
+// same curated palette, recombined. See sounds/CREDITS.md for instrument
+// sourcing (University of Iowa Musical Instrument Samples, free for any
+// use).
+const GENRE_FAMILIES = [
   {
-    name: 'serenity', bpm: 56, rootMidi: 60,
-    scaleIntervals: [0, 2, 4, 5, 7, 9, 11], // Ionian (major)
-    chordProgression: [0, 3, 0, 4],          // I - IV - I - V
-    roles: [
-      { kind: 'melody',   instrument: 'flute' },
-      { kind: 'arpeggio', instrument: 'piano' },
-      { kind: 'pad',      instrument: 'vibraphone' }, // temporarily off cello
-      { kind: 'drone',    instrument: 'marimba' },    // temporarily off cello
-      { kind: 'accent',   instrument: 'marimba' },
-      { kind: 'accent',   instrument: 'vibraphone' },
+    name: 'spa',
+    chordVocabulary: 'triad', // see CHORD_VOCABULARIES
+    groove: { swing: 0, hasDrumRole: false },
+    seeds: [
+      {
+        name: 'serenity', bpm: 56, rootMidi: 60,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11], // Ionian (major)
+        chordProgression: [0, 3, 0, 4],          // I - IV - I - V
+        roles: [
+          { kind: 'melody',   instrument: 'flute' },
+          { kind: 'arpeggio', instrument: 'piano' },
+          { kind: 'pad',      instrument: 'vibraphone' }, // temporarily off cello
+          { kind: 'drone',    instrument: 'marimba' },    // temporarily off cello
+          { kind: 'accent',   instrument: 'marimba' },
+          { kind: 'accent',   instrument: 'vibraphone' },
+        ],
+      },
+      {
+        name: 'moonlit pool', bpm: 52, rootMidi: 57,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 5, 3, 4],          // I - vi - IV - V
+        roles: [
+          { kind: 'melody',   instrument: 'vibraphone' },
+          { kind: 'arpeggio', instrument: 'piano' },
+          { kind: 'pad',      instrument: 'marimba' },    // temporarily off cello
+          { kind: 'drone',    instrument: 'vibraphone' }, // temporarily off cello
+          { kind: 'accent',   instrument: 'flute' },
+          { kind: 'accent',   instrument: 'marimba' },
+        ],
+      },
+      {
+        name: 'warm stone', bpm: 60, rootMidi: 62,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 4, 5, 3],          // I - V - vi - IV
+        roles: [
+          { kind: 'melody',   instrument: 'piano' },
+          { kind: 'arpeggio', instrument: 'marimba' },
+          { kind: 'pad',      instrument: 'vibraphone' }, // temporarily off cello
+          { kind: 'drone',    instrument: 'marimba' },    // temporarily off cello
+          { kind: 'accent',   instrument: 'flute' },
+          { kind: 'accent',   instrument: 'vibraphone' },
+        ],
+      },
+      {
+        name: 'ocean mist', bpm: 54, rootMidi: 65,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 3, 4, 0],          // I - IV - V - I
+        roles: [
+          { kind: 'melody',   instrument: 'marimba' },
+          { kind: 'arpeggio', instrument: 'vibraphone' },
+          { kind: 'pad',      instrument: 'piano' },      // temporarily off cello
+          { kind: 'drone',    instrument: 'vibraphone' }, // temporarily off cello
+          { kind: 'accent',   instrument: 'flute' },
+          { kind: 'accent',   instrument: 'piano' },
+        ],
+      },
     ],
   },
+  // First proof case for a genuinely different-sounding family (see
+  // GENRE_FAMILIES history): 7th chords instead of plain triads, a
+  // laid-back swung groove, and its own synthesized palette (electric
+  // piano + bass + a drum kit — see SYNTHESIZED_INSTRUMENTS) instead of
+  // the spa family's recorded acoustic instruments. Still built on the
+  // exact same generation engine (scale-degree melody/arpeggio logic,
+  // collision avoidance, loudness normalization) as spa.
   {
-    name: 'moonlit pool', bpm: 52, rootMidi: 57,
-    scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
-    chordProgression: [0, 5, 3, 4],          // I - vi - IV - V
-    roles: [
-      { kind: 'melody',   instrument: 'vibraphone' },
-      { kind: 'arpeggio', instrument: 'piano' },
-      { kind: 'pad',      instrument: 'marimba' },    // temporarily off cello
-      { kind: 'drone',    instrument: 'vibraphone' }, // temporarily off cello
-      { kind: 'accent',   instrument: 'flute' },
-      { kind: 'accent',   instrument: 'marimba' },
-    ],
-  },
-  {
-    name: 'warm stone', bpm: 60, rootMidi: 62,
-    scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
-    chordProgression: [0, 4, 5, 3],          // I - V - vi - IV
-    roles: [
-      { kind: 'melody',   instrument: 'piano' },
-      { kind: 'arpeggio', instrument: 'marimba' },
-      { kind: 'pad',      instrument: 'vibraphone' }, // temporarily off cello
-      { kind: 'drone',    instrument: 'marimba' },    // temporarily off cello
-      { kind: 'accent',   instrument: 'flute' },
-      { kind: 'accent',   instrument: 'vibraphone' },
-    ],
-  },
-  {
-    name: 'ocean mist', bpm: 54, rootMidi: 65,
-    scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
-    chordProgression: [0, 3, 4, 0],          // I - IV - V - I
-    roles: [
-      { kind: 'melody',   instrument: 'marimba' },
-      { kind: 'arpeggio', instrument: 'vibraphone' },
-      { kind: 'pad',      instrument: 'piano' },      // temporarily off cello
-      { kind: 'drone',    instrument: 'vibraphone' }, // temporarily off cello
-      { kind: 'accent',   instrument: 'flute' },
-      { kind: 'accent',   instrument: 'piano' },
+    name: 'lofi',
+    chordVocabulary: 'seventh',
+    groove: { swing: 0.22, hasDrumRole: true },
+    seeds: [
+      {
+        name: 'rainy window', bpm: 76, rootMidi: 57,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 5, 3, 4],
+        roles: [
+          { kind: 'melody',   instrument: 'rhodes' },
+          { kind: 'arpeggio', instrument: 'rhodes' },
+          { kind: 'pad',      instrument: 'rhodes' },
+          { kind: 'drone',    instrument: 'lofibass' },
+          { kind: 'drum',     instrument: 'lofikit' },
+          { kind: 'accent',   instrument: 'rhodes' },
+        ],
+      },
+      {
+        name: 'corner cafe', bpm: 82, rootMidi: 60,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 3, 4, 0],
+        roles: [
+          { kind: 'melody',   instrument: 'rhodes' },
+          { kind: 'arpeggio', instrument: 'rhodes' },
+          { kind: 'pad',      instrument: 'rhodes' },
+          { kind: 'drone',    instrument: 'lofibass' },
+          { kind: 'drum',     instrument: 'lofikit' },
+          { kind: 'accent',   instrument: 'rhodes' },
+        ],
+      },
+      {
+        name: 'late study', bpm: 72, rootMidi: 62,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 4, 5, 3],
+        roles: [
+          { kind: 'melody',   instrument: 'rhodes' },
+          { kind: 'arpeggio', instrument: 'rhodes' },
+          { kind: 'pad',      instrument: 'rhodes' },
+          { kind: 'drone',    instrument: 'lofibass' },
+          { kind: 'drum',     instrument: 'lofikit' },
+          { kind: 'accent',   instrument: 'rhodes' },
+        ],
+      },
     ],
   },
 ];
+
+// Chord-tone degree offsets from the chord root, keyed by family-level
+// chordVocabulary. 'triad' is today's plain root/3rd/5th (every chord in
+// every spa progression is I/IV/V/vi, always consonant). 'seventh' isn't
+// used by any family yet — added here so the generation loop below never
+// needs to change again when one does.
+const CHORD_VOCABULARIES = {
+  triad: (root) => [root, root + 2, root + 4],
+  seventh: (root) => [root, root + 2, root + 4, root + 6],
+};
 
 // Note: trumpet and double bass sample files remain in sounds/ from an
 // earlier, more upbeat set of genres but are omitted here (and so never
@@ -412,7 +491,22 @@ const SAMPLE_MANIFEST = {
   cello: ['D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4'],
   marimba: ['C3', 'Db3', 'D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6'],
   vibraphone: ['C3', 'Db3', 'D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6'],
+  // Synthesized, not recorded — see SYNTHESIZED_INSTRUMENTS below. No
+  // sourcing/licensing dependency: these are generated in-browser at
+  // decode time from oscillators/noise, not fetched from sounds/.
+  rhodes: ['C3', 'Eb3', 'G3', 'C4', 'Eb4', 'G4', 'C5', 'Eb5', 'G5'],
+  lofibass: ['C1', 'Eb1', 'G1', 'C2', 'Eb2', 'G2'],
+  lofikit: ['kick', 'snare', 'hihat'], // one-shots, not pitched notes — see the 'drum' role kind
 };
+
+// Instruments with no recorded sample files at all — their "sample
+// buffers" are synthesized at decode time (see synthesizeInstrumentSample)
+// via a short OfflineAudioContext render instead of fetched and decoded.
+// Slots into STATE.sampleBuffers exactly like a real decoded sample, so
+// every downstream consumer (nearestSampleNote, playbackRate pitch-shift,
+// gain compensation) works identically either way without needing to
+// know the difference.
+const SYNTHESIZED_INSTRUMENTS = new Set(['rhodes', 'lofibass', 'lofikit']);
 
 const STARFIELD_CONFIG = {
   // Density-based, not a fixed count — a fixed star count looks fine on a
@@ -822,6 +916,7 @@ let sampleRawBytes = {};
 
 function preloadSampleBytes() {
   for (const instrument in SAMPLE_MANIFEST) {
+    if (SYNTHESIZED_INSTRUMENTS.has(instrument)) continue; // nothing to fetch — generated at decode time
     sampleRawBytes[instrument] = {};
     SAMPLE_MANIFEST[instrument].forEach(note => {
       fetch(`sounds/${instrument}/${instrument}_${note}.mp3`)
@@ -835,6 +930,16 @@ function preloadSampleBytes() {
 async function decodeAllSamples() {
   for (const instrument in SAMPLE_MANIFEST) {
     STATE.sampleBuffers[instrument] = {};
+
+    if (SYNTHESIZED_INSTRUMENTS.has(instrument)) {
+      for (const key of SAMPLE_MANIFEST[instrument]) {
+        try {
+          STATE.sampleBuffers[instrument][key] = await synthesizeInstrumentSample(instrument, key);
+        } catch (e) { /* skip — playSample/playDrumHit fall back gracefully */ }
+      }
+      continue;
+    }
+
     for (const note of SAMPLE_MANIFEST[instrument]) {
       const wait = (ms) => new Promise(r => setTimeout(r, ms));
       let raw = sampleRawBytes[instrument] && sampleRawBytes[instrument][note];
@@ -851,6 +956,152 @@ async function decodeAllSamples() {
       } catch (e) { /* skip — playSample falls back gracefully */ }
     }
   }
+}
+
+// --- Synthesized instruments ---------------------------------------------
+// No recorded sample files, no sourcing/licensing question — rendered
+// in-browser from oscillators/noise via a short OfflineAudioContext,
+// cached into STATE.sampleBuffers exactly like a decoded recording so
+// nothing downstream (nearestSampleNote, playbackRate pitch-shift, gain
+// compensation) needs to know these aren't real recordings.
+function synthesizeInstrumentSample(instrument, key) {
+  if (instrument === 'rhodes') return synthesizeRhodesNote(key);
+  if (instrument === 'lofibass') return synthesizeBassNote(key);
+  if (instrument === 'lofikit') return synthesizeDrumHit(key);
+  return Promise.resolve(null);
+}
+
+function midiToFreq(midi) {
+  return 440 * Math.pow(2, (midi - 69) / 12);
+}
+
+// A simple electric-piano ("Rhodes") patch: a sustained sine fundamental
+// plus a fast-decaying, slightly-detuned upper partial for the
+// characteristic bell-like attack transient real tine pianos have.
+async function synthesizeRhodesNote(noteName) {
+  const freq = midiToFreq(noteNameToMidi(noteName));
+  const duration = 2.2;
+  const sr = 44100;
+  const ctx = new OfflineAudioContext(1, Math.ceil(duration * sr), sr);
+
+  const fundamental = ctx.createOscillator();
+  fundamental.type = 'sine';
+  fundamental.frequency.value = freq;
+  const fundamentalGain = ctx.createGain();
+  fundamentalGain.gain.setValueAtTime(0, 0);
+  fundamentalGain.gain.linearRampToValueAtTime(0.8, 0.006);
+  fundamentalGain.gain.exponentialRampToValueAtTime(0.22, 0.35);
+  fundamentalGain.gain.exponentialRampToValueAtTime(0.001, duration);
+  fundamental.connect(fundamentalGain).connect(ctx.destination);
+
+  const bell = ctx.createOscillator();
+  bell.type = 'sine';
+  bell.frequency.value = freq * 2.03; // detuned harmonic — the metallic "tine" bite
+  const bellGain = ctx.createGain();
+  bellGain.gain.setValueAtTime(0, 0);
+  bellGain.gain.linearRampToValueAtTime(0.32, 0.004);
+  bellGain.gain.exponentialRampToValueAtTime(0.001, 0.25);
+  bell.connect(bellGain).connect(ctx.destination);
+
+  fundamental.start(0); fundamental.stop(duration);
+  bell.start(0); bell.stop(0.3);
+  return ctx.startRendering();
+}
+
+// A plain plucked low sine/triangle — simple on purpose, sits underneath
+// without competing with the rhodes for harmonic space.
+async function synthesizeBassNote(noteName) {
+  const freq = midiToFreq(noteNameToMidi(noteName));
+  const duration = 1.6;
+  const sr = 44100;
+  const ctx = new OfflineAudioContext(1, Math.ceil(duration * sr), sr);
+
+  const osc = ctx.createOscillator();
+  osc.type = 'triangle';
+  osc.frequency.value = freq;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0, 0);
+  gain.gain.linearRampToValueAtTime(0.9, 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.3, 0.25);
+  gain.gain.exponentialRampToValueAtTime(0.001, duration);
+  osc.connect(gain).connect(ctx.destination);
+
+  osc.start(0); osc.stop(duration);
+  return ctx.startRendering();
+}
+
+// Classic drum-machine-style synthesis (sine-with-pitch-envelope kick,
+// noise+tone snare, high-passed noise hihat) rather than samples — every
+// lo-fi/chiptune web audio project does this and it sidesteps sourcing a
+// drum kit's worth of one-shots entirely.
+async function synthesizeDrumHit(piece) {
+  const sr = 44100;
+
+  if (piece === 'kick') {
+    const duration = 0.4;
+    const ctx = new OfflineAudioContext(1, Math.ceil(duration * sr), sr);
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(150, 0);
+    osc.frequency.exponentialRampToValueAtTime(45, 0.15);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(1, 0);
+    gain.gain.exponentialRampToValueAtTime(0.001, 0.35);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(0); osc.stop(duration);
+    return ctx.startRendering();
+  }
+
+  if (piece === 'snare') {
+    const duration = 0.3;
+    const ctx = new OfflineAudioContext(1, Math.ceil(duration * sr), sr);
+
+    const noiseBuffer = ctx.createBuffer(1, Math.ceil(duration * sr), sr);
+    const data = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    const noise = ctx.createBufferSource();
+    noise.buffer = noiseBuffer;
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = 'highpass';
+    noiseFilter.frequency.value = 1000;
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(1.1, 0);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, 0.18);
+    noise.connect(noiseFilter).connect(noiseGain).connect(ctx.destination);
+
+    const osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.value = 180;
+    const oscGain = ctx.createGain();
+    oscGain.gain.setValueAtTime(0.8, 0);
+    oscGain.gain.exponentialRampToValueAtTime(0.001, 0.12);
+    osc.connect(oscGain).connect(ctx.destination);
+
+    noise.start(0);
+    osc.start(0); osc.stop(0.12);
+    return ctx.startRendering();
+  }
+
+  if (piece === 'hihat') {
+    const duration = 0.12;
+    const ctx = new OfflineAudioContext(1, Math.ceil(duration * sr), sr);
+    const noiseBuffer = ctx.createBuffer(1, Math.ceil(duration * sr), sr);
+    const data = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    const noise = ctx.createBufferSource();
+    noise.buffer = noiseBuffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = 7000;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.75, 0);
+    gain.gain.exponentialRampToValueAtTime(0.001, 0.09);
+    noise.connect(filter).connect(gain).connect(ctx.destination);
+    noise.start(0);
+    return ctx.startRendering();
+  }
+
+  return null;
 }
 
 const NOTE_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
@@ -1008,6 +1259,14 @@ const INSTRUMENT_GAIN_COMPENSATION = {
   cello: 1.764,
   marimba: 0.701,
   vibraphone: 0.487,
+  // Same methodology, applied to the synthesized instruments: measured
+  // raw 0.3s-attack-window RMS was rhodes ~0.364, lofibass ~0.307,
+  // lofikit ~0.205 (kick — the loudest of its three pieces, used as the
+  // anchor so kick lands at the ~0.15 target and snare/hihat naturally
+  // sit a bit under it, same as a real kit mix).
+  rhodes: 0.412,
+  lofibass: 0.488,
+  lofikit: 0.732,
 };
 
 function playResolvedSample(instrument, nearestName, targetMidi, t, peak, dest) {
@@ -1046,11 +1305,36 @@ const KIND_PEAK = {
   accent: 0.32,
   drone: 0.28,
   pad: 0.22,
+  drum: 0.45, // unverified against real drum samples yet — no family uses this role kind until one exists
 };
+
+// Drum one-shots are triggered at their recorded pitch/speed — no nearest-
+// sample resolution, no playbackRate shift, unlike every pitched role
+// above. A kick/snare/hihat isn't a scale degree with neighbors to fold
+// or fall back to; it's exactly one specific recording or nothing.
+function playDrumHit(instrument, piece, t, peak, dest) {
+  const buffers = STATE.sampleBuffers[instrument];
+  if (!buffers) return;
+  const buffer = buffers[piece];
+  if (!buffer) return;
+
+  const ctx = STATE.audioCtx;
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+
+  const gain = ctx.createGain();
+  gain.gain.value = peak * (INSTRUMENT_GAIN_COMPENSATION[instrument] || 1);
+
+  src.connect(gain);
+  gain.connect(dest);
+  trackSource(src).start(t);
+}
 
 function playNoteAt(note, t, peak, dest) {
   if (note.role === 'pad') {
     playSampleChord(note.instrument, note.midiList, t, peak, dest, note.resolvedSamples);
+  } else if (note.role === 'drum') {
+    playDrumHit(note.instrument, note.drumPiece, t, peak, dest);
   } else {
     playSample(note.instrument, note.midi, t, peak, dest, note.resolvedSample);
   }
@@ -1093,6 +1377,18 @@ function humanizeVelocity() {
   return 0.85 + Math.random() * 0.3;
 }
 
+// Straight-eighth step position within a bar, with an optional swing feel
+// (family-level, see GENRE_FAMILIES groove.swing): the off-beat ("and")
+// eighth notes land later than an even grid, the way a laid-back groove
+// actually sits. swing=0 (every family so far except any that opt in)
+// returns exactly the old unswung `step * 0.5` for every step — this is
+// additive, not a behavior change for anything that doesn't use it.
+function stepBeat(step, groove) {
+  const base = step * 0.5;
+  if (!groove || !groove.swing || step % 2 === 0) return base;
+  return base + groove.swing * 0.5;
+}
+
 // Generates a full arrangement using "vertical layering" — the standard
 // adaptive-game-music technique (as used by FMOD/Wwise-style systems): every
 // role (melody, arpeggio, pad, drone, accent) is composed across the ENTIRE
@@ -1104,7 +1400,14 @@ function humanizeVelocity() {
 // stem is audible within a beat or two of being opened instead of waiting
 // for a private slot to come around in a shared timeline.
 function generateSong(pairCount) {
-  const genre = GENRES[Math.floor(Math.random() * GENRES.length)];
+  const family = GENRE_FAMILIES[Math.floor(Math.random() * GENRE_FAMILIES.length)];
+  const seed = family.seeds[Math.floor(Math.random() * family.seeds.length)];
+  // Flattened so every existing call site (song.genre.bpm, song.genre.rootMidi,
+  // etc.) keeps working unchanged — family-level rules just ride along as
+  // extra fields on the same object.
+  const genre = { ...seed, family: family.name, chordVocabulary: family.chordVocabulary, groove: family.groove };
+  const buildChord = CHORD_VOCABULARIES[genre.chordVocabulary];
+
   const beatsPerBar = 4;
   const progressionBars = genre.chordProgression.length; // the shared harmonic cycle every stem plays over
   const totalBeats = progressionBars * beatsPerBar;
@@ -1125,7 +1428,7 @@ function generateSong(pairCount) {
 
     for (let bar = 0; bar < progressionBars; bar++) {
       const chordRoot = genre.chordProgression[bar % genre.chordProgression.length];
-      const chordDegrees = [chordRoot, chordRoot + 2, chordRoot + 4];
+      const chordDegrees = buildChord(chordRoot);
       const barStartBeat = bar * beatsPerBar;
 
       if (kind === 'melody') {
@@ -1136,7 +1439,7 @@ function generateSong(pairCount) {
             const useChordTone = Math.random() < 0.8;
             const deg = useChordTone ? baseDeg : baseDeg + (Math.random() < 0.5 ? 1 : -1);
             notes.push({
-              beat: humanizeBeat(barStartBeat + step * 0.5, 0.03),
+              beat: humanizeBeat(barStartBeat + stepBeat(step, genre.groove), 0.03),
               midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 1)),
               role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
             });
@@ -1159,7 +1462,7 @@ function generateSong(pairCount) {
           if (step === 0 || Math.random() < 0.6) { // always land on the downbeat, roll the rest
             const deg = chordDegrees[arpeggioPattern[step]];
             notes.push({
-              beat: humanizeBeat(barStartBeat + step * 0.5, 0.02),
+              beat: humanizeBeat(barStartBeat + stepBeat(step, genre.groove), 0.02),
               midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 0)),
               role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
             });
@@ -1206,10 +1509,29 @@ function generateSong(pairCount) {
         const step = Math.floor(Math.random() * stepsPerBar);
         const deg = chordDegrees[Math.floor(Math.random() * chordDegrees.length)];
         notes.push({
-          beat: humanizeBeat(barStartBeat + step * 0.5, 0.04),
+          beat: humanizeBeat(barStartBeat + stepBeat(step, genre.groove), 0.04),
           midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 1)),
           role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
         });
+      } else if (kind === 'drum') {
+        // Not a scale degree — a fixed one-shot kit (kick/snare/hihat),
+        // triggered on a steady pattern rather than derived from the
+        // chord. Only families with hasDrumRole ever assign this kind
+        // (see GENRE_FAMILIES), and playback (playDrumHit) skips all the
+        // pitch-resolution machinery every other role above uses.
+        for (let step = 0; step < stepsPerBar; step++) {
+          const beat = barStartBeat + stepBeat(step, genre.groove);
+          if (step === 0 || step === 4) {
+            notes.push({ beat, role: kind, instrument, drumPiece: 'kick', vel: humanizeVelocity(), chunkIndex });
+          }
+          if (step === 2 || step === 6) {
+            notes.push({ beat, role: kind, instrument, drumPiece: 'snare', vel: humanizeVelocity(), chunkIndex });
+          }
+          notes.push({
+            beat, role: kind, instrument, drumPiece: 'hihat',
+            vel: humanizeVelocity() * (step % 2 === 0 ? 1 : 0.7), chunkIndex,
+          });
+        }
       }
     }
   });
@@ -1220,7 +1542,7 @@ function generateSong(pairCount) {
   return { genre, totalBeats, pairCount, notes };
 }
 
-// Genres reassign roles to instruments (see GENRES above), which can put
+// Genre seeds reassign roles to instruments (see GENRE_FAMILIES above), which can put
 // two different roles — say a drone and an accent — on the SAME instrument
 // with beats that land at (or drift close to) the exact same instant. If
 // each resolved its nearest sample independently, they could both land on
@@ -1235,6 +1557,7 @@ const SIMULTANEOUS_BEAT_TOLERANCE = 0.15; // wider than any humanizeBeat jitter,
 function resolveInstrumentCollisions(notes) {
   const byInstrument = {};
   for (const note of notes) {
+    if (note.role === 'drum') continue; // fixed one-shot hits — never a nearest-sample collision candidate
     (byInstrument[note.instrument] = byInstrument[note.instrument] || []).push(note);
   }
   for (const instrument in byInstrument) {

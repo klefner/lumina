@@ -37,3 +37,18 @@ double bass at mf pizzicato, marimba (yarn mallet) and vibraphone
 In-game, these samples are pitch-shifted (via Web Audio's
 `playbackRate`) to notes between the ones actually sampled, so a
 single set of recordings covers a full musical range.
+
+## The lofi genre family's instruments (rhodes, lofibass, lofikit)
+
+Not recordings — synthesized entirely in-browser (game.js,
+`synthesizeInstrumentSample` and friends) from oscillators and noise via
+a short `OfflineAudioContext` render, the moment the game needs them. No
+files live in this directory for these three, no sourcing/licensing
+question applies, and there's nothing to attribute: it's original,
+generated code. `rhodes` (electric piano) and `lofibass` are pitched —
+rendered across a handful of reference notes and pitch-shifted the same
+way the recorded instruments are. `lofikit` is three fixed one-shots
+(kick/snare/hihat), synthesized with the classic drum-machine techniques
+(pitch-swept sine for the kick, filtered noise + a tone for the snare,
+high-passed noise for the hihat) that most lo-fi/chiptune web audio
+projects use for exactly this reason.
