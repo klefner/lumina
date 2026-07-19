@@ -17,12 +17,25 @@
   <canvas id="gameCanvas"></canvas>
   <div id="ui-overlay">
     <div id="wave-display"></div>
-    <div id="score-col">
+    <div id="right-col">
+      <button id="pause-button" aria-label="Pause">&#10074;&#10074;</button>
       <div id="draw-score-display"></div>
       <div id="score-display"></div>
     </div>
   </div>
   <div id="tutorial-hint"></div>
+  <div id="pause-overlay">
+    <div id="pause-panel">
+      <div id="pause-title">PAUSED</div>
+      <button class="pause-menu-item" id="pause-resume">Resume</button>
+      <button class="pause-menu-item" id="pause-save">Save Game</button>
+      <button class="pause-menu-item" id="pause-restart-level">Restart Current Level</button>
+      <button class="pause-menu-item" id="pause-restart-game">Restart Game</button>
+      <button class="pause-menu-item" id="pause-exit">Exit Game</button>
+      <div id="pause-fact"></div>
+      <div id="pause-save-toast"></div>
+    </div>
+  </div>
   <div id="achievement-toast">
     <div id="achievement-badge"></div>
     <div id="achievement-label"></div>

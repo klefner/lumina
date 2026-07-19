@@ -73,6 +73,89 @@ const TUTORIAL_MESSAGES = [
 ];
 
 // ============================================================
+// PAUSE MENU CONTENT — 50 facts about music, sound, color, and space, plus
+// 20 pro tips for this game specifically, rotated together in the pause
+// menu (see startPauseFactRotation). Kept gentle and curious in tone —
+// nothing alarming or unpleasant, even where the underlying science is
+// dramatic (storms, extremes, etc.) — since this plays over a relaxation
+// game, not a trivia quiz.
+const PAUSE_FACTS = [
+  "A single cello note can make dust on a nearby table visibly dance — sound is just air taking the shape of a wiggle.",
+  "Whale songs can travel hundreds of miles through the ocean — the original long-distance call.",
+  "Bats can hear pitches vibrating 200,000 times a second, ten times higher than the top of human hearing.",
+  "Cyclists pedaling in time with music use about 7% less oxygen than those riding in silence — rhythm is basically free fuel.",
+  "You've never actually heard your own voice the way everyone else has — recordings skip the bone-conducted hum only you can feel.",
+  "Elephants can 'talk' in rumbles too low for human ears, sometimes felt through the ground from miles away.",
+  "Some limestone caverns naturally resonate like giant stone bells — the world's biggest musical instrument might just be a cave.",
+  "A singing bowl doesn't ring on its own — the sound comes entirely from a mallet's friction slowly waking hundreds of tiny vibrations at once.",
+  "Music really can change how food tastes — high notes nudge our brains toward sweetness, low notes toward bitterness.",
+  "The 'hang' drum blends the metallic ring of a steel pan with the calm hum of a meditation bowl — invented by two instrument makers in the year 2000.",
+  "Deep bass frequencies have been used to blow out small flames — sound waves pushing oxygen away fast enough to snuff them out.",
+  "A vibraphone has a secret a marimba doesn't: tiny motorized discs spinning inside its resonator tubes, giving it that shimmering vibrato.",
+  "Every whale species sings its own regional 'dialect,' and the songs slowly drift and change generation to generation, like ocean folk music.",
+  "School-bus yellow sits exactly between the wavelengths that trigger red and green in our eyes, lighting up both signals at once — which is why it's almost impossible to miss out of the corner of your eye.",
+  "Your eyes hold about six million tiny color-sensing cones apiece — a private constellation, doing color math thousands of times a second.",
+  "A small number of people are tetrachromats, with a fourth type of color cone — they may see tens of millions more shades than the rest of us.",
+  "Bees and butterflies can see ultraviolet patterns on flowers that are completely invisible to us — like secret landing lights just for them.",
+  "The lens in your eye yellows gently with age, which may be part of why a warm sunset can look even richer to someone in their sixties than in their twenties.",
+  "There's no such thing as 'brown light' — brown only exists as a color your brain invents when it sees dim orange sitting next to something brighter.",
+  "Mantis shrimp have up to 16 types of color receptors, compared to our three — scientists still aren't entirely sure what their world looks like to them.",
+  "Culture and language quietly shape which colors we notice first — the exact shade you'd call 'blue' might not look the same to the person next to you.",
+  "Chladni figures are patterns that appear in sand scattered on a vibrating metal plate — a way of literally seeing sound as shape.",
+  "Green is the color the human eye is most sensitive to, which is part of why exit signs, highlighters, and old computer terminals all lean green.",
+  "Some people with synesthesia genuinely see colors when they hear music — a certain chord might always look gold, another always blue.",
+  "The pigment ultramarine was once so rare it cost more than gold, ground from a stone that came from only one mountain range on Earth.",
+  "A rainbow is technically a full circle — we usually only see an arc because the ground gets in the way. From a plane, you can sometimes see the whole ring.",
+  "A day on Venus is longer than its year — it spins so slowly that sunrise to sunrise takes longer than one full trip around the Sun.",
+  "If you shrank the Sun down to the size of a beach ball, the Earth would be smaller than a grain of sand next to it.",
+  "There's a cloud of gas near the center of the Milky Way that contains a molecule which, on Earth, is part of what gives raspberries their flavor.",
+  "Astronauts grow up to two inches taller in space, because without gravity compressing their spine, it gently stretches out.",
+  "Saturn's rings are made of countless ice chunks, from dust-sized to house-sized, all quietly orbiting in a disk thinner, proportionally, than a sheet of paper.",
+  "A teaspoon of a neutron star would weigh about as much as every car on Earth combined.",
+  "Neptune has the fastest winds in the solar system, yet from Earth it just looks like a calm, still blue marble.",
+  "Uranus rotates almost completely on its side, so for part of its 84-year orbit, one pole gets over two decades of continuous sunlight.",
+  "Sound can technically travel through parts of space that hold gas or plasma, like inside a nebula — 'the silence of space' isn't quite the whole story.",
+  "The footprints astronauts left on the Moon will likely still be there in a million years — there's no wind or rain to wear them away.",
+  "Jupiter's Great Red Spot is a storm wider than the entire Earth, and it's been swirling for at least 350 years.",
+  "The starlight you see tonight left its star so long ago that some of those stars have since quietly changed, grown, or moved on entirely.",
+  "If the solar system were shrunk to fit on a dinner table, the next-nearest star to the Sun would still be in another city.",
+  "A group of frogs is called an army, and their combined nighttime chorus can register nearly as loud as a rock concert.",
+  "The 'Wow! signal,' a mysterious 72-second radio burst picked up in 1977, remains one of the most tantalizing unexplained echoes ever recorded from deep space.",
+  "Octopuses may be able to 'taste' color through light-sensitive cells in their skin — colorblind and color-aware at the same time.",
+  "The whooshing sound inside a seashell isn't 'the ocean' — it's just ambient noise resonating inside the shell's spiral chamber, amplified into a soft roar.",
+  "Piano tuners often stretch the octaves slightly on purpose, because that's what our ears actually perceive as perfectly in tune.",
+  "Auroras happen because the Sun is, in a very real sense, gently painting the sky — charged particles colliding with our atmosphere glow green, pink, and violet.",
+  "City lights at night can make whole coastlines glow like glitter when seen from orbit — one of the prettiest views astronauts describe.",
+  "A hummingbird's wings beat around 50 times a second, fast enough to produce an actual musical pitch, not just a hum.",
+  "Owls fly almost silently because their feathers have soft, comb-like fringed edges that break up turbulent air before it can whistle.",
+  "The color pink doesn't exist in the rainbow — it's a color your brain invents when red and violet light land on your eye at the same time.",
+  "Off the coast of Northern Ireland sits a natural rock formation of thousands of near-perfect hexagonal columns — geology quietly doing geometry.",
+];
+
+const PAUSE_TIPS = [
+  "Longer, winding lines score more than short direct ones — sometimes the scenic route pays better.",
+  "A barrier is always tinted the exact color of the pair it's blocking — trust the color, not just the position.",
+  "Rotating barriers snap any connection they sweep through, including ones you finished earlier — keep an eye on them even after you think you're done.",
+  "Past wave 10, some colors get extra dots. Link them all into one connected shape — you don't have to connect them in any particular order.",
+  "A quiet chime confirms every connection instantly, even before the music catches up to it.",
+  "Every wave keeps looping its music until you choose to move on — there's no rush, so take your time.",
+  "You can curve a line however you like as long as it doesn't cross another line or a barrier — creative routing is always allowed.",
+  "The traveling light on each connection moves in time with the beat, and once every dot is linked, the lines themselves pulse together too.",
+  "Score climbs the moment you release a connection, not at the end of the wave — watch the live number while you're still drawing.",
+  "Each wave's music is generated fresh, so the exact same song never plays twice.",
+  "Milestone badges appear every 10 waves, and they get fancier the further you go.",
+  "Your best wave and best single-wave score are both saved automatically — every visit tries to beat your own record.",
+  "If two dots share a color, they're always meant to connect — colors are never repeated by coincidence within a group.",
+  "Redrawing a connection that's already linked, even indirectly through another dot, won't do anything — only a genuinely new link counts.",
+  "Barriers always cross the real path between the dots they're blocking — if one looks avoidable, there's usually a wider way around.",
+  "The full starfield doesn't reveal itself until a wave is completely finished — think of it as the reward for finishing.",
+  "Pausing mutes the music and freezes the board exactly where you left it — nothing keeps moving while you're away.",
+  "A saved game remembers your wave and score, so you can pick up right where you left off next time.",
+  "The bigger a color's group gets, the more freedom you have in which two dots to link first — plan the easiest edge, not necessarily the first one you see.",
+  "Serenity, moonlit pool, warm stone, and ocean mist are four different musical moods — each wave randomly picks one.",
+];
+
+// ============================================================
 // ACHIEVEMENTS — persisted personal-best milestones, celebrated with a
 // top-center toast (badge + short label) and a short synthesized jingle.
 // Persistence is per-browser (localStorage), not tied to a wave/session,
@@ -91,6 +174,28 @@ function loadStats() {
 }
 function saveStats(stats) {
   try { localStorage.setItem(STATS_KEY, JSON.stringify(stats)); } catch (e) { /* best-effort only */ }
+}
+
+// A single in-progress save (distinct from STATS_KEY's all-time personal
+// bests) — just enough to resume exactly where a session left off.
+const SAVE_KEY = 'lumina_save_v1';
+function saveGame() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ wave: STATE.wave, score: STATE.score }));
+    return true;
+  } catch (e) { return false; }
+}
+function loadSave() {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed.wave || parsed.wave < 1) return null;
+    return { wave: parsed.wave, score: parsed.score || 0 };
+  } catch (e) { return null; }
+}
+function clearSave() {
+  try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* best-effort only */ }
 }
 
 // Every-10th-wave milestone tiers, each fancier than the last. Cycles
@@ -509,6 +614,12 @@ const STATE = {
   stats: loadStats(),    // persisted personal bests (see loadStats/saveStats) — survives across visits
   achievementQueue: [],  // pending {glyph, bg, glow, label} toasts, shown one at a time
   achievementToastActive: false,
+
+  paused: false,           // freezes update()/input while the pause menu is open (see pauseGame/resumeGame)
+  pauseFactHistory: [],    // last few pause-menu fact/tip strings shown, so the rotation never repeats too soon
+  pauseFactTimer: null,    // setInterval id for the 10s rotation, running only while paused
+  onlineFacts: [],         // bonus facts fetched live this session (see fetchOnlineFacts) — empty if offline/failed
+  pendingResume: null,     // { wave, score } loaded from a save, offered on the title screen (see init/onInputStart)
 };
 
 // ============================================================
@@ -1487,12 +1598,20 @@ function getEventPos(e) {
 
 function onInputStart(e) {
   e.preventDefault();
+  if (STATE.paused) return; // pause menu handles its own input via real DOM buttons
 
   initAudio();
 
   if (STATE.phase === 'TITLE') {
     hideMessage();
-    startWave(1);
+    if (STATE.pendingResume) {
+      const resume = STATE.pendingResume;
+      STATE.pendingResume = null;
+      STATE.score = resume.score;
+      startWave(resume.wave);
+    } else {
+      startWave(1);
+    }
     return;
   }
 
@@ -1516,7 +1635,7 @@ function onInputStart(e) {
 
 function onInputMove(e) {
   e.preventDefault();
-  if (!STATE.isDrawing || STATE.phase !== 'PLAYING') return;
+  if (!STATE.isDrawing || STATE.phase !== 'PLAYING' || STATE.paused) return;
 
   const pos = getEventPos(e);
 
@@ -1537,7 +1656,7 @@ function onInputMove(e) {
 
 function onInputEnd(e) {
   e.preventDefault();
-  if (!STATE.isDrawing || !STATE.activeDot) return;
+  if (!STATE.isDrawing || !STATE.activeDot || STATE.paused) return;
 
   STATE.isDrawing = false;
 
@@ -2800,6 +2919,197 @@ function haptic(type) {
 }
 
 // ============================================================
+// PAUSE MENU
+// ============================================================
+function closePauseMenuUI() {
+  document.getElementById('pause-overlay').classList.remove('visible');
+  stopPauseFactRotation();
+}
+
+function pauseGame() {
+  if (STATE.paused || STATE.phase === 'TITLE') return; // nothing meaningful to pause from the title screen
+  STATE.paused = true;
+  if (STATE.audioCtx && STATE.masterGain) {
+    const t = STATE.audioCtx.currentTime;
+    STATE.masterGain.gain.cancelScheduledValues(t);
+    STATE.masterGain.gain.setValueAtTime(STATE.masterGain.gain.value, t);
+    STATE.masterGain.gain.linearRampToValueAtTime(0.0001, t + 0.25);
+  }
+  document.getElementById('pause-save-toast').classList.remove('visible');
+  document.getElementById('pause-overlay').classList.add('visible');
+  startPauseFactRotation();
+}
+
+function resumeGame() {
+  if (!STATE.paused) return;
+  STATE.paused = false;
+  if (STATE.audioCtx && STATE.masterGain) {
+    const t = STATE.audioCtx.currentTime;
+    STATE.masterGain.gain.cancelScheduledValues(t);
+    STATE.masterGain.gain.setValueAtTime(STATE.masterGain.gain.value, t);
+    STATE.masterGain.gain.linearRampToValueAtTime(1.0, t + 0.25);
+  }
+  closePauseMenuUI();
+}
+
+function togglePause() {
+  if (STATE.phase === 'TITLE') return; // nothing to pause before the game has started
+  if (STATE.paused) resumeGame(); else pauseGame();
+}
+
+function handleSaveGame() {
+  const ok = saveGame();
+  const toast = document.getElementById('pause-save-toast');
+  toast.textContent = ok ? 'Game Saved' : 'Could Not Save';
+  toast.classList.add('visible');
+  setTimeout(() => toast.classList.remove('visible'), 1800);
+}
+
+// Restart/Restart Game/Exit all reuse the existing wave-transition fade
+// (see startFadeToBlack/startFadeFromBlack) for a consistent, non-jarring
+// transition rather than an abrupt cut — the same fade wave changes
+// already use. STATE.paused is cleared first so update() actually runs
+// the fade animation and audio ramp.
+function handleRestartCurrentLevel() {
+  closePauseMenuUI();
+  STATE.paused = false;
+  startFadeToBlack(() => {
+    STATE.score = STATE.waveStartScore; // undo this wave's own earned points, not the whole run
+    startWave(STATE.wave);
+    startFadeFromBlack();
+  });
+}
+
+function handleRestartGame() {
+  closePauseMenuUI();
+  STATE.paused = false;
+  startFadeToBlack(() => {
+    STATE.score = 0;
+    startWave(1);
+    startFadeFromBlack();
+  });
+}
+
+function handleExitGame() {
+  closePauseMenuUI();
+  STATE.paused = false;
+  startFadeToBlack(() => {
+    exitToTitle();
+    startFadeFromBlack();
+  });
+}
+
+// Returns to the same pristine state the game boots into — dots, lines,
+// barriers, and the starfield all cleared, any in-flight audio hard-stopped.
+function exitToTitle() {
+  STATE.phase = 'TITLE';
+  STATE.wave = 0;
+  STATE.score = 0;
+  STATE.dots = [];
+  STATE.connections = [];
+  STATE.lines = [];
+  STATE.barriers = [];
+  STATE.stars = [];
+  STATE.spaceObjects = [];
+  STATE.celestialBodies = [];
+  STATE.beatSync = null;
+  STATE.song = null;
+  if (STATE.audioCtx) stopAllScheduledAudio(STATE.audioCtx.currentTime);
+
+  // Re-check for a save (e.g. one made via "Save Game" earlier this
+  // session) so the title screen accurately offers to continue from it.
+  STATE.pendingResume = loadSave();
+  updateWaveDisplay();
+  showMessage('LUMINA', STATE.pendingResume ? `tap to continue — wave ${STATE.pendingResume.wave}` : 'connect the dots');
+}
+
+// Rotating pause-menu content: 50 curated facts + 20 game tips, plus any
+// bonus facts fetched live this session (see fetchOnlineFacts) — never
+// repeating an item shown in the last 5.
+function pickNextPauseContent() {
+  const pool = PAUSE_FACTS.concat(PAUSE_TIPS, STATE.onlineFacts);
+  const recent = new Set(STATE.pauseFactHistory);
+  let candidates = pool.filter(item => !recent.has(item));
+  if (candidates.length === 0) candidates = pool; // pool smaller than the history window — reuse is unavoidable
+  const pick = candidates[Math.floor(Math.random() * candidates.length)];
+  STATE.pauseFactHistory.push(pick);
+  if (STATE.pauseFactHistory.length > 5) STATE.pauseFactHistory.shift();
+  return pick;
+}
+
+function showNextPauseFact() {
+  const el = document.getElementById('pause-fact');
+  el.classList.remove('visible');
+  setTimeout(() => {
+    if (!STATE.paused) return; // menu was closed during the fade-out
+    el.textContent = pickNextPauseContent();
+    el.classList.add('visible');
+  }, 400); // let the fade-out finish before swapping text and fading back in
+}
+
+function startPauseFactRotation() {
+  stopPauseFactRotation();
+  showNextPauseFact(); // show one right away, don't wait 10s for the first
+  STATE.pauseFactTimer = setInterval(showNextPauseFact, 10000);
+  maybeFetchOnlineFacts();
+}
+
+function stopPauseFactRotation() {
+  if (STATE.pauseFactTimer) {
+    clearInterval(STATE.pauseFactTimer);
+    STATE.pauseFactTimer = null;
+  }
+  document.getElementById('pause-fact').classList.remove('visible');
+}
+
+// A handful of on-topic Wikipedia article titles (music/sound/color/space)
+// — the fetch is genuinely live, but which article it can land on stays
+// deliberately curated so it can't surface anything off-topic or jarring.
+const ONLINE_FACT_TOPICS = [
+  'Frequency', 'Synesthesia', 'Chladni_figure', 'Doppler_effect', 'Resonance_(acoustics)',
+  'Color_theory', 'Bioluminescence', 'Nebula', 'Exoplanet', 'Aurora',
+  'Absolute_pitch', 'Rainbow', 'Tibetan_singing_bowl', 'Solar_wind', 'Bird_vocalization',
+  'Afterimage_(optical_phenomenon)', 'Infrasound', 'Meteor_shower', 'Pigment', 'Harmonic',
+];
+
+// Only ever attempted when the browser itself reports it's online — and
+// even then, any failure at all (still offline despite the flag, blocked,
+// slow, malformed response) just quietly leaves STATE.onlineFacts empty,
+// and the rotation runs on the predetermined list alone, which always works.
+async function fetchOnlineFacts() {
+  if (!navigator.onLine) return;
+  try {
+    const picks = shuffleArray([...ONLINE_FACT_TOPICS]).slice(0, 4);
+    const results = await Promise.all(picks.map(topic => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3500);
+      return fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${topic}`, { signal: controller.signal })
+        .then(res => (res.ok ? res.json() : null))
+        .catch(() => null)
+        .finally(() => clearTimeout(timeout));
+    }));
+    const facts = results
+      .filter(r => r && typeof r.extract === 'string' && r.extract.length >= 30 && r.extract.length <= 300)
+      .map(r => r.extract);
+    if (facts.length) STATE.onlineFacts = facts;
+  } catch (e) { /* offline, blocked, CORS, whatever — the predetermined list already covers this */ }
+}
+
+function maybeFetchOnlineFacts() {
+  if (STATE.onlineFacts.length > 0) return; // already fetched some this session
+  fetchOnlineFacts();
+}
+
+function setupPauseMenuListeners() {
+  document.getElementById('pause-button').addEventListener('click', togglePause);
+  document.getElementById('pause-resume').addEventListener('click', resumeGame);
+  document.getElementById('pause-save').addEventListener('click', handleSaveGame);
+  document.getElementById('pause-restart-level').addEventListener('click', handleRestartCurrentLevel);
+  document.getElementById('pause-restart-game').addEventListener('click', handleRestartGame);
+  document.getElementById('pause-exit').addEventListener('click', handleExitGame);
+}
+
+// ============================================================
 // SECTION 9: UI AND MESSAGES
 // ============================================================
 function showMessage(title, subtitle) {
@@ -3018,7 +3328,7 @@ function render() {
 }
 
 function gameLoop() {
-  update();
+  if (!STATE.paused) update(); // freeze every animation/state change while the pause menu is open
   render();
   requestAnimationFrame(gameLoop);
 }
@@ -3029,9 +3339,11 @@ function gameLoop() {
 function init() {
   resizeCanvas();
   preloadSampleBytes(); // start fetching instrument samples now, overlapping the "tap to begin" wait
+  setupPauseMenuListeners();
 
   STATE.phase = 'TITLE';
-  showMessage('LUMINA', 'connect the dots');
+  STATE.pendingResume = loadSave();
+  showMessage('LUMINA', STATE.pendingResume ? `tap to continue — wave ${STATE.pendingResume.wave}` : 'connect the dots');
   updateWaveDisplay();
 
   gameLoop();

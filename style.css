@@ -40,10 +40,31 @@ html, body {
   z-index: 10;
 }
 
-#score-col {
+#right-col {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  gap: 6px;
+}
+
+#pause-button {
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.7);
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  border-radius: 50%;
+  width: 30px;
+  height: 30px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+#pause-button:hover, #pause-button:active {
+  background: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.95);
 }
 
 /* Live points for the line currently being drawn — counts up in real time
@@ -56,6 +77,106 @@ html, body {
   text-shadow: 0 0 10px rgba(255, 190, 80, 0.6);
   min-height: 16px;
   margin-bottom: 2px;
+}
+
+/* Pause menu — a simple centered modal. Freezes/mutes the game underneath
+   (see pauseGame/resumeGame in game.js) while open. */
+#pause-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.72);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  z-index: 30;
+}
+#pause-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+#pause-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  width: min(86vw, 360px);
+  padding: 28px 24px;
+  background: rgba(12, 12, 18, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  box-shadow: 0 0 60px rgba(0, 0, 0, 0.6);
+}
+
+#pause-title {
+  font-family: 'Courier New', monospace;
+  font-size: 22px;
+  font-weight: 300;
+  letter-spacing: 0.3em;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.85);
+  margin-bottom: 8px;
+}
+
+.pause-menu-item {
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+.pause-menu-item:hover, .pause-menu-item:active {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+#pause-resume {
+  background: rgba(120, 200, 255, 0.15);
+  border-color: rgba(120, 200, 255, 0.4);
+}
+
+/* The rotating fact/tip — fades in and out on its own timer (see
+   startPauseFactRotation), never touching the menu buttons above it. */
+#pause-fact {
+  margin-top: 14px;
+  min-height: 4.5em;
+  font-family: Georgia, 'Palatino Linotype', 'Times New Roman', serif;
+  font-style: italic;
+  font-size: 13.5px;
+  line-height: 1.55;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.6);
+  opacity: 0;
+  transition: opacity 1.2s ease;
+}
+#pause-fact.visible {
+  opacity: 1;
+}
+
+#pause-save-toast {
+  text-align: center;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: rgba(140, 255, 180, 0.85);
+  min-height: 1.2em;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+#pause-save-toast.visible {
+  opacity: 1;
 }
 
 #message-overlay {
