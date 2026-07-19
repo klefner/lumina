@@ -163,6 +163,7 @@ function layoutAchievementToast(toast, text) {
   const maxRadius = Math.min(canvas.width, canvas.height) * 0.5;
   const positions = tutorialPositionCandidates(maxRadius, 25);
 
+  let fallback = null; // best layout that at least stays on-screen, even if it still grazes a dot
   for (const fontSize of [20, 17, 15, 13]) {
     label.style.fontSize = fontSize + 'px';
     for (const { dx, dy } of positions) {
@@ -170,9 +171,18 @@ function layoutAchievementToast(toast, text) {
       toast.style.top = `calc(14% + ${dy}px)`;
       for (const lines of lineOptions) {
         label.innerHTML = lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
-        if (!rectOverlapsAnyDot(toast.getBoundingClientRect())) return;
+        const rect = toast.getBoundingClientRect();
+        if (rectOutOfBounds(rect)) continue; // never render part of the toast off the edge of the phone
+        if (!rectOverlapsAnyDot(rect)) return; // ideal: on-screen AND clear of every dot
+        if (!fallback) fallback = { fontSize, dx, dy, lines };
       }
     }
+  }
+  if (fallback) {
+    label.style.fontSize = fallback.fontSize + 'px';
+    toast.style.left = `calc(50% + ${fallback.dx}px)`;
+    toast.style.top = `calc(14% + ${fallback.dy}px)`;
+    label.innerHTML = fallback.lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
   }
 }
 
@@ -2390,6 +2400,16 @@ function rectOverlapsAnyDot(rect) {
   return false;
 }
 
+// A `position: fixed` element isn't clipped to the viewport just because
+// its container div is narrower than the screen — nudging it sideways to
+// dodge a dot (see tutorialPositionCandidates) can push part of it past
+// the edge of the phone entirely, which is worse than the dot overlap it
+// was trying to avoid. Any candidate layout must pass this too.
+function rectOutOfBounds(rect) {
+  const margin = 6;
+  return rect.left < margin || rect.right > canvas.width - margin || rect.top < margin || rect.bottom > canvas.height - margin;
+}
+
 // Candidate positions relative to dead-center, nearest first: center itself,
 // then rings of 8 compass points (N/S/E/W + diagonals) at increasing radius.
 // Dots are scattered anywhere on screen (see findValidPosition), so a
@@ -2423,6 +2443,7 @@ function layoutTutorialHint(text) {
   // combination fails at full size — an extremely dot-crowded small
   // screen — do we shrink the font a little and search again, since a
   // smaller box is easier to fit around a busy layout.
+  let fallback = null; // best layout that at least stays on-screen, even if it still grazes a dot
   for (const fontSize of [30, 24, 20, 17]) {
     el.style.fontSize = fontSize + 'px';
     for (const { dx, dy } of positions) {
@@ -2430,13 +2451,22 @@ function layoutTutorialHint(text) {
       el.style.top = `calc(50% + ${dy}px)`;
       for (const lines of lineOptions) {
         el.innerHTML = lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
-        if (!rectOverlapsAnyDot(el.getBoundingClientRect())) return;
+        const rect = el.getBoundingClientRect();
+        if (rectOutOfBounds(rect)) continue; // never render part of the hint off the edge of the phone
+        if (!rectOverlapsAnyDot(rect)) return; // ideal: on-screen AND clear of every dot
+        if (!fallback) fallback = { fontSize, dx, dy, lines };
       }
     }
   }
-  // Exhausted every split, position, and font size (pathologically cramped
-  // wave) — leave the smallest, most aggressively repositioned layout in
-  // place; it's the closest to collision-free we could produce.
+  // Exhausted every split, position, and font size without a fully clear
+  // spot (pathologically cramped wave) — reapply the best on-screen
+  // layout found; worst case it grazes a dot, but it's never cut off.
+  if (fallback) {
+    el.style.fontSize = fallback.fontSize + 'px';
+    el.style.left = `calc(50% + ${fallback.dx}px)`;
+    el.style.top = `calc(50% + ${fallback.dy}px)`;
+    el.innerHTML = fallback.lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
+  }
 }
 
 function hideTutorialHint() {
