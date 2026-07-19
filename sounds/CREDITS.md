@@ -22,11 +22,11 @@ recorded as chromatic-scale takes (12+ notes per file, anechoic chamber,
 
 1. Isolated from its scale-run recording via silence detection
 2. Trimmed to a short one-shot (~1.6-2.5s) with a fade-out
-3. Downmixed to mono and compressed to Ogg Vorbis
+3. Downmixed to mono and compressed to MP3
 
 **Individually-recorded instruments** (piano, marimba, vibraphone) were
 already one note per file. Each was trimmed to ~1.8-2.2s with a fade-out,
-downmixed to mono, and compressed to Ogg Vorbis.
+downmixed to mono, and compressed to MP3.
 
 Dynamics used: piano/cello/trumpet at mf ("mezzo-forte"), flute at pp
 ("pianissimo", non-vibrato — the original ff/forte take was bright enough

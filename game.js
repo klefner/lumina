@@ -727,48 +727,19 @@ const STATE = {
 // ============================================================
 function initAudio() {
   if (!STATE.audioCtx) {
-    STATE.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-    // Master bus: gain + compressor, tuned as a true peak LIMITER rather
-    // than an always-on processor. This was originally tuned aggressively
-    // (threshold -32dB, ratio 16:1) back when the game used loud
-    // synthesized voices, and never revisited after the move to real
-    // sample-based instruments, whose per-note peaks were carefully tuned
-    // down to ~0.35-0.6 (roughly -9 to -4dB). At -32dB, that old threshold
-    // sat far BELOW our actual signal level, so the compressor was engaged
-    // almost constantly, applying ~20+dB of gain reduction that varied
-    // sharply with how many voices were simultaneously active — i.e. it
-    // was crushing and pumping hardest exactly when a new voice entered,
-    // such as right when connecting a pair. That's a very plausible source
-    // of an unnatural, blaring swell on sustained instruments (cello/
-    // strings) — likely the actual "car horn" cause diagnostic note/chord
-    // isolation testing could never reproduce, since those tests never had
-    // the rest of the arrangement playing to trigger heavy compression
-    // alongside them. Threshold is now set just below where the signal
-    // would actually clip, with a hard knee and a heavy ratio, so it's
-    // fully transparent (zero gain reduction) for the vast majority of
-    // normal playback and only clamps down on the rare moment several
-    // voices' peaks genuinely stack up close to 0dBFS — verified against
-    // a real overload case (see test notes) that the old settings were
-    // otherwise silently relying on to avoid hard clipping.
-    const compressor = STATE.audioCtx.createDynamicsCompressor();
-    compressor.threshold.value = -3;
-    compressor.knee.value = 0;
-    compressor.ratio.value = 20;
-    compressor.attack.value = 0.003;
-    compressor.release.value = 0.15;
-    const masterGain = STATE.audioCtx.createGain();
-    masterGain.gain.value = 1.0;
-    compressor.connect(masterGain);
-    masterGain.connect(STATE.audioCtx.destination);
-    STATE.masterBus = compressor;
-    STATE.masterGain = masterGain;
-
-    // Track the decode promise so startWave can wait for it before
-    // scheduling the first wave's song — scheduleLoopingSong calls
-    // playSample synchronously for every note up front, so if decoding
-    // isn't finished by then, those notes would silently never play.
-    STATE.samplesReadyPromise = decodeAllSamples();
+    // Wrapped in try/catch: if anything in graph setup ever throws (an
+    // unexpected browser quirk, a missing Web Audio API), the
+    // `if (!STATE.audioCtx)` guard above would otherwise see it as
+    // already-initialized forever after and never retry — permanent
+    // silence with nothing visible to the player. Resetting audioCtx back
+    // to null on failure means the next tap gets a clean second attempt.
+    try {
+      initAudioGraph();
+    } catch (e) {
+      console.error('initAudio failed; will retry on next input:', e);
+      STATE.audioCtx = null;
+      return;
+    }
   }
 
   // iOS Safari (especially standalone/home-screen PWAs) frequently leaves the
@@ -786,17 +757,73 @@ function initAudio() {
   unlockSource.start(0);
 }
 
+// One-time master bus + decode kickoff, split out of initAudio so it can
+// be wrapped in a single try/catch there.
+function initAudioGraph() {
+  STATE.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // Master bus: gain + compressor, tuned as a true peak LIMITER rather
+  // than an always-on processor. This was originally tuned aggressively
+  // (threshold -32dB, ratio 16:1) back when the game used loud
+  // synthesized voices, and never revisited after the move to real
+  // sample-based instruments, whose per-note peaks were carefully tuned
+  // down to ~0.35-0.6 (roughly -9 to -4dB). At -32dB, that old threshold
+  // sat far BELOW our actual signal level, so the compressor was engaged
+  // almost constantly, applying ~20+dB of gain reduction that varied
+  // sharply with how many voices were simultaneously active — i.e. it
+  // was crushing and pumping hardest exactly when a new voice entered,
+  // such as right when connecting a pair. That's a very plausible source
+  // of an unnatural, blaring swell on sustained instruments (cello/
+  // strings) — likely the actual "car horn" cause diagnostic note/chord
+  // isolation testing could never reproduce, since those tests never had
+  // the rest of the arrangement playing to trigger heavy compression
+  // alongside them. Threshold is now set just below where the signal
+  // would actually clip, with a hard knee and a heavy ratio, so it's
+  // fully transparent (zero gain reduction) for the vast majority of
+  // normal playback and only clamps down on the rare moment several
+  // voices' peaks genuinely stack up close to 0dBFS — verified against
+  // a real overload case (see test notes) that the old settings were
+  // otherwise silently relying on to avoid hard clipping.
+  const compressor = STATE.audioCtx.createDynamicsCompressor();
+  compressor.threshold.value = -3;
+  compressor.knee.value = 0;
+  compressor.ratio.value = 20;
+  compressor.attack.value = 0.003;
+  compressor.release.value = 0.15;
+  const masterGain = STATE.audioCtx.createGain();
+  masterGain.gain.value = 1.0;
+  compressor.connect(masterGain);
+  masterGain.connect(STATE.audioCtx.destination);
+  STATE.masterBus = compressor;
+  STATE.masterGain = masterGain;
+
+  // Track the decode promise so startWave can wait for it before
+  // scheduling the first wave's song — scheduleLoopingSong calls
+  // playSample synchronously for every note up front, so if decoding
+  // isn't finished by then, those notes would silently never play.
+  STATE.samplesReadyPromise = decodeAllSamples();
+}
+
 // --- Sample loading -----------------------------------------------------
 // Raw bytes are fetched as soon as the page loads (no AudioContext needed
 // for a plain fetch), overlapping with the "tap to begin" dwell time.
 // Decoding happens once the AudioContext exists (first user gesture).
+//
+// MP3, not Ogg Vorbis: WebKit (Safari, and every iOS browser — Apple
+// requires them all to use WebKit's engine, Chrome included) has never
+// supported decoding Ogg Vorbis via decodeAudioData. The samples used to
+// ship as .ogg, which decoded fine in this project's own Chromium-based
+// testing but silently failed every single sample on iOS — the game was
+// otherwise fully playable (nothing else touches audio) with total
+// silence and no visible error, since decode failures here are caught
+// and skipped per-note by design. MP3 decodes natively everywhere.
 let sampleRawBytes = {};
 
 function preloadSampleBytes() {
   for (const instrument in SAMPLE_MANIFEST) {
     sampleRawBytes[instrument] = {};
     SAMPLE_MANIFEST[instrument].forEach(note => {
-      fetch(`sounds/${instrument}/${instrument}_${note}.ogg`)
+      fetch(`sounds/${instrument}/${instrument}_${note}.mp3`)
         .then(r => r.arrayBuffer())
         .then(buf => { sampleRawBytes[instrument][note] = buf; })
         .catch(() => { /* sample missing — playSample falls back gracefully */ });
@@ -3785,6 +3812,11 @@ async function checkForNewVersionAndReload() {
     if (!res.ok) return;
     const data = await res.json();
     if (!data.build || data.build === currentBuild) return;
+
+    // The fetch above is async — if the player already tapped to begin
+    // and started a wave before it resolved, don't yank the page out from
+    // under them mid-session. They'll pick up the new version next load.
+    if (STATE.phase !== 'TITLE') return;
 
     // Guard against a reload loop: only ever attempt one reload per
     // target build, in case version.json is ever transiently wrong right
