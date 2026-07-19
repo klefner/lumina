@@ -2432,7 +2432,7 @@ function onInputEnd(e) {
   // any of its groupmates, which would make the wave permanently
   // uncompleteable. Reject it the same way a plain crossing is rejected;
   // the player just needs a different order or a less enclosing route.
-  if (wouldStrandAnyDot(pathToSegments(STATE.currentPath), STATE.activeDot, targetDot)) {
+  if (wouldStrandAnyDot(smoothedCurveSegments(STATE.currentPath), STATE.activeDot, targetDot)) {
     rejectConnection();
     return;
   }
@@ -2501,7 +2501,7 @@ function completeConnection(dotA, dotB) {
     dotB: dotB.id,
     colorIndex: dotA.colorIndex,
     pairId: dotA.pairId,
-    segments: pathToSegments(STATE.currentPath),
+    segments: smoothedCurveSegments(STATE.currentPath),
   });
 
   const fadingLine = {
@@ -2552,6 +2552,43 @@ function pathToSegments(path) {
   return segments;
 }
 
+// Every crossing/stranding check needs to reason about the same curve the
+// player actually sees, not the sparser raw recorded points connected by
+// straight lines. drawSmoothedPath renders a quadratic curve through the
+// midpoint of each consecutive pair of points (classic corner-rounding
+// smoothing) — at a sharp turn, like curling tightly around a barrier's
+// tip, that rounded curve and the raw straight-segment polyline can
+// diverge enough that a line which visibly clears an obstacle still
+// crosses it in the polyline actually being tested (or the reverse).
+// Sampling the exact rendered curve into fine segments keeps what's
+// tested and what's shown in agreement, so a line that looks clean is
+// never rejected for a crossing the player can't see.
+function smoothedCurveSegments(path) {
+  if (path.length < 3) return pathToSegments(path);
+
+  const SAMPLES_PER_SPAN = 8;
+  const curvePoints = [path[0]];
+  for (let i = 1; i < path.length - 1; i++) {
+    const p0 = path[i - 1], p1 = path[i], p2 = path[i + 1];
+    const startX = i === 1 ? p0.x : (p0.x + p1.x) / 2;
+    const startY = i === 1 ? p0.y : (p0.y + p1.y) / 2;
+    const endX = (p1.x + p2.x) / 2;
+    const endY = (p1.y + p2.y) / 2;
+    for (let s = 1; s <= SAMPLES_PER_SPAN; s++) {
+      const t = s / SAMPLES_PER_SPAN;
+      const mt = 1 - t;
+      // Same quadratic bezier (start, control=p1, end) that
+      // ctx.quadraticCurveTo(p1.x, p1.y, endX, endY) draws from
+      // (startX, startY) in drawSmoothedPath — sampled instead of drawn.
+      curvePoints.push({
+        x: mt * mt * startX + 2 * mt * t * p1.x + t * t * endX,
+        y: mt * mt * startY + 2 * mt * t * p1.y + t * t * endY,
+      });
+    }
+  }
+  return pathToSegments(curvePoints);
+}
+
 function pathLength(path) {
   let total = 0;
   for (let i = 1; i < path.length; i++) {
@@ -2574,7 +2611,7 @@ function segmentsIntersect(s1, s2) {
 }
 
 function pathCrossesExistingConnections(path) {
-  const newSegments = pathToSegments(path);
+  const newSegments = smoothedCurveSegments(path);
 
   for (const connection of STATE.connections) {
     for (const existingSeg of connection.segments) {
@@ -3053,7 +3090,7 @@ function breakConnection(pairId, colorIndex, sparkX, sparkY) {
 }
 
 function pathCrossesBarriers(path) {
-  const segs = pathToSegments(path);
+  const segs = smoothedCurveSegments(path);
   for (const b of STATE.barriers) {
     for (const seg of segs) {
       if (segmentsIntersect(seg, { x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 })) return true;
