@@ -70,6 +70,7 @@ const TUTORIAL_MESSAGES = [
   { text: 'Connect all the dots to hear the song.', dismissWhen: 'complete' },
   { text: 'The longer the lines you draw, the higher your score.', dismissWhen: 'connect' },
   { text: 'This game is about making relaxing music. Please enjoy.', dismissWhen: 'connect' },
+  { text: 'Pinch or scroll to zoom in and out.', dismissWhen: 'connect' },
 ];
 
 // ============================================================
