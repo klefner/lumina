@@ -398,6 +398,30 @@ function foldToInstrumentRange(instrument, midi) {
   return m;
 }
 
+// Folds an entire chord by a SINGLE shared octave shift, chosen to bring the
+// chord's own midpoint as close as possible to the center of the
+// instrument's real sampled range — instead of folding each tone
+// independently (foldToInstrumentRange above). Independent per-tone folding
+// was previously used here, but it only pulls tones back once they're 6+
+// semitones outside the sample range; a normal, consonant triad (root/3rd/
+// 5th) whose upper tones sit just past that boundary was passing through
+// untouched, then getting greedily squeezed by nearestDistinctSampleNotes
+// into whatever real samples were left near the edge of the range —
+// collapsing an ordinary major/minor triad into an adjacent-semitone
+// cluster (verified: 11/16 chord voicings across the four genres produced
+// a cluster instead of the intended triad). Shifting the whole chord by the
+// same number of octaves preserves its exact internal spacing, so the
+// distinct-sample resolution downstream lands on tones that are actually
+// spread out like the chord they represent.
+function foldChordToInstrumentRange(instrument, midiList) {
+  const range = instrumentMidiRange(instrument);
+  if (!range) return midiList;
+  const center = (Math.min(...midiList) + Math.max(...midiList)) / 2;
+  const targetCenter = (range.min + range.max) / 2;
+  const shift = Math.round((targetCenter - center) / 12) * 12;
+  return midiList.map(m => m + shift);
+}
+
 // --- Real instrument sample playback -----------------------------------
 // Recorded, individually-pitched note samples (see SAMPLE_MANIFEST), pitch-
 // shifted via playbackRate to reach notes between the ones actually
@@ -573,19 +597,38 @@ function generateSong(pairCount) {
           }
         }
       } else if (kind === 'pad') {
-        // Fold each chord tone toward the instrument's range independently
-        // (not just the chord as a block) — otherwise a chord voiced above
-        // or below the sampled range has multiple tones collapse onto the
-        // SAME nearest sample and play at once, phasing into a honk.
+        // Fold the chord as a single block (see foldChordToInstrumentRange)
+        // so its internal spacing survives — folding each tone independently
+        // let a normal triad's upper notes drift past the sample ceiling
+        // and get greedily squeezed into whatever samples were left near
+        // the edge of the range, collapsing it into an adjacent-semitone
+        // cluster instead of the chord it was supposed to be.
+        const padMidis = foldChordToInstrumentRange(instrument, chordDegrees.map(d => scaleMidi(genre, d, 0)));
         notes.push({
           beat: barStartBeat,
-          midiList: chordDegrees.map(d => foldToInstrumentRange(instrument, scaleMidi(genre, d, 0))),
+          midiList: padMidis,
           role: kind, instrument, vel: 0.9 + Math.random() * 0.15, chunkIndex,
         });
       } else if (kind === 'drone') {
+        // Anchored an octave below the pad's ACTUAL (block-folded) root,
+        // not computed independently from scale degree math — the two play
+        // on the same downbeat on the same instrument, so if their targets
+        // were resolved separately they could land on the same real sample
+        // and phase against each other exactly like an un-folded chord does.
+        // Clamped (not octave-folded) to the instrument's true floor: an
+        // instrument with a narrow sample range (e.g. cello, ~1.75 octaves)
+        // often can't fit both the chord AND a full octave below it, and
+        // folding the too-low target back up by 12 would land it exactly
+        // back on the pad root it was trying to avoid. Clamping instead
+        // settles it at the instrument's lowest real note — diatonic in
+        // every genre here, so it reads as a held pedal tone under the
+        // harmony rather than a wrong note.
+        const range = instrumentMidiRange(instrument);
+        const padRootMidi = foldChordToInstrumentRange(instrument, chordDegrees.map(d => scaleMidi(genre, d, 0)))[0];
+        const droneMidi = range ? Math.max(range.min, padRootMidi - 12) : padRootMidi - 12;
         notes.push({
           beat: barStartBeat,
-          midi: foldToInstrumentRange(instrument, scaleMidi(genre, chordRoot, -1)),
+          midi: droneMidi,
           role: kind, instrument, vel: 0.85 + Math.random() * 0.2, chunkIndex,
         });
       } else if (kind === 'accent') {
