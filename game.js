@@ -30,7 +30,7 @@ const CONFIG = {
 };
 
 const FADE_CONFIG = {
-  OUT_DURATION_SEC: 0.6, // fade-to-black speed — the song's volume ramps down over the same span
+  OUT_DURATION_SEC: 0.9, // fade-to-black speed — the song's volume ramps down over the same span
   IN_DURATION_SEC: 0.6,  // fade-from-black speed for the new wave
 };
 
@@ -297,6 +297,18 @@ const SPACE_CONFIG = {
   TYPES: ['asteroid', 'asteroid', 'satellite', 'comet'],
 };
 
+// Large background scenery — distinct from the small drifting asteroids/
+// satellites/comets above: 0-2 planets/moons/a star, nearly stationary,
+// shaded with gradients instead of flat fills so they read as spheres
+// rather than icons. Spawned once per wave-complete reveal, fading in
+// slowly like the rest of the galaxy (see STARFIELD_CONFIG.REVEAL_FADE_IN_SPEED).
+const CELESTIAL_CONFIG = {
+  TYPES: ['rocky', 'gasGiant', 'ringed', 'moon', 'sun'],
+  MIN_RADIUS: 34,
+  MAX_RADIUS: 80,
+  MIN_SEPARATION: 220, // px between two bodies' centers, so a pair never overlaps
+};
+
 // The traveling "drip" light shown on each connection once the whole wave
 // is connected and the dots are pulsing to the beat — a small bead of light
 // that slides along the drawn line like wax dripping down a fishing line,
@@ -379,6 +391,7 @@ const STATE = {
   stars: [],           // Background starfield for the current wave — resets each wave
   spaceObjects: [],    // Drifting asteroids / comets / satellites
   spaceSpawnTimer: 0,
+  celestialBodies: [], // 0-2 large planets/moons/a star, spawned once per wave-complete reveal
 
   breakSparks: [],     // Short-lived particle bursts where a rotating barrier snaps a connection
 
@@ -1547,6 +1560,7 @@ function checkWaveComplete() {
   // visible while still playing (see spawnStarsAroundDots).
   fillBaseStarfield();
   fillSpaceGalaxy();
+  spawnCelestialBodies();
 
   STATE.score += STATE.wave * 100;
   checkAchievements(STATE.score - STATE.waveStartScore);
@@ -1581,6 +1595,7 @@ function startWave(waveNumber) {
   STATE.isDrawing = false;
   STATE.spaceObjects = [];
   STATE.spaceSpawnTimer = 0;
+  STATE.celestialBodies = [];
   STATE.waveStartScore = STATE.score;
 
   showTutorialHint(waveNumber);
@@ -2024,6 +2039,167 @@ function fillSpaceGalaxy() {
   STATE.spaceSpawnTimer = 0;
 }
 
+function makeCraters(radius) {
+  const craters = [];
+  const count = 4 + Math.floor(Math.random() * 5);
+  for (let i = 0; i < count; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const d = Math.random() * radius * 0.7;
+    craters.push({ x: Math.cos(a) * d, y: Math.sin(a) * d, r: radius * (0.08 + Math.random() * 0.12) });
+  }
+  return craters;
+}
+
+function makeBands() {
+  const count = 5 + Math.floor(Math.random() * 4);
+  const bands = [];
+  for (let i = 0; i < count; i++) {
+    bands.push({ pos: i / count, width: (1 / count) * (0.6 + Math.random() * 0.8), lightness: 0.28 + Math.random() * 0.4 });
+  }
+  return bands;
+}
+
+// 0, 1, or 2 large background bodies, placed clear of each other, each
+// fading in independently over the reveal (see updateCelestialBodies).
+function spawnCelestialBodies() {
+  STATE.celestialBodies = [];
+  const count = Math.floor(Math.random() * 3);
+  const placed = [];
+  for (let i = 0; i < count; i++) {
+    const type = CELESTIAL_CONFIG.TYPES[Math.floor(Math.random() * CELESTIAL_CONFIG.TYPES.length)];
+    const radius = type === 'sun'
+      ? CELESTIAL_CONFIG.MIN_RADIUS * 0.7 + Math.random() * 20
+      : CELESTIAL_CONFIG.MIN_RADIUS + Math.random() * (CELESTIAL_CONFIG.MAX_RADIUS - CELESTIAL_CONFIG.MIN_RADIUS);
+
+    let x, y, attempts = 0;
+    do {
+      x = canvas.width * (0.12 + Math.random() * 0.76);
+      y = canvas.height * (0.1 + Math.random() * 0.55); // keep clear of the bottom UI/version-display strip
+      attempts++;
+    } while (placed.some(p => Math.hypot(p.x - x, p.y - y) < CELESTIAL_CONFIG.MIN_SEPARATION) && attempts < 20);
+    placed.push({ x, y });
+
+    STATE.celestialBodies.push({
+      type, x, y, radius,
+      hue: Math.random() * 360,
+      rotation: Math.random() * Math.PI * 2,
+      rotSpeed: 0.0004 + Math.random() * 0.0006, // barely perceptible spin — distant and slow
+      ringAngle: -0.35 + Math.random() * 0.2,
+      lightAngle: Math.random() * Math.PI * 2,
+      alpha: 0,
+      craters: (type === 'rocky' || type === 'moon') ? makeCraters(radius) : null,
+      bands: (type === 'gasGiant' || type === 'ringed') ? makeBands() : null,
+    });
+  }
+}
+
+function updateCelestialBodies() {
+  for (const body of STATE.celestialBodies) {
+    if (body.alpha < 1) body.alpha = Math.min(1, body.alpha + STARFIELD_CONFIG.REVEAL_FADE_IN_SPEED);
+    body.rotation += body.rotSpeed;
+  }
+}
+
+function drawCelestialRing(body, behindSphere) {
+  ctx.save();
+  ctx.rotate(body.ringAngle);
+  ctx.scale(1, 0.32);
+  ctx.beginPath();
+  const start = behindSphere ? Math.PI * 0.02 : Math.PI * 1.02;
+  const end = behindSphere ? Math.PI * 0.98 : Math.PI * 1.98;
+  ctx.arc(0, 0, body.radius * 1.8, start, end);
+  ctx.strokeStyle = `hsla(${body.hue}, 30%, 75%, 0.5)`;
+  ctx.lineWidth = body.radius * 0.32;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawCelestialBodies() {
+  for (const body of STATE.celestialBodies) {
+    if (body.alpha <= 0) continue;
+    ctx.save();
+    ctx.globalAlpha = body.alpha;
+    ctx.translate(body.x, body.y);
+
+    if (body.type === 'sun') {
+      for (let i = 3; i >= 1; i--) {
+        const r = body.radius * (1 + i * 0.6);
+        const glow = ctx.createRadialGradient(0, 0, body.radius * 0.3, 0, 0, r);
+        glow.addColorStop(0, `hsla(${body.hue}, 90%, 70%, ${(0.22 / i).toFixed(3)})`);
+        glow.addColorStop(1, 'hsla(0,0%,0%,0)');
+        ctx.beginPath();
+        ctx.fillStyle = glow;
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      const core = ctx.createRadialGradient(-body.radius * 0.2, -body.radius * 0.2, 0, 0, 0, body.radius);
+      core.addColorStop(0, `hsl(${body.hue}, 95%, 90%)`);
+      core.addColorStop(1, `hsl(${body.hue}, 90%, 60%)`);
+      ctx.beginPath();
+      ctx.fillStyle = core;
+      ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      if (body.type === 'ringed') drawCelestialRing(body, true);
+
+      ctx.rotate(body.rotation);
+      const lx = Math.cos(body.lightAngle) * body.radius * 0.6;
+      const ly = Math.sin(body.lightAngle) * body.radius * 0.6;
+      const sphere = ctx.createRadialGradient(lx, ly, body.radius * 0.1, 0, 0, body.radius * 1.15);
+      if (body.type === 'gasGiant') {
+        sphere.addColorStop(0, `hsl(${body.hue}, 55%, 62%)`);
+        sphere.addColorStop(0.6, `hsl(${body.hue}, 50%, 42%)`);
+        sphere.addColorStop(1, `hsl(${body.hue}, 45%, 14%)`);
+      } else if (body.type === 'moon') {
+        sphere.addColorStop(0, `hsl(${body.hue}, 8%, 68%)`);
+        sphere.addColorStop(0.6, `hsl(${body.hue}, 8%, 42%)`);
+        sphere.addColorStop(1, `hsl(${body.hue}, 10%, 10%)`);
+      } else {
+        sphere.addColorStop(0, `hsl(${body.hue}, 45%, 58%)`);
+        sphere.addColorStop(0.6, `hsl(${body.hue}, 40%, 36%)`);
+        sphere.addColorStop(1, `hsl(${body.hue}, 35%, 10%)`);
+      }
+      ctx.beginPath();
+      ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
+      ctx.fillStyle = sphere;
+      ctx.fill();
+
+      if (body.bands) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
+        ctx.clip();
+        for (const b of body.bands) {
+          const yPos = (b.pos - 0.5) * body.radius * 2;
+          ctx.fillStyle = `hsla(${body.hue}, 40%, ${(b.lightness * 100).toFixed(0)}%, 0.35)`;
+          ctx.fillRect(-body.radius, yPos, body.radius * 2, b.width * body.radius * 2);
+        }
+        ctx.restore();
+      }
+
+      if (body.craters) {
+        for (const c of body.craters) {
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(0,0,0,0.18)';
+          ctx.fill();
+        }
+      }
+
+      ctx.beginPath();
+      ctx.arc(0, 0, body.radius * 1.02, 0, Math.PI * 2);
+      ctx.strokeStyle = `hsla(${body.hue}, 60%, 70%, 0.15)`;
+      ctx.lineWidth = body.radius * 0.08;
+      ctx.stroke();
+
+      ctx.rotate(-body.rotation);
+      if (body.type === 'ringed') drawCelestialRing(body, false);
+    }
+
+    ctx.restore();
+  }
+}
+
 function updateSpaceObjects() {
   STATE.spaceSpawnTimer++;
   if (STATE.spaceSpawnTimer > SPACE_CONFIG.SPAWN_INTERVAL_FRAMES && STATE.spaceObjects.length < SPACE_CONFIG.MAX_OBJECTS) {
@@ -2267,7 +2443,7 @@ function update() {
   updateStars();
   // Asteroids/satellites/comets only drift through once the whole wave's
   // line-galaxy is complete — they'd be a distraction while still connecting.
-  if (STATE.phase === 'WAVE_COMPLETE') updateSpaceObjects();
+  if (STATE.phase === 'WAVE_COMPLETE') { updateSpaceObjects(); updateCelestialBodies(); }
   updateBarriers();
   checkRotatingBarrierBreaks();
   updateBreakSparks();
@@ -2293,7 +2469,7 @@ function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   drawStars();
-  if (STATE.phase === 'WAVE_COMPLETE') drawSpaceObjects();
+  if (STATE.phase === 'WAVE_COMPLETE') { drawCelestialBodies(); drawSpaceObjects(); }
   drawBarriers();
 
   for (const line of STATE.lines) {
