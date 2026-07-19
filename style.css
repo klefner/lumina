@@ -86,3 +86,30 @@ html, body {
   pointer-events: none;
   z-index: 10;
 }
+
+/* Tutorial hint — a quiet, unobtrusive line of text at the bottom of the
+   screen for the first five waves only. Fades in on wave start, stays put
+   until the player does what it describes, then fades out for good. Kept
+   low-contrast and pointer-events:none so it never competes with the dots
+   or blocks a drag. */
+#tutorial-hint {
+  position: fixed;
+  bottom: 46px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 86%;
+  max-width: 560px;
+  text-align: center;
+  font-family: Georgia, 'Palatino Linotype', 'Times New Roman', serif;
+  font-style: italic;
+  font-weight: 400;
+  font-size: 16px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.55);
+  letter-spacing: 0.03em;
+  text-shadow: 0 0 18px rgba(255, 255, 255, 0.2);
+  opacity: 0;
+  transition: opacity 1.4s ease;
+  pointer-events: none;
+  z-index: 10;
+}

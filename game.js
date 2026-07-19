@@ -34,6 +34,19 @@ const FADE_CONFIG = {
   IN_DURATION_SEC: 0.6,  // fade-from-black speed for the new wave
 };
 
+// A short, unobtrusive tutorial hint shown once per wave for the first five
+// waves only — fades in at wave start, stays on screen until the player
+// does the thing it describes, then fades out and never reappears for that
+// wave. `dismissWhen: 'connect'` clears it on the wave's first completed
+// connection; `'complete'` waits for the whole wave to be finished.
+const TUTORIAL_MESSAGES = [
+  { text: 'Tap/Click hold to draw a line from one colored dot to its pair.', dismissWhen: 'connect' },
+  { text: 'Each connected dot pair is a part of a series of musical notes.', dismissWhen: 'connect' },
+  { text: 'Connect all the dots to hear the song.', dismissWhen: 'complete' },
+  { text: 'The longer the lines you draw, the higher your score.', dismissWhen: 'connect' },
+  { text: 'This game is about making relaxing music. Please enjoy.', dismissWhen: 'connect' },
+];
+
 // Color palette — each index is one instrument/color
 const INSTRUMENTS = [
   { hex: '#00FFFF', glow: 'rgba(0,255,255,',   name: 'crystal' },
@@ -224,6 +237,9 @@ const STATE = {
   spaceSpawnTimer: 0,
 
   breakSparks: [],     // Short-lived particle bursts where a rotating barrier snaps a connection
+
+  tutorialWave: null,        // wave number the current on-screen tutorial hint belongs to, or null
+  tutorialDismissWhen: null, // 'connect' | 'complete' — what the player needs to do to dismiss it
 };
 
 // ============================================================
@@ -1217,6 +1233,13 @@ function findDotAt(x, y, includeConnected) {
   return null;
 }
 
+// Points per pixel of drawn line — rewards taking the long way around
+// (weaving past other dots or barriers) instead of the shortest straight
+// shot between a pair. Tuned so a typical direct connection is worth a
+// couple dozen points, in the same ballpark as the per-wave completion
+// bonus below, and a deliberately winding one is worth meaningfully more.
+const SCORE_PER_LINE_PIXEL = 0.08;
+
 function completeConnection(dotA, dotB) {
   dotA.connected = true;
   dotB.connected = true;
@@ -1244,6 +1267,11 @@ function completeConnection(dotA, dotB) {
 
   haptic('connect');
 
+  STATE.score += Math.round(pathLength(STATE.currentPath) * SCORE_PER_LINE_PIXEL);
+  updateWaveDisplay();
+
+  checkTutorialDismiss(false);
+
   STATE.activeDot = null;
   STATE.currentPath = [];
 
@@ -1269,6 +1297,14 @@ function pathToSegments(path) {
     segments.push({ x1: path[i - 1].x, y1: path[i - 1].y, x2: path[i].x, y2: path[i].y });
   }
   return segments;
+}
+
+function pathLength(path) {
+  let total = 0;
+  for (let i = 1; i < path.length; i++) {
+    total += Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+  }
+  return total;
 }
 
 function segmentsIntersect(s1, s2) {
@@ -1300,6 +1336,8 @@ function pathCrossesExistingConnections(path) {
 function checkWaveComplete() {
   const allConnected = STATE.dots.every(dot => dot.connected);
   if (!allConnected) return;
+
+  checkTutorialDismiss(true);
 
   STATE.phase = 'WAVE_COMPLETE';
   STATE.waveCompleteAdvancing = false;
@@ -1350,6 +1388,8 @@ function startWave(waveNumber) {
   STATE.isDrawing = false;
   STATE.spaceObjects = [];
   STATE.spaceSpawnTimer = 0;
+
+  showTutorialHint(waveNumber);
 
   const pairCount = getPairCountForWave(waveNumber);
   STATE.song = generateSong(pairCount);
@@ -1891,6 +1931,32 @@ function showMessage(title, subtitle) {
 
 function hideMessage() {
   document.getElementById('message-overlay').style.opacity = '0';
+}
+
+function showTutorialHint(waveNumber) {
+  const entry = TUTORIAL_MESSAGES[waveNumber - 1];
+  if (!entry) { STATE.tutorialWave = null; STATE.tutorialDismissWhen = null; return; }
+  STATE.tutorialWave = waveNumber;
+  STATE.tutorialDismissWhen = entry.dismissWhen;
+  const el = document.getElementById('tutorial-hint');
+  el.textContent = entry.text;
+  el.style.opacity = '1';
+}
+
+function hideTutorialHint() {
+  if (STATE.tutorialWave === null) return;
+  STATE.tutorialWave = null;
+  STATE.tutorialDismissWhen = null;
+  document.getElementById('tutorial-hint').style.opacity = '0';
+}
+
+// Called after any dot-pair connection and after a wave completes — clears
+// the current tutorial hint if its condition is satisfied. A no-op once all
+// five tutorial waves are past (tutorialWave stays null).
+function checkTutorialDismiss(justCompletedWave) {
+  if (STATE.tutorialWave === null) return;
+  if (justCompletedWave && STATE.tutorialDismissWhen === 'complete') hideTutorialHint();
+  else if (!justCompletedWave && STATE.tutorialDismissWhen === 'connect') hideTutorialHint();
 }
 
 function updateWaveDisplay() {
