@@ -29,6 +29,30 @@ const CONFIG = {
   MAX_PAIRS: 6,              // Maximum color pairs ever shown
 };
 
+// Past wave 10, a color group can have more than 2 dots — the player
+// links them into a single connected network (any dot to any other
+// same-colored dot, as long as they're not already linked) rather than
+// one fixed pair. Not every color gets extra dots on a given wave — only
+// EXTRA_GROUP_CHANCE of them do, so it reads as randomly chosen rather
+// than a hard rule, while the ceiling on how big a group can get keeps
+// rising, so it's always progressively more difficult.
+const GROUP_CONFIG = {
+  START_WAVE: 11,           // waves 1-10 stay simple 2-dot pairs
+  WAVES_PER_TIER: 10,       // the max group size ceiling rises by 1 every N waves after START_WAVE
+  EXTRA_GROUP_CHANCE: 0.45, // per-color odds of exceeding 2 dots, once eligible
+};
+
+function maxGroupSizeForWave(wave) {
+  if (wave < GROUP_CONFIG.START_WAVE) return 2;
+  return 3 + Math.floor((wave - GROUP_CONFIG.START_WAVE) / GROUP_CONFIG.WAVES_PER_TIER);
+}
+
+function groupSizeForColor(wave) {
+  const maxSize = maxGroupSizeForWave(wave);
+  if (maxSize <= 2 || Math.random() >= GROUP_CONFIG.EXTRA_GROUP_CHANCE) return 2;
+  return 3 + Math.floor(Math.random() * (maxSize - 2)); // 3..maxSize inclusive
+}
+
 const FADE_CONFIG = {
   OUT_DURATION_SEC: 0.9, // fade-to-black speed — the song's volume ramps down over the same span
   IN_DURATION_SEC: 0.6,  // fade-from-black speed for the new wave
@@ -431,6 +455,9 @@ const STATE = {
   connections: [],     // Array of completed connection objects
   lines: [],           // Array of fading line objects
   barriers: [],        // Array of static obstacle segments for this wave
+  dotUnion: {},        // dot.id -> dot.id — union-find over same-color dots, tracks which are
+                        // already linked (directly or transitively) so a color with 3+ dots can
+                        // be solved by connecting them into one network, not just fixed pairs
 
   activeDot: null,     // The dot currently being dragged from
   currentPath: [],     // Points being drawn right now [{x, y}]
@@ -1360,8 +1387,9 @@ function generateDots(wave) {
 
   for (let pairId = 0; pairId < pairCount; pairId++) {
     const colorIndex = shuffledInstruments[pairId];
+    const groupSize = groupSizeForColor(wave);
 
-    for (let k = 0; k < 2; k++) {
+    for (let k = 0; k < groupSize; k++) {
       const pos = findValidPosition(dots);
       dots.push({
         id: idCounter++,
@@ -1506,7 +1534,11 @@ function onInputEnd(e) {
     return;
   }
 
-  if (targetDot.connected || STATE.activeDot.connected) {
+  // Rejects both "this exact pair is already linked" and, for a 3+-dot
+  // color group, "these two dots are already linked transitively through
+  // another dot in the same group" — either way there's nothing new this
+  // connection would add.
+  if (ufConnected(STATE.activeDot.id, targetDot.id)) {
     cancelActiveLine();
     return;
   }
@@ -1531,6 +1563,28 @@ function findDotAt(x, y, includeConnected) {
   return null;
 }
 
+// Union-find over STATE.dotUnion — tracks which same-color dots are
+// already linked, directly or transitively, so a 3+-dot color group can
+// be solved by connecting its dots into one network in any order/pattern
+// rather than one fixed pair. Path-compressed for O(~1) lookups.
+function ufFind(id) {
+  let root = id;
+  while (STATE.dotUnion[root] !== root) root = STATE.dotUnion[root];
+  while (STATE.dotUnion[id] !== root) {
+    const next = STATE.dotUnion[id];
+    STATE.dotUnion[id] = root;
+    id = next;
+  }
+  return root;
+}
+function ufUnion(a, b) {
+  const ra = ufFind(a), rb = ufFind(b);
+  if (ra !== rb) STATE.dotUnion[ra] = rb;
+}
+function ufConnected(a, b) {
+  return ufFind(a) === ufFind(b);
+}
+
 // Points per pixel of drawn line — rewards taking the long way around
 // (weaving past other dots or barriers) instead of the shortest straight
 // shot between a pair. Tuned so a typical direct connection is worth a
@@ -1538,9 +1592,20 @@ function findDotAt(x, y, includeConnected) {
 // bonus below, and a deliberately winding one is worth meaningfully more.
 const SCORE_PER_LINE_PIXEL = 0.08;
 
+// A color's dots are "connected" (for wave-complete purposes, and for
+// excluding them from further drags) once ALL of them sit in the same
+// union-find component — not just the two endpoints of the latest line.
+// For a plain 2-dot pair this is the same instant as before; for a 3+-dot
+// group it only becomes true once enough edges have linked the whole set.
+function markGroupIfFullySolved(pairId) {
+  const groupDots = STATE.dots.filter(d => d.pairId === pairId);
+  const allLinked = groupDots.every(d => ufConnected(d.id, groupDots[0].id));
+  if (allLinked) for (const d of groupDots) d.connected = true;
+}
+
 function completeConnection(dotA, dotB) {
-  dotA.connected = true;
-  dotB.connected = true;
+  ufUnion(dotA.id, dotB.id);
+  markGroupIfFullySolved(dotA.pairId);
 
   STATE.connections.push({
     dotA: dotA.id,
@@ -1682,6 +1747,8 @@ function startWave(waveNumber) {
   STATE.wave = waveNumber;
   STATE.phase = 'PLAYING';
   STATE.dots = generateDots(waveNumber);
+  STATE.dotUnion = {};
+  for (const dot of STATE.dots) STATE.dotUnion[dot.id] = dot.id;
   STATE.connections = [];
   STATE.lines = [];
   STATE.activeDot = null;
@@ -1841,7 +1908,10 @@ function barrierEndpoints(pivotX, pivotY, angle, length) {
 function generateBarriers(wave, dots) {
   const count = getBarrierCountForWave(wave);
   const rotatingCount = Math.min(count, getRotatingCountForWave(wave));
-  const pairCount = dots.length / 2;
+  // Not dots.length/2 — a color group can now have more than 2 dots (see
+  // GROUP_CONFIG), so the number of distinct color groups has to be
+  // counted directly rather than assumed.
+  const pairCount = new Set(dots.map(d => d.pairId)).size;
   const barriers = [];
   const targetedPairs = new Set();
   let attempts = 0;
@@ -1853,7 +1923,15 @@ function generateBarriers(wave, dots) {
     const pool = untargeted.length ? untargeted : [...Array(pairCount).keys()];
     const pairId = pool[Math.floor(Math.random() * pool.length)];
 
-    const [a, b] = dots.filter(d => d.pairId === pairId);
+    // A color group can have more than 2 dots (see GROUP_CONFIG) — target
+    // a random pair from within it rather than always the first two, so a
+    // barrier can end up blocking any potential edge of the network, not
+    // just one fixed one.
+    const groupDots = dots.filter(d => d.pairId === pairId);
+    const gi = Math.floor(Math.random() * groupDots.length);
+    let gj = Math.floor(Math.random() * (groupDots.length - 1));
+    if (gj >= gi) gj++;
+    const a = groupDots[gi], b = groupDots[gj];
     const dx = b.x - a.x, dy = b.y - a.y;
     const pairDist = Math.hypot(dx, dy);
     if (pairDist < 40) continue; // too close together to usefully block
@@ -1910,30 +1988,45 @@ function updateBarriers() {
 // listen/fade), since by then the puzzle's already been solved.
 function checkRotatingBarrierBreaks() {
   if (STATE.phase !== 'PLAYING') return;
+  // Collect which colors got hit first (a color can have multiple edges
+  // once a group has 3+ dots — see GROUP_CONFIG), then break each once.
+  // Breaking mutates/removes entries from STATE.connections, so resolving
+  // hits before acting on any of them avoids invalidating indices mid-scan.
+  const hits = new Map(); // pairId -> { colorIndex, sparkX, sparkY }
   for (const b of STATE.barriers) {
     if (!b.rotating) continue;
-    for (let i = STATE.connections.length - 1; i >= 0; i--) {
-      const conn = STATE.connections[i];
+    for (const conn of STATE.connections) {
+      if (hits.has(conn.pairId)) continue;
       for (const seg of conn.segments) {
         if (segmentsIntersect(seg, { x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 })) {
-          breakConnection(conn, i, (b.x1 + b.x2) / 2, (b.y1 + b.y2) / 2);
+          hits.set(conn.pairId, { colorIndex: conn.colorIndex, sparkX: (b.x1 + b.x2) / 2, sparkY: (b.y1 + b.y2) / 2 });
           break;
         }
       }
     }
   }
+  for (const [pairId, hit] of hits) breakConnection(pairId, hit.colorIndex, hit.sparkX, hit.sparkY);
 }
 
-function breakConnection(conn, index, sparkX, sparkY) {
-  const dotA = STATE.dots.find(d => d.id === conn.dotA);
-  const dotB = STATE.dots.find(d => d.id === conn.dotB);
-  if (dotA) dotA.connected = false;
-  if (dotB) dotB.connected = false;
+// Resets a color's WHOLE network, not just the one edge the barrier swept
+// through — once a group has 3+ dots (see GROUP_CONFIG), a single edge
+// can't be cleanly un-linked from the rest without re-deriving connectivity
+// from the remaining edges, so a barrier strike sends that color back to
+// square one instead. Simpler rule, and an honest one: if a barrier cuts
+// through any part of a color's network, that color's progress resets.
+function breakConnection(pairId, colorIndex, sparkX, sparkY) {
+  const groupDots = STATE.dots.filter(d => d.pairId === pairId);
+  for (const d of groupDots) {
+    d.connected = false;
+    STATE.dotUnion[d.id] = d.id;
+  }
 
-  STATE.connections.splice(index, 1);
-  STATE.lines = STATE.lines.filter(l => l.pairId !== conn.pairId);
-  spawnBreakSparks(sparkX, sparkY, conn.colorIndex);
-  remuteChunk(conn.pairId);
+  for (let i = STATE.connections.length - 1; i >= 0; i--) {
+    if (STATE.connections[i].pairId === pairId) STATE.connections.splice(i, 1);
+  }
+  STATE.lines = STATE.lines.filter(l => l.pairId !== pairId);
+  spawnBreakSparks(sparkX, sparkY, colorIndex);
+  remuteChunk(pairId);
   haptic('break');
 }
 
