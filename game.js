@@ -1072,11 +1072,36 @@ const KIND_PEAK = {
   accent: 0.32,
   drone: 0.28,
   pad: 0.22,
+  drum: 0.45, // unverified against real drum samples yet — no family uses this role kind until one exists
 };
+
+// Drum one-shots are triggered at their recorded pitch/speed — no nearest-
+// sample resolution, no playbackRate shift, unlike every pitched role
+// above. A kick/snare/hihat isn't a scale degree with neighbors to fold
+// or fall back to; it's exactly one specific recording or nothing.
+function playDrumHit(instrument, piece, t, peak, dest) {
+  const buffers = STATE.sampleBuffers[instrument];
+  if (!buffers) return;
+  const buffer = buffers[piece];
+  if (!buffer) return;
+
+  const ctx = STATE.audioCtx;
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+
+  const gain = ctx.createGain();
+  gain.gain.value = peak;
+
+  src.connect(gain);
+  gain.connect(dest);
+  trackSource(src).start(t);
+}
 
 function playNoteAt(note, t, peak, dest) {
   if (note.role === 'pad') {
     playSampleChord(note.instrument, note.midiList, t, peak, dest, note.resolvedSamples);
+  } else if (note.role === 'drum') {
+    playDrumHit(note.instrument, note.drumPiece, t, peak, dest);
   } else {
     playSample(note.instrument, note.midi, t, peak, dest, note.resolvedSample);
   }
@@ -1117,6 +1142,18 @@ function humanizeBeat(beat, amountBeats) {
 // like an identical sample fired on a loop.
 function humanizeVelocity() {
   return 0.85 + Math.random() * 0.3;
+}
+
+// Straight-eighth step position within a bar, with an optional swing feel
+// (family-level, see GENRE_FAMILIES groove.swing): the off-beat ("and")
+// eighth notes land later than an even grid, the way a laid-back groove
+// actually sits. swing=0 (every family so far except any that opt in)
+// returns exactly the old unswung `step * 0.5` for every step — this is
+// additive, not a behavior change for anything that doesn't use it.
+function stepBeat(step, groove) {
+  const base = step * 0.5;
+  if (!groove || !groove.swing || step % 2 === 0) return base;
+  return base + groove.swing * 0.5;
 }
 
 // Generates a full arrangement using "vertical layering" — the standard
@@ -1169,7 +1206,7 @@ function generateSong(pairCount) {
             const useChordTone = Math.random() < 0.8;
             const deg = useChordTone ? baseDeg : baseDeg + (Math.random() < 0.5 ? 1 : -1);
             notes.push({
-              beat: humanizeBeat(barStartBeat + step * 0.5, 0.03),
+              beat: humanizeBeat(barStartBeat + stepBeat(step, genre.groove), 0.03),
               midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 1)),
               role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
             });
@@ -1192,7 +1229,7 @@ function generateSong(pairCount) {
           if (step === 0 || Math.random() < 0.6) { // always land on the downbeat, roll the rest
             const deg = chordDegrees[arpeggioPattern[step]];
             notes.push({
-              beat: humanizeBeat(barStartBeat + step * 0.5, 0.02),
+              beat: humanizeBeat(barStartBeat + stepBeat(step, genre.groove), 0.02),
               midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 0)),
               role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
             });
@@ -1239,10 +1276,29 @@ function generateSong(pairCount) {
         const step = Math.floor(Math.random() * stepsPerBar);
         const deg = chordDegrees[Math.floor(Math.random() * chordDegrees.length)];
         notes.push({
-          beat: humanizeBeat(barStartBeat + step * 0.5, 0.04),
+          beat: humanizeBeat(barStartBeat + stepBeat(step, genre.groove), 0.04),
           midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 1)),
           role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
         });
+      } else if (kind === 'drum') {
+        // Not a scale degree — a fixed one-shot kit (kick/snare/hihat),
+        // triggered on a steady pattern rather than derived from the
+        // chord. Only families with hasDrumRole ever assign this kind
+        // (see GENRE_FAMILIES), and playback (playDrumHit) skips all the
+        // pitch-resolution machinery every other role above uses.
+        for (let step = 0; step < stepsPerBar; step++) {
+          const beat = barStartBeat + stepBeat(step, genre.groove);
+          if (step === 0 || step === 4) {
+            notes.push({ beat, role: kind, instrument, drumPiece: 'kick', vel: humanizeVelocity(), chunkIndex });
+          }
+          if (step === 2 || step === 6) {
+            notes.push({ beat, role: kind, instrument, drumPiece: 'snare', vel: humanizeVelocity(), chunkIndex });
+          }
+          notes.push({
+            beat, role: kind, instrument, drumPiece: 'hihat',
+            vel: humanizeVelocity() * (step % 2 === 0 ? 1 : 0.7), chunkIndex,
+          });
+        }
       }
     }
   });
@@ -1268,6 +1324,7 @@ const SIMULTANEOUS_BEAT_TOLERANCE = 0.15; // wider than any humanizeBeat jitter,
 function resolveInstrumentCollisions(notes) {
   const byInstrument = {};
   for (const note of notes) {
+    if (note.role === 'drum') continue; // fixed one-shot hits — never a nearest-sample collision candidate
     (byInstrument[note.instrument] = byInstrument[note.instrument] || []).push(note);
   }
   for (const instrument in byInstrument) {
