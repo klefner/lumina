@@ -268,51 +268,18 @@ function showAchievementToast(entry) {
   void badge.offsetWidth; // force reflow so the animation restarts
   badge.style.animation = '';
 
-  layoutAchievementToast(toast, entry.label);
+  // The card is opaque and always dead-center now (see style.css), so it
+  // no longer needs the dot-avoidance reflow the old translucent toast
+  // used — just set the text and let it wrap naturally inside the card.
+  document.getElementById('achievement-label').textContent = entry.label;
   toast.classList.add('visible');
   playAchievementJingle();
 
   setTimeout(() => {
     toast.classList.remove('visible');
     STATE.achievementToastActive = false;
-    setTimeout(maybeShowNextAchievement, 700); // let the fade-out finish before the next one pops in
+    setTimeout(maybeShowNextAchievement, 500); // let the retract finish before the next one drops in
   }, ACHIEVEMENT_VISIBLE_MS);
-}
-
-// Same center-out, dot-avoiding search as layoutTutorialHint, anchored near
-// the top of the screen instead of dead-center, and reflowing the label
-// text (not the badge, which is a fixed-size circle) to shrink the toast's
-// footprint when needed.
-function layoutAchievementToast(toast, text) {
-  const label = document.getElementById('achievement-label');
-  const words = text.split(' ');
-  const lineOptions = [];
-  for (let lineCount = 1; lineCount <= words.length; lineCount++) lineOptions.push(wrapIntoLines(words, lineCount));
-
-  const maxRadius = Math.min(canvas.width, canvas.height) * 0.5;
-  const positions = tutorialPositionCandidates(maxRadius, 25);
-
-  let fallback = null; // best layout that at least stays on-screen, even if it still grazes a dot
-  for (const fontSize of [20, 17, 15, 13]) {
-    label.style.fontSize = fontSize + 'px';
-    for (const { dx, dy } of positions) {
-      toast.style.left = `calc(50% + ${dx}px)`;
-      toast.style.top = `calc(14% + ${dy}px)`;
-      for (const lines of lineOptions) {
-        label.innerHTML = lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
-        const rect = toast.getBoundingClientRect();
-        if (rectOutOfBounds(rect)) continue; // never render part of the toast off the edge of the phone
-        if (!rectOverlapsAnyDot(rect)) return; // ideal: on-screen AND clear of every dot
-        if (!fallback) fallback = { fontSize, dx, dy, lines };
-      }
-    }
-  }
-  if (fallback) {
-    label.style.fontSize = fallback.fontSize + 'px';
-    toast.style.left = `calc(50% + ${fallback.dx}px)`;
-    toast.style.top = `calc(14% + ${fallback.dy}px)`;
-    label.innerHTML = fallback.lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
-  }
 }
 
 // A quick, bright ascending flourish — independent of the song's own
