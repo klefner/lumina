@@ -3404,8 +3404,25 @@ function render() {
 }
 
 function gameLoop() {
-  if (!STATE.paused) update(); // freeze every animation/state change while the pause menu is open
-  render();
+  // If anything throws here, it must never take requestAnimationFrame's
+  // next call down with it — a single bad frame would otherwise silently
+  // kill the entire loop forever. That's especially costly for the pause
+  // menu: opening it and Save Game are plain DOM/localStorage work that
+  // don't need the loop at all, but Restart/Load/Exit all rely on
+  // updateFade() (called from update()) to actually carry out their
+  // transition — with a dead loop they'd visibly do nothing, while Save
+  // would still appear to work fine, which is exactly the confusing
+  // "only Save works" symptom a silently-dead loop produces.
+  try {
+    if (!STATE.paused) update(); // freeze every animation/state change while the pause menu is open
+  } catch (e) {
+    console.error('update() failed; game loop continuing anyway:', e);
+  }
+  try {
+    render();
+  } catch (e) {
+    console.error('render() failed; game loop continuing anyway:', e);
+  }
   requestAnimationFrame(gameLoop);
 }
 
