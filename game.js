@@ -401,6 +401,13 @@ const TRAVELING_LIGHT_CONFIG = {
   RADIUS: 5,
   TAIL_STEPS: 4,
   TAIL_BEAT_SPACING: 0.045,
+  // Constant physical speed for every connection's drip, regardless of the
+  // line's own length — previously every drip took exactly one beat to
+  // cross its ENTIRE line, so a long line's bead visibly moved faster than
+  // a short line's. Now every bead moves at the same px/beat, so a longer
+  // line's drip just takes proportionally longer to cross it instead.
+  SPEED_PX_PER_BEAT: 260,
+  MIN_BEATS_PER_TRAVERSAL: 0.4, // keeps a very short line from cycling absurdly fast
 };
 
 const BARRIER_CONFIG = {
@@ -1261,12 +1268,18 @@ function drawSmoothedPath(points, strokeStyleFn) {
 
 function drawFadingLine(line) {
   const instrument = INSTRUMENTS[line.colorIndex];
+  // getBeatPulse() returns non-null only once every dot is connected (see
+  // its own comment) — the exact same value, same phase, that the dots
+  // pulse with, so the lines visibly breathe in sync with them rather than
+  // running on their own independent timing.
+  const beatPulse = getBeatPulse();
+  const pulseBoost = beatPulse !== null ? 0.7 + 0.6 * beatPulse : 1;
 
   ctx.save();
-  ctx.lineWidth = CONFIG.LINE_WIDTH;
+  ctx.lineWidth = CONFIG.LINE_WIDTH * (beatPulse !== null ? 0.85 + 0.3 * beatPulse : 1);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.shadowBlur = CONFIG.LINE_GLOW_BLUR;
+  ctx.shadowBlur = CONFIG.LINE_GLOW_BLUR * pulseBoost;
   ctx.shadowColor = instrument.hex;
 
   drawSmoothedPath(line.points, {
@@ -1325,24 +1338,36 @@ function dripEase(t) {
   return t * t;
 }
 
+function segmentsLength(segments) {
+  let total = 0;
+  for (const s of segments) total += Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
+  return total;
+}
+
 // Once every dot in the wave is connected and the dots are pulsing to the
 // beat, each connection also grows a small bead of light that slides back
-// and forth along its line in time with the music, with a short fading tail
-// behind it for that dripping-wax look.
+// and forth along its line, with a short fading tail behind it for that
+// dripping-wax look. Every bead moves at the same constant physical speed
+// (SPEED_PX_PER_BEAT) regardless of that connection's own length, so a
+// long line's drip takes proportionally longer to cross it rather than
+// visibly outrunning a short line's — no more per-connection stagger
+// either, since that fought against reading as "the same beat."
 function drawTravelingLights() {
   if (!STATE.beatSync) return;
   const beatDur = 60 / STATE.beatSync.bpm;
   const elapsedBeats = (performance.now() - STATE.beatSync.startTime) / 1000 / beatDur;
 
-  STATE.connections.forEach((connection, i) => {
+  STATE.connections.forEach((connection) => {
     if (!connection.segments.length) return;
     const instrument = INSTRUMENTS[connection.colorIndex];
-    // Stagger each connection's drip cycle a little so the whole galaxy
-    // doesn't move in perfect lockstep — still on the same beat clock.
-    const offset = (i * 0.37) % 1;
+    const totalLen = segmentsLength(connection.segments);
+    const beatsPerTraversal = Math.max(
+      TRAVELING_LIGHT_CONFIG.MIN_BEATS_PER_TRAVERSAL,
+      totalLen / TRAVELING_LIGHT_CONFIG.SPEED_PX_PER_BEAT
+    );
 
     const posForBeats = (beats) => {
-      const local = beats + offset;
+      const local = beats / beatsPerTraversal;
       const cycle = Math.floor(local);
       const frac = local - cycle;
       const eased = dripEase(frac);
