@@ -858,6 +858,30 @@ function nearestDistinctSampleNotes(instrument, midiList) {
   });
 }
 
+// The source recordings themselves were captured at wildly different
+// dynamics (see sounds/CREDITS.md: piano/cello at mf, marimba/vibraphone
+// at ff, flute deliberately re-extracted at pp) — measured directly from
+// the actual sample files (0.3s attack-window RMS, averaged per
+// instrument): flute ~0.020, piano ~0.023, cello ~0.085, marimba ~0.214,
+// vibraphone ~0.308. Applying the same role-based peak/velocity gain on
+// top of that meant, e.g., an "accent" vibraphone note could come out
+// roughly 8-9x louder than a "melody" flute note despite flute's peak
+// being higher on paper — the role/velocity multiplier was never the
+// only thing determining loudness. These factors renormalize every
+// instrument to the same target RMS (~0.15) BEFORE role/velocity are
+// applied, so a given role/velocity now means the same actual loudness
+// regardless of which instrument is playing it. Verified worst-case
+// (melody role, max velocity, that instrument's loudest sampled note)
+// stays under 0.65 peak for every instrument — comfortable headroom
+// under the master limiter.
+const INSTRUMENT_GAIN_COMPENSATION = {
+  flute: 7.575,
+  piano: 6.422,
+  cello: 1.764,
+  marimba: 0.701,
+  vibraphone: 0.487,
+};
+
 function playResolvedSample(instrument, nearestName, targetMidi, t, peak, dest) {
   const buffers = STATE.sampleBuffers[instrument];
   if (!buffers || !nearestName) return;
@@ -870,7 +894,7 @@ function playResolvedSample(instrument, nearestName, targetMidi, t, peak, dest) 
   src.playbackRate.value = Math.pow(2, (targetMidi - noteNameToMidi(nearestName)) / 12);
 
   const gain = ctx.createGain();
-  gain.gain.value = peak;
+  gain.gain.value = peak * (INSTRUMENT_GAIN_COMPENSATION[instrument] || 1);
 
   src.connect(gain);
   gain.connect(dest);
