@@ -60,8 +60,8 @@ const GENRES = [
     roles: [
       { kind: 'melody',   instrument: 'flute' },
       { kind: 'arpeggio', instrument: 'piano' },
-      { kind: 'pad',      instrument: 'cello' },
-      { kind: 'drone',    instrument: 'cello' },
+      { kind: 'pad',      instrument: 'vibraphone' }, // temporarily off cello
+      { kind: 'drone',    instrument: 'marimba' },    // temporarily off cello
       { kind: 'accent',   instrument: 'marimba' },
       { kind: 'accent',   instrument: 'vibraphone' },
     ],
@@ -73,8 +73,8 @@ const GENRES = [
     roles: [
       { kind: 'melody',   instrument: 'vibraphone' },
       { kind: 'arpeggio', instrument: 'piano' },
-      { kind: 'pad',      instrument: 'cello' },
-      { kind: 'drone',    instrument: 'cello' },
+      { kind: 'pad',      instrument: 'marimba' },    // temporarily off cello
+      { kind: 'drone',    instrument: 'vibraphone' }, // temporarily off cello
       { kind: 'accent',   instrument: 'flute' },
       { kind: 'accent',   instrument: 'marimba' },
     ],
@@ -86,8 +86,8 @@ const GENRES = [
     roles: [
       { kind: 'melody',   instrument: 'piano' },
       { kind: 'arpeggio', instrument: 'marimba' },
-      { kind: 'pad',      instrument: 'cello' },
-      { kind: 'drone',    instrument: 'cello' },
+      { kind: 'pad',      instrument: 'vibraphone' }, // temporarily off cello
+      { kind: 'drone',    instrument: 'marimba' },    // temporarily off cello
       { kind: 'accent',   instrument: 'flute' },
       { kind: 'accent',   instrument: 'vibraphone' },
     ],
@@ -99,8 +99,8 @@ const GENRES = [
     roles: [
       { kind: 'melody',   instrument: 'marimba' },
       { kind: 'arpeggio', instrument: 'vibraphone' },
-      { kind: 'pad',      instrument: 'cello' },
-      { kind: 'drone',    instrument: 'cello' },
+      { kind: 'pad',      instrument: 'piano' },      // temporarily off cello
+      { kind: 'drone',    instrument: 'vibraphone' }, // temporarily off cello
       { kind: 'accent',   instrument: 'flute' },
       { kind: 'accent',   instrument: 'piano' },
     ],
