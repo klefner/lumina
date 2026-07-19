@@ -1906,7 +1906,7 @@ function checkWaveComplete() {
 
   haptic('waveComplete');
 
-  showMessage('WAVE COMPLETE', 'wave ' + STATE.wave + '  —  tap or press a key to continue');
+  showMessage('WAVE COMPLETE', 'wave ' + STATE.wave + '  —  tap to continue');
   // The rest of the galaxy reveals itself as a reward for finishing the
   // wave — only the sparse stars scattered around each connected dot are
   // visible while still playing (see spawnStarsAroundDots).

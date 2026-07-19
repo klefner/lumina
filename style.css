@@ -189,6 +189,7 @@ html, body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 18px;
   pointer-events: none;
   z-index: 20;
   opacity: 1;
@@ -199,19 +200,38 @@ html, body {
   font-family: 'Courier New', monospace;
   font-size: 42px;
   font-weight: 300;
+  line-height: 1.3;
   color: rgba(255, 255, 255, 0.9);
   letter-spacing: 0.3em;
   text-transform: uppercase;
   text-shadow: 0 0 30px rgba(255, 255, 255, 0.5);
+  max-width: 90%;
+  text-align: center;
 }
 
+/* This line is always a call to action ("tap to begin" / "tap to
+   continue"), not decorative flavor text — testers reported missing it
+   entirely at the old 14px/40%-opacity styling. Bumped up and given a slow
+   pulse so it visibly reads as something to act on, not part of the
+   background. The flex `gap` on #message-overlay (not margin-top here)
+   keeps this clear of the title even when both wrap to multiple lines on
+   narrow screens. */
 #message-subtitle {
   font-family: 'Courier New', monospace;
-  font-size: 14px;
-  color: rgba(255, 255, 255, 0.4);
-  letter-spacing: 0.4em;
+  font-size: 18px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.85);
+  letter-spacing: 0.15em;
   text-transform: uppercase;
-  margin-top: 16px;
+  text-shadow: 0 0 16px rgba(255, 255, 255, 0.4);
+  animation: subtitle-pulse 1.8s ease-in-out infinite;
+  max-width: 85%;
+  text-align: center;
+}
+
+@keyframes subtitle-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }
 
 #version-display {
