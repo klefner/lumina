@@ -498,21 +498,25 @@ const CELESTIAL_TYPES = [
   'greatComet', 'meteorShower',                             // streaking
 ];
 
-// The traveling "drip" light shown on each connection once the whole wave
-// is connected and the dots are pulsing to the beat — a small bead of light
-// that slides along the drawn line like wax dripping down a fishing line,
-// slow-to-fast per beat, then reversing direction on the next beat.
+// The traveling "drip" lights shown on each connection once the whole wave
+// is connected and the dots are pulsing to the beat — a steady stream of
+// beads, several in flight on a line at once (like actual wax dripping
+// down a fishing line — never just one drop). A new drip is born at the
+// dotA end on the same shared beat clock every connection uses (so births
+// are in sync across the whole board), then travels one-way to the dotB
+// end at a constant speed, slow-to-fast per drip like a drop of wax
+// releasing and falling, rather than bouncing back and forth.
 const TRAVELING_LIGHT_CONFIG = {
   RADIUS: 5,
-  TAIL_STEPS: 4,
-  TAIL_BEAT_SPACING: 0.045,
   // Constant physical speed for every connection's drip, regardless of the
-  // line's own length — previously every drip took exactly one beat to
-  // cross its ENTIRE line, so a long line's bead visibly moved faster than
-  // a short line's. Now every bead moves at the same px/beat, so a longer
-  // line's drip just takes proportionally longer to cross it instead.
+  // line's own length — a long line's drip just takes proportionally
+  // longer to cross it, rather than visibly outrunning a short line's.
   SPEED_PX_PER_BEAT: 260,
-  MIN_BEATS_PER_TRAVERSAL: 0.4, // keeps a very short line from cycling absurdly fast
+  MIN_BEATS_PER_TRAVERSAL: 0.8, // keeps a very short line from cycling absurdly fast
+  // A new drip is born this often (in beats), same interval on every
+  // connection — smaller than MIN_BEATS_PER_TRAVERSAL so even the
+  // shortest line always has more than one drip in flight at a time.
+  SPAWN_INTERVAL_BEATS: 0.4,
 };
 
 const BARRIER_CONFIG = {
@@ -1207,8 +1211,28 @@ function maybeTopUpSongSchedule() {
   if (!STATE.audioCtx || !STATE.song || STATE.songStartTime == null) return;
   const beatDur = 60 / STATE.song.genre.bpm;
   const loopDuration = STATE.song.totalBeats * beatDur;
+  const now = STATE.audioCtx.currentTime;
+
+  // requestAnimationFrame — and therefore update()/this function — gets
+  // throttled or paused entirely by the browser while the tab is
+  // backgrounded (alt-tabbed away), but the AudioContext clock keeps
+  // advancing in real time regardless. Left alone, real time can run
+  // right past every loop that was already scheduled before backgrounding,
+  // and scheduling those missed loops on return would give every one of
+  // their notes a start time already in the past — Web Audio just clamps
+  // a past start() to "right now," so a whole loop's worth of notes would
+  // all fire in one instant pile-up the moment the tab regains focus,
+  // instead of the spread they were scheduled with. Detect that gap and
+  // jump straight to the next loop boundary still in the future instead —
+  // a brief continuation of the silence that was already happening while
+  // backgrounded, not a burst, and the song resumes cleanly from there.
+  const nextCleanLoop = Math.floor((now - STATE.songStartTime) / loopDuration) + 1;
+  if (STATE.songNextLoopIndex < nextCleanLoop) {
+    STATE.songNextLoopIndex = nextCleanLoop;
+  }
+
   const scheduledUntil = STATE.songStartTime + STATE.songNextLoopIndex * loopDuration;
-  if (scheduledUntil - STATE.audioCtx.currentTime < loopDuration) {
+  if (scheduledUntil - now < loopDuration) {
     scheduleMoreLoops(TOPUP_LOOP_ITERATIONS);
   }
 }
@@ -1480,17 +1504,20 @@ function segmentsLength(segments) {
 }
 
 // Once every dot in the wave is connected and the dots are pulsing to the
-// beat, each connection also grows a small bead of light that slides back
-// and forth along its line, with a short fading tail behind it for that
-// dripping-wax look. Every bead moves at the same constant physical speed
-// (SPEED_PX_PER_BEAT) regardless of that connection's own length, so a
-// long line's drip takes proportionally longer to cross it rather than
-// visibly outrunning a short line's — no more per-connection stagger
-// either, since that fought against reading as "the same beat."
+// beat, each connection grows a steady stream of drip lights — several in
+// flight on the line at once, each one born at the dotA end on the shared
+// beat clock (so births line up across every connection on the board),
+// then sliding one-way to the dotB end at the same constant physical
+// speed (SPEED_PX_PER_BEAT) every connection uses, slow-to-fast per drip
+// like a drop of wax releasing and falling. A long line just has more
+// drips in flight at once than a short one, rather than a single bead
+// visibly outrunning a short line's or bouncing back and forth.
 function drawTravelingLights() {
   if (!STATE.beatSync) return;
   const beatDur = 60 / STATE.beatSync.bpm;
   const elapsedBeats = (performance.now() - STATE.beatSync.startTime) / 1000 / beatDur;
+  const spawnInterval = TRAVELING_LIGHT_CONFIG.SPAWN_INTERVAL_BEATS;
+  const latestSpawnIndex = Math.floor(elapsedBeats / spawnInterval);
 
   STATE.connections.forEach((connection) => {
     if (!connection.segments.length) return;
@@ -1500,29 +1527,27 @@ function drawTravelingLights() {
       TRAVELING_LIGHT_CONFIG.MIN_BEATS_PER_TRAVERSAL,
       totalLen / TRAVELING_LIGHT_CONFIG.SPEED_PX_PER_BEAT
     );
-
-    const posForBeats = (beats) => {
-      const local = beats / beatsPerTraversal;
-      const cycle = Math.floor(local);
-      const frac = local - cycle;
-      const eased = dripEase(frac);
-      const forward = cycle % 2 === 0;
-      const t = forward ? eased : 1 - eased;
-      return pointAtProgress(connection.segments, t);
-    };
+    const maxDripsInFlight = Math.ceil(beatsPerTraversal / spawnInterval) + 1;
 
     ctx.save();
     ctx.shadowColor = instrument.hex;
+    ctx.shadowBlur = 14;
 
-    for (let step = TRAVELING_LIGHT_CONFIG.TAIL_STEPS; step >= 0; step--) {
-      const pos = posForBeats(elapsedBeats - step * TRAVELING_LIGHT_CONFIG.TAIL_BEAT_SPACING);
+    for (let k = latestSpawnIndex; k > latestSpawnIndex - maxDripsInFlight; k--) {
+      const age = elapsedBeats - k * spawnInterval; // beats since this drip was born
+      if (age < 0 || age > beatsPerTraversal) continue; // not born yet, or already arrived
+
+      const lifeFrac = age / beatsPerTraversal; // 0 (just born) .. 1 (arriving)
+      const pos = pointAtProgress(connection.segments, dripEase(lifeFrac));
       if (!pos) continue;
-      const tailFrac = 1 - step / (TRAVELING_LIGHT_CONFIG.TAIL_STEPS + 1); // 0 (oldest) .. ~1 (head)
-      ctx.shadowBlur = 10 + 16 * tailFrac;
-      ctx.globalAlpha = 0.15 + 0.8 * tailFrac;
+
+      // Fades in right after birth and fades out right before arrival, so
+      // drips never pop in/out abruptly at either end of the line.
+      const alpha = Math.min(1, lifeFrac * 6) * Math.min(1, (1 - lifeFrac) * 5);
+      ctx.globalAlpha = 0.2 + 0.75 * alpha;
       ctx.beginPath();
-      ctx.fillStyle = step === 0 ? '#ffffff' : instrument.hex;
-      ctx.arc(pos.x, pos.y, TRAVELING_LIGHT_CONFIG.RADIUS * (0.5 + 0.5 * tailFrac), 0, Math.PI * 2);
+      ctx.fillStyle = instrument.hex;
+      ctx.arc(pos.x, pos.y, TRAVELING_LIGHT_CONFIG.RADIUS, 0, Math.PI * 2);
       ctx.fill();
     }
 
