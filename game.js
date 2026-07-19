@@ -3014,6 +3014,28 @@ function handleSaveGame() {
   setTimeout(() => toast.classList.remove('visible'), 1800);
 }
 
+// Loads whatever was last written by Save Game (or resumed from the title
+// screen) — jumps straight to that wave/score via the same fade transition
+// the restart actions use. If nothing's been saved yet, says so instead of
+// silently doing nothing.
+function handleLoadGame() {
+  const save = loadSave();
+  if (!save) {
+    const toast = document.getElementById('pause-save-toast');
+    toast.textContent = 'No Saved Game';
+    toast.classList.add('visible');
+    setTimeout(() => toast.classList.remove('visible'), 1800);
+    return;
+  }
+  closePauseMenuUI();
+  STATE.paused = false;
+  startFadeToBlack(() => {
+    STATE.score = save.score;
+    startWave(save.wave);
+    startFadeFromBlack();
+  });
+}
+
 // Restart/Restart Game/Exit all reuse the existing wave-transition fade
 // (see startFadeToBlack/startFadeFromBlack) for a consistent, non-jarring
 // transition rather than an abrupt cut — the same fade wave changes
@@ -3157,6 +3179,7 @@ function setupPauseMenuListeners() {
   document.getElementById('pause-button').addEventListener('click', togglePause);
   document.getElementById('pause-resume').addEventListener('click', resumeGame);
   document.getElementById('pause-save').addEventListener('click', handleSaveGame);
+  document.getElementById('pause-load').addEventListener('click', handleLoadGame);
   document.getElementById('pause-restart-level').addEventListener('click', handleRestartCurrentLevel);
   document.getElementById('pause-restart-game').addEventListener('click', handleRestartGame);
   document.getElementById('pause-exit').addEventListener('click', handleExitGame);
