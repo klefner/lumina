@@ -231,7 +231,7 @@ const GENRES = [
       { kind: 'melody',   instrument: 'vibraphone' },
       { kind: 'arpeggio', instrument: 'piano' },
       { kind: 'pad',      instrument: 'marimba' },    // temporarily off cello
-      { kind: 'drone',    instrument: 'vibraphone' }, // temporarily off cello
+      { kind: 'drone',    instrument: 'singingBowl' }, // experiment: synthesized Tibetan singing bowl
       { kind: 'accent',   instrument: 'flute' },
       { kind: 'accent',   instrument: 'marimba' },
     ],
@@ -669,6 +669,49 @@ function playSampleChord(instrument, midiList, t, peak, dest, resolvedNames) {
   midiList.forEach((midi, i) => playResolvedSample(instrument, names[i], midi, t, peak, dest));
 }
 
+// Synthesized Tibetan singing bowl — no recorded sample exists for this
+// (see SAMPLE_MANIFEST/CREDITS.md), so it's built from layered sine
+// partials instead of a real instrument's playbackRate-shifted recording.
+// A real bowl's partials aren't cleanly harmonic: the closest ones to the
+// fundamental sit a few cents apart and slowly beat against each other
+// (the "shimmer"), and the loudest overtone is a stretched, inharmonic
+// ratio rather than a clean octave or fifth. Slow swelling attack mimics
+// the mallet building resonance around the rim; long decay mimics the
+// bowl ringing out on its own once released. Not tied to any instrument
+// sample range, so — unlike the sample-based voices — it can sit exactly
+// on the true harmonic root with no folding/collision compromise needed.
+const SINGING_BOWL_PARTIALS = [
+  { ratio: 1.0,   gain: 0.5 },
+  { ratio: 1.004, gain: 0.34 }, // a few cents sharp of the fundamental — slow beating shimmer
+  { ratio: 2.76,  gain: 0.2 },  // inharmonic "strike tone", not a clean octave+fifth
+  { ratio: 4.1,   gain: 0.1 },
+];
+function playSingingBowl(midi, t, peak, dest) {
+  const ctx = STATE.audioCtx;
+  const freq = 440 * Math.pow(2, (midi - 69) / 12);
+  const attack = 0.5, hold = 2.6, release = 1.9;
+  const totalDur = attack + hold + release;
+
+  const master = ctx.createGain();
+  master.gain.setValueAtTime(0, t);
+  master.gain.linearRampToValueAtTime(peak, t + attack);
+  master.gain.setValueAtTime(peak, t + attack + hold);
+  master.gain.linearRampToValueAtTime(0.0001, t + totalDur);
+  master.connect(dest);
+
+  for (const partial of SINGING_BOWL_PARTIALS) {
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq * partial.ratio;
+    const g = ctx.createGain();
+    g.gain.value = partial.gain;
+    osc.connect(g);
+    g.connect(master);
+    trackSource(osc).start(t);
+    osc.stop(t + totalDur + 0.1);
+  }
+}
+
 // Peak output level per role kind — pad/drone sit quietly underneath,
 // melody sits forward, arpeggio and accent fill the space between.
 const KIND_PEAK = {
@@ -683,7 +726,9 @@ function playScheduledNote(note, startTime, beatDur, dest) {
   const t = startTime + note.beat * beatDur;
   const vel = note.vel || 1;
   const peak = (KIND_PEAK[note.role] || 0.4) * vel;
-  if (note.role === 'pad') {
+  if (note.instrument === 'singingBowl') {
+    playSingingBowl(note.midi, t, peak, dest);
+  } else if (note.role === 'pad') {
     playSampleChord(note.instrument, note.midiList, t, peak, dest, note.resolvedSamples);
   } else {
     playSample(note.instrument, note.midi, t, peak, dest, note.resolvedSample);
