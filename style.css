@@ -87,27 +87,27 @@ html, body {
   z-index: 10;
 }
 
-/* Tutorial hint — a quiet, unobtrusive line of text at the bottom of the
-   screen for the first five waves only. Fades in on wave start, stays put
-   until the player does what it describes, then fades out for good. Kept
-   low-contrast and pointer-events:none so it never competes with the dots
-   or blocks a drag. */
+/* Tutorial hint — a quiet line of text centered on screen for the first
+   five waves only. Fades in on wave start, stays put until the player
+   does what it describes, then fades out for good. Kept pointer-events:none
+   so it never blocks a drag; game.js reflows its line breaks at render
+   time (see layoutTutorialHint) so its box never sits on top of a dot. */
 #tutorial-hint {
   position: fixed;
-  bottom: 46px;
+  top: 50%;
   left: 50%;
-  transform: translateX(-50%);
-  width: 86%;
-  max-width: 560px;
+  transform: translate(-50%, -50%);
+  width: 82%;
+  max-width: 640px;
   text-align: center;
   font-family: Georgia, 'Palatino Linotype', 'Times New Roman', serif;
   font-style: italic;
   font-weight: 400;
-  font-size: 16px;
-  line-height: 1.5;
-  color: rgba(255, 255, 255, 0.55);
-  letter-spacing: 0.03em;
-  text-shadow: 0 0 18px rgba(255, 255, 255, 0.2);
+  font-size: 30px;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.7);
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 24px rgba(255, 255, 255, 0.25);
   opacity: 0;
   transition: opacity 1.4s ease;
   pointer-events: none;

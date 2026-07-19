@@ -1980,9 +1980,90 @@ function showTutorialHint(waveNumber) {
   if (!entry) { STATE.tutorialWave = null; STATE.tutorialDismissWhen = null; return; }
   STATE.tutorialWave = waveNumber;
   STATE.tutorialDismissWhen = entry.dismissWhen;
+  layoutTutorialHint(entry.text);
+  document.getElementById('tutorial-hint').style.opacity = '1';
+}
+
+// Splits `text` into progressively more lines (1, 2, 3, ...) until the
+// centered text block's bounding box clears every dot on screen, or we run
+// out of words to split further. Dots don't move once a wave starts, so
+// this only needs to run when the hint first appears, not every frame.
+function wrapIntoLines(words, lineCount) {
+  if (lineCount <= 1) return [words.join(' ')];
+  const totalLen = words.reduce((sum, w) => sum + w.length + 1, 0);
+  const target = totalLen / lineCount;
+  const lines = [];
+  let cur = [], curLen = 0;
+  for (const w of words) {
+    if (curLen > 0 && curLen + w.length + 1 > target && lines.length < lineCount - 1) {
+      lines.push(cur.join(' '));
+      cur = [];
+      curLen = 0;
+    }
+    cur.push(w);
+    curLen += w.length + 1;
+  }
+  if (cur.length) lines.push(cur.join(' '));
+  return lines;
+}
+
+function rectOverlapsAnyDot(rect) {
+  const exclusion = CONFIG.DOT_RADIUS_CONNECTED_MAX + 14; // clear space beyond the dot's largest visible pulse radius
+  for (const dot of STATE.dots) {
+    const cx = Math.max(rect.left, Math.min(dot.x, rect.right));
+    const cy = Math.max(rect.top, Math.min(dot.y, rect.bottom));
+    if (Math.hypot(dot.x - cx, dot.y - cy) < exclusion) return true;
+  }
+  return false;
+}
+
+// Candidate positions relative to dead-center, nearest first: center itself,
+// then rings of 8 compass points (N/S/E/W + diagonals) at increasing radius.
+// Dots are scattered anywhere on screen (see findValidPosition), so a
+// single dot can sit exactly at center with others boxing out the row
+// above and below it — a purely vertical nudge can't always dodge that.
+function tutorialPositionCandidates(maxRadius, step) {
+  const candidates = [{ dx: 0, dy: 0 }];
+  for (let r = step; r <= maxRadius; r += step) {
+    candidates.push(
+      { dx: 0, dy: -r }, { dx: 0, dy: r }, { dx: -r, dy: 0 }, { dx: r, dy: 0 },
+      { dx: -r, dy: -r }, { dx: r, dy: -r }, { dx: -r, dy: r }, { dx: r, dy: r }
+    );
+  }
+  return candidates;
+}
+
+function layoutTutorialHint(text) {
   const el = document.getElementById('tutorial-hint');
-  el.textContent = entry.text;
-  el.style.opacity = '1';
+  const words = text.split(' ');
+  const maxLines = words.length; // one word per line in the worst case — narrowest possible box
+  const lineOptions = [];
+  for (let lineCount = 1; lineCount <= maxLines; lineCount++) lineOptions.push(wrapIntoLines(words, lineCount));
+
+  const maxRadius = Math.min(canvas.width, canvas.height) * 0.5;
+  const positions = tutorialPositionCandidates(maxRadius, 25);
+
+  // Prefer staying as close to centered as possible, and the font at full
+  // size: at each candidate position (starting from dead-center), try
+  // every line-break option (fewest lines first — i.e. "carriage return if
+  // necessary") before moving further out. Only if every position/line
+  // combination fails at full size — an extremely dot-crowded small
+  // screen — do we shrink the font a little and search again, since a
+  // smaller box is easier to fit around a busy layout.
+  for (const fontSize of [30, 24, 20, 17]) {
+    el.style.fontSize = fontSize + 'px';
+    for (const { dx, dy } of positions) {
+      el.style.left = `calc(50% + ${dx}px)`;
+      el.style.top = `calc(50% + ${dy}px)`;
+      for (const lines of lineOptions) {
+        el.innerHTML = lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
+        if (!rectOverlapsAnyDot(el.getBoundingClientRect())) return;
+      }
+    }
+  }
+  // Exhausted every split, position, and font size (pathologically cramped
+  // wave) — leave the smallest, most aggressively repositioned layout in
+  // place; it's the closest to collision-free we could produce.
 }
 
 function hideTutorialHint() {
