@@ -32,10 +32,18 @@ jobs:
         uses: actions/configure-pages@v5
         with:
           enablement: true
+      # Stage only what the site actually needs — package.json/tests/CI
+      # config etc. exist for the CI workflow, not for players, and have
+      # no reason to ever be part of the deployed artifact.
+      - name: Stage site files
+        run: |
+          mkdir _site
+          cp index.html game.js style.css manifest.json version.json _site/
+          cp -r icons sounds _site/
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: '.'
+          path: '_site'
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
