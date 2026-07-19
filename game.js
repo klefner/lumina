@@ -241,7 +241,7 @@ const GENRES = [
       { kind: 'melody',   instrument: 'vibraphone' },
       { kind: 'arpeggio', instrument: 'piano' },
       { kind: 'pad',      instrument: 'marimba' },    // temporarily off cello
-      { kind: 'drone',    instrument: 'singingBowl' }, // experiment: synthesized Tibetan singing bowl
+      { kind: 'drone',    instrument: 'vibraphone' }, // temporarily off cello
       { kind: 'accent',   instrument: 'flute' },
       { kind: 'accent',   instrument: 'marimba' },
     ],
@@ -308,16 +308,66 @@ const SPACE_CONFIG = {
 };
 
 // Large background scenery — distinct from the small drifting asteroids/
-// satellites/comets above: 0-2 planets/moons/a star, nearly stationary,
-// shaded with gradients instead of flat fills so they read as spheres
-// rather than icons. Spawned once per wave-complete reveal, fading in
-// slowly like the rest of the galaxy (see STARFIELD_CONFIG.REVEAL_FADE_IN_SPEED).
+// satellites/comets above: 0-2 deep-space phenomena, nearly stationary,
+// spawned once per wave-complete reveal, fading in slowly like the rest of
+// the galaxy (see STARFIELD_CONFIG.REVEAL_FADE_IN_SPEED).
+//
+// MUST NOT be mistakable for a dot the player forgot to connect — that
+// reads as "the game is broken," not "pretty background." Three rules
+// enforce that, applied everywhere a body is spawned or drawn:
+//  1. Size floor: every body's overall footprint is comfortably bigger
+//     than a dot could ever pulse to (DOT_RADIUS_CONNECTED_MAX=30,
+//     DOT_HIT_RADIUS=44) — see MIN_RADIUS/MIN_SPREAD below.
+//  2. Hue floor: never within DOT_HUE_EXCLUSION degrees of one of the six
+//     actual dot colors (see celestialHue()) — a background object should
+//     never coincidentally match a color the player is looking for.
+//  3. Silhouette: never a single flat, saturated, filled circle with a
+//     centered white highlight — that IS a dot's exact signature. Every
+//     type below is shaded, banded, ringed, jetted, or made of multiple
+//     scattered elements instead.
 const CELESTIAL_CONFIG = {
-  TYPES: ['rocky', 'gasGiant', 'ringed', 'moon', 'sun'],
-  MIN_RADIUS: 34,
-  MAX_RADIUS: 80,
-  MIN_SEPARATION: 220, // px between two bodies' centers, so a pair never overlaps
+  // Sphere-based types (rocky/gasGiant/ringed/moon/iceGiant/redGiant/
+  // whiteDwarf/blackHole/pulsar/quasar core): radius range for the single
+  // primary sphere.
+  MIN_RADIUS: 55,
+  MAX_RADIUS: 95,
+  // Multi-element types (starCluster/asteroidField/binaryStar/meteorShower/
+  // nebula/spiralGalaxy): the overall footprint radius they scatter their
+  // pieces across — bigger than a single sphere so they read as a "field"
+  // or "cluster," not a stray dot.
+  MIN_SPREAD: 110,
+  MAX_SPREAD: 180,
+  MIN_SEPARATION: 260, // px between two bodies' centers, so a pair never overlaps
+  DOT_HUE_EXCLUSION: 28, // degrees of hue kept clear of every actual dot color
 };
+
+// Dot palette hues (from INSTRUMENTS' hex values) — kept in sync manually
+// since they're fixed, well-known constants; celestialHue() steers clear
+// of all of them.
+const DOT_HUES = [180, 300, 51, 151, 11, 261]; // crystal, bloom, gold, jade, ember, violet
+
+function celestialHue() {
+  let hue, attempts = 0;
+  do {
+    hue = Math.random() * 360;
+    attempts++;
+  } while (
+    DOT_HUES.some(h => Math.min(Math.abs(hue - h), 360 - Math.abs(hue - h)) < CELESTIAL_CONFIG.DOT_HUE_EXCLUSION) &&
+    attempts < 30
+  );
+  return hue;
+}
+
+// The pool of 20 space things a wave-complete reveal can draw from.
+const CELESTIAL_TYPES = [
+  'rocky', 'gasGiant', 'ringed', 'moon', 'iceGiant',       // shaded spheres
+  'redGiant', 'whiteDwarf',                                 // stars
+  'nebula', 'spiralGalaxy', 'aurora',                       // diffuse/irregular
+  'starCluster', 'binaryStar', 'asteroidField',             // scattered elements
+  'blackHole', 'supernovaRemnant', 'protoplanetaryDisk',    // ring/disk-based
+  'pulsar', 'quasar',                                       // beam-based
+  'greatComet', 'meteorShower',                             // streaking
+];
 
 // The traveling "drip" light shown on each connection once the whole wave
 // is connected and the dots are pulsing to the beat — a small bead of light
@@ -343,7 +393,19 @@ const BARRIER_CONFIG = {
   // instead of landing wherever random chance puts them.
   PAIR_LINE_MIN_T: 0.28,
   PAIR_LINE_MAX_T: 0.72,
-  ANGLE_JITTER: Math.PI / 2.2, // +/- spread off perpendicular-to-the-pair-line
+  // Kept tight: at the old +/-82 degrees a barrier could land nearly
+  // PARALLEL to the path it was supposed to block — still technically
+  // touching it at one point, but functionally a sliver a player could
+  // route around without any real detour, and visually unrelated-looking
+  // to the path it targeted. +/-25 degrees keeps every barrier reading as
+  // an actual wall across the path, not a technicality.
+  ANGLE_JITTER: Math.PI / 7.2,
+  // Barrier length as a fraction of the target pair's own distance apart,
+  // not a flat px range — a fixed-size barrier looks arbitrary on a short
+  // pair-line and trivial on a long one. Still clamped to [MIN_LENGTH,
+  // MAX_LENGTH] so it never gets absurdly long or short.
+  LENGTH_MIN_FRACTION: 0.35,
+  LENGTH_MAX_FRACTION: 0.6,
 
   // Rotating barriers: introduced at higher waves, slowly spin around their
   // midpoint, and snap (break) any already-completed connection they sweep
@@ -679,49 +741,6 @@ function playSampleChord(instrument, midiList, t, peak, dest, resolvedNames) {
   midiList.forEach((midi, i) => playResolvedSample(instrument, names[i], midi, t, peak, dest));
 }
 
-// Synthesized Tibetan singing bowl — no recorded sample exists for this
-// (see SAMPLE_MANIFEST/CREDITS.md), so it's built from layered sine
-// partials instead of a real instrument's playbackRate-shifted recording.
-// A real bowl's partials aren't cleanly harmonic: the closest ones to the
-// fundamental sit a few cents apart and slowly beat against each other
-// (the "shimmer"), and the loudest overtone is a stretched, inharmonic
-// ratio rather than a clean octave or fifth. Slow swelling attack mimics
-// the mallet building resonance around the rim; long decay mimics the
-// bowl ringing out on its own once released. Not tied to any instrument
-// sample range, so — unlike the sample-based voices — it can sit exactly
-// on the true harmonic root with no folding/collision compromise needed.
-const SINGING_BOWL_PARTIALS = [
-  { ratio: 1.0,   gain: 0.5 },
-  { ratio: 1.004, gain: 0.34 }, // a few cents sharp of the fundamental — slow beating shimmer
-  { ratio: 2.76,  gain: 0.2 },  // inharmonic "strike tone", not a clean octave+fifth
-  { ratio: 4.1,   gain: 0.1 },
-];
-function playSingingBowl(midi, t, peak, dest) {
-  const ctx = STATE.audioCtx;
-  const freq = 440 * Math.pow(2, (midi - 69) / 12);
-  const attack = 0.5, hold = 2.6, release = 1.9;
-  const totalDur = attack + hold + release;
-
-  const master = ctx.createGain();
-  master.gain.setValueAtTime(0, t);
-  master.gain.linearRampToValueAtTime(peak, t + attack);
-  master.gain.setValueAtTime(peak, t + attack + hold);
-  master.gain.linearRampToValueAtTime(0.0001, t + totalDur);
-  master.connect(dest);
-
-  for (const partial of SINGING_BOWL_PARTIALS) {
-    const osc = ctx.createOscillator();
-    osc.type = 'sine';
-    osc.frequency.value = freq * partial.ratio;
-    const g = ctx.createGain();
-    g.gain.value = partial.gain;
-    osc.connect(g);
-    g.connect(master);
-    trackSource(osc).start(t);
-    osc.stop(t + totalDur + 0.1);
-  }
-}
-
 // Peak output level per role kind — pad/drone sit quietly underneath,
 // melody sits forward, arpeggio and accent fill the space between.
 const KIND_PEAK = {
@@ -732,17 +751,36 @@ const KIND_PEAK = {
   pad: 0.22,
 };
 
-function playScheduledNote(note, startTime, beatDur, dest) {
-  const t = startTime + note.beat * beatDur;
-  const vel = note.vel || 1;
-  const peak = (KIND_PEAK[note.role] || 0.4) * vel;
-  if (note.instrument === 'singingBowl') {
-    playSingingBowl(note.midi, t, peak, dest);
-  } else if (note.role === 'pad') {
+function playNoteAt(note, t, peak, dest) {
+  if (note.role === 'pad') {
     playSampleChord(note.instrument, note.midiList, t, peak, dest, note.resolvedSamples);
   } else {
     playSample(note.instrument, note.midi, t, peak, dest, note.resolvedSample);
   }
+}
+
+function playScheduledNote(note, startTime, beatDur, dest) {
+  const t = startTime + note.beat * beatDur;
+  const vel = note.vel || 1;
+  const peak = (KIND_PEAK[note.role] || 0.4) * vel;
+  playNoteAt(note, t, peak, dest);
+}
+
+// unmuteChunk deliberately waits for this chunk's next clean note onset
+// before it becomes audible (see its comment) — musically correct, but
+// that can be most of a bar away, which reads as "nothing happened" right
+// when the player needs the opposite: instant confirmation the connection
+// registered. This plays that same chunk's own first scheduled note (same
+// instrument, same pitch it'll actually play) immediately, straight to the
+// master bus rather than through the still-muted chunk gain, as a one-shot
+// confirmation layered on top of — not instead of — the clean-onset reveal.
+function playConnectionChime(pairId) {
+  if (!STATE.audioCtx || !STATE.masterBus || !STATE.song) return;
+  const note = STATE.song.notes.find(n => n.chunkIndex === pairId);
+  if (!note) return;
+  const t = STATE.audioCtx.currentTime + 0.01;
+  const peak = (KIND_PEAK[note.role] || 0.4) * 0.8;
+  playNoteAt(note, t, peak, STATE.masterBus);
 }
 
 // Humanizes a scheduled beat position with a small random offset so notes
@@ -1524,6 +1562,7 @@ function completeConnection(dotA, dotB) {
   spawnStarsAroundDots(dotA, dotB);
 
   unmuteChunk(dotA.pairId);
+  playConnectionChime(dotA.pairId);
 
   haptic('connect');
 
@@ -1824,7 +1863,8 @@ function generateBarriers(wave, dots) {
 
     const lineAngle = Math.atan2(dy, dx);
     const angle = lineAngle + Math.PI / 2 + (Math.random() - 0.5) * BARRIER_CONFIG.ANGLE_JITTER;
-    const length = BARRIER_CONFIG.MIN_LENGTH + Math.random() * (BARRIER_CONFIG.MAX_LENGTH - BARRIER_CONFIG.MIN_LENGTH);
+    const lengthFraction = BARRIER_CONFIG.LENGTH_MIN_FRACTION + Math.random() * (BARRIER_CONFIG.LENGTH_MAX_FRACTION - BARRIER_CONFIG.LENGTH_MIN_FRACTION);
+    const length = Math.max(BARRIER_CONFIG.MIN_LENGTH, Math.min(BARRIER_CONFIG.MAX_LENGTH, pairDist * lengthFraction));
 
     const { x1, y1, x2, y2 } = barrierEndpoints(pivotX, pivotY, angle, length);
 
@@ -1844,6 +1884,7 @@ function generateBarriers(wave, dots) {
       rotating,
       angularSpeed: rotating ? speed * (Math.random() < 0.5 ? -1 : 1) : 0,
       targetPairId: pairId,
+      colorIndex: a.colorIndex, // tints the barrier to match the pair it's actually blocking
     });
     targetedPairs.add(pairId);
   }
@@ -1910,18 +1951,24 @@ function drawBarriers() {
   ctx.save();
   ctx.lineCap = 'round';
   for (const b of STATE.barriers) {
+    // Tinted to the color of the pair it actually blocks — a generic
+    // red/orange hazard color gave no visual clue which path a barrier
+    // related to, so a well-placed one could still read as "just some
+    // line sitting there." Dash pattern / solid+blade-caps still keeps it
+    // unmistakably a barrier rather than a connection line.
+    const instrument = INSTRUMENTS[b.colorIndex] || INSTRUMENTS[0];
     if (b.rotating) {
       ctx.lineWidth = 7;
       ctx.setLineDash([]);
-      ctx.strokeStyle = 'rgba(255,140,40,0.75)';
+      ctx.strokeStyle = instrument.glow + '0.8)';
       ctx.shadowBlur = 24;
-      ctx.shadowColor = '#ff8c28';
+      ctx.shadowColor = instrument.hex;
     } else {
       ctx.lineWidth = 8;
       ctx.setLineDash([14, 10]);
-      ctx.strokeStyle = 'rgba(255,60,60,0.6)';
+      ctx.strokeStyle = instrument.glow + '0.65)';
       ctx.shadowBlur = 18;
-      ctx.shadowColor = '#ff3c3c';
+      ctx.shadowColor = instrument.hex;
     }
     ctx.beginPath();
     ctx.moveTo(b.x1, b.y1);
@@ -1933,7 +1980,7 @@ function drawBarriers() {
       ctx.shadowBlur = 10;
       for (const [ex, ey] of [[b.x1, b.y1], [b.x2, b.y2]]) {
         ctx.beginPath();
-        ctx.fillStyle = '#ffcf9e';
+        ctx.fillStyle = '#ffffff';
         ctx.arc(ex, ey, 5, 0, Math.PI * 2);
         ctx.fill();
       }
@@ -2114,17 +2161,27 @@ function makeBands() {
   return bands;
 }
 
+// Types whose footprint is one primary sphere (uses MIN_RADIUS/MAX_RADIUS)
+// vs. types made of several scattered/extended elements (uses MIN_SPREAD/
+// MAX_SPREAD as their placement-clearance footprint) — both comfortably
+// past a dot's max possible size either way.
+const CELESTIAL_SPHERE_TYPES = new Set(['rocky', 'gasGiant', 'ringed', 'moon', 'iceGiant', 'redGiant', 'whiteDwarf', 'blackHole', 'pulsar', 'quasar']);
+
 // 0, 1, or 2 large background bodies, placed clear of each other, each
 // fading in independently over the reveal (see updateCelestialBodies).
+// Random sub-details (cluster points, nebula blobs, streak angles...) are
+// generated once here and stored on the body, not re-rolled per frame —
+// otherwise they'd flicker.
 function spawnCelestialBodies() {
   STATE.celestialBodies = [];
   const count = Math.floor(Math.random() * 3);
   const placed = [];
   for (let i = 0; i < count; i++) {
-    const type = CELESTIAL_CONFIG.TYPES[Math.floor(Math.random() * CELESTIAL_CONFIG.TYPES.length)];
-    const radius = type === 'sun'
-      ? CELESTIAL_CONFIG.MIN_RADIUS * 0.7 + Math.random() * 20
-      : CELESTIAL_CONFIG.MIN_RADIUS + Math.random() * (CELESTIAL_CONFIG.MAX_RADIUS - CELESTIAL_CONFIG.MIN_RADIUS);
+    const type = CELESTIAL_TYPES[Math.floor(Math.random() * CELESTIAL_TYPES.length)];
+    const isSphere = CELESTIAL_SPHERE_TYPES.has(type);
+    const radius = CELESTIAL_CONFIG.MIN_RADIUS + Math.random() * (CELESTIAL_CONFIG.MAX_RADIUS - CELESTIAL_CONFIG.MIN_RADIUS);
+    const spread = CELESTIAL_CONFIG.MIN_SPREAD + Math.random() * (CELESTIAL_CONFIG.MAX_SPREAD - CELESTIAL_CONFIG.MIN_SPREAD);
+    const footprint = isSphere ? radius : spread;
 
     let x, y, attempts = 0;
     do {
@@ -2134,17 +2191,82 @@ function spawnCelestialBodies() {
     } while (placed.some(p => Math.hypot(p.x - x, p.y - y) < CELESTIAL_CONFIG.MIN_SEPARATION) && attempts < 20);
     placed.push({ x, y });
 
-    STATE.celestialBodies.push({
-      type, x, y, radius,
-      hue: Math.random() * 360,
+    const body = {
+      type, x, y, radius, spread,
+      hue: celestialHue(),
       rotation: Math.random() * Math.PI * 2,
       rotSpeed: 0.0004 + Math.random() * 0.0006, // barely perceptible spin — distant and slow
       ringAngle: -0.35 + Math.random() * 0.2,
       lightAngle: Math.random() * Math.PI * 2,
       alpha: 0,
       craters: (type === 'rocky' || type === 'moon') ? makeCraters(radius) : null,
-      bands: (type === 'gasGiant' || type === 'ringed') ? makeBands() : null,
-    });
+      bands: (type === 'gasGiant' || type === 'iceGiant') ? makeBands() : null,
+    };
+
+    // Type-specific one-time random layout.
+    if (type === 'starCluster') {
+      body.points = [];
+      const n = 10 + Math.floor(Math.random() * 10);
+      for (let p = 0; p < n; p++) {
+        const a = Math.random() * Math.PI * 2, d = Math.random() * spread;
+        body.points.push({ x: Math.cos(a) * d, y: Math.sin(a) * d, r: 1 + Math.random() * 2, phase: Math.random() * Math.PI * 2 });
+      }
+    } else if (type === 'asteroidField') {
+      body.rocks = [];
+      const n = 5 + Math.floor(Math.random() * 5);
+      for (let p = 0; p < n; p++) {
+        const a = Math.random() * Math.PI * 2, d = Math.random() * spread;
+        const rr = 5 + Math.random() * 8;
+        const verts = [];
+        const vc = 6 + Math.floor(Math.random() * 3);
+        for (let v = 0; v < vc; v++) verts.push(0.7 + Math.random() * 0.5);
+        body.rocks.push({ x: Math.cos(a) * d, y: Math.sin(a) * d, r: rr, verts, rot: Math.random() * Math.PI * 2 });
+      }
+    } else if (type === 'nebula') {
+      body.blobs = [];
+      const n = 5 + Math.floor(Math.random() * 4);
+      for (let p = 0; p < n; p++) {
+        const a = Math.random() * Math.PI * 2, d = Math.random() * spread * 0.6;
+        body.blobs.push({ x: Math.cos(a) * d, y: Math.sin(a) * d, r: spread * (0.35 + Math.random() * 0.35), hueOffset: (Math.random() - 0.5) * 40 });
+      }
+    } else if (type === 'spiralGalaxy') {
+      body.armPoints = [];
+      const arms = 2 + Math.floor(Math.random() * 2);
+      for (let arm = 0; arm < arms; arm++) {
+        const armOffset = (arm / arms) * Math.PI * 2;
+        const n = 22;
+        for (let p = 0; p < n; p++) {
+          const t = p / n;
+          const a = armOffset + t * Math.PI * 2.4;
+          const d = t * spread;
+          body.armPoints.push({ x: Math.cos(a) * d, y: Math.sin(a) * d, r: 1 + (1 - t) * 1.8 });
+        }
+      }
+    } else if (type === 'meteorShower') {
+      body.streaks = [];
+      const n = 4 + Math.floor(Math.random() * 4);
+      const baseAngle = Math.random() * Math.PI * 2;
+      for (let p = 0; p < n; p++) {
+        const a = baseAngle + (Math.random() - 0.5) * 0.3;
+        const ox = (Math.random() - 0.5) * spread * 1.6, oy = (Math.random() - 0.5) * spread * 1.6;
+        const len = spread * (0.35 + Math.random() * 0.4);
+        body.streaks.push({ x1: ox, y1: oy, x2: ox + Math.cos(a) * len, y2: oy + Math.sin(a) * len });
+      }
+    } else if (type === 'aurora') {
+      body.ribbons = [];
+      const n = 2 + Math.floor(Math.random() * 2);
+      for (let p = 0; p < n; p++) {
+        body.ribbons.push({ yOffset: (p - n / 2) * spread * 0.3, hueOffset: (Math.random() - 0.5) * 50, phase: Math.random() * Math.PI * 2 });
+      }
+    } else if (type === 'greatComet') {
+      body.tailAngle = Math.random() * Math.PI * 2;
+    } else if (type === 'binaryStar') {
+      body.orbitPhase = Math.random() * Math.PI * 2;
+    } else if (type === 'pulsar' || type === 'quasar') {
+      body.beamAngle = Math.random() * Math.PI * 2;
+    }
+
+    STATE.celestialBodies.push(body);
   }
 }
 
@@ -2152,19 +2274,45 @@ function updateCelestialBodies() {
   for (const body of STATE.celestialBodies) {
     if (body.alpha < 1) body.alpha = Math.min(1, body.alpha + STARFIELD_CONFIG.REVEAL_FADE_IN_SPEED);
     body.rotation += body.rotSpeed;
+    if (body.type === 'binaryStar') body.orbitPhase += 0.0012;
+    if (body.type === 'pulsar' || body.type === 'quasar') body.beamAngle += body.rotSpeed * 2;
   }
 }
 
-function drawCelestialRing(body, behindSphere) {
+// Shared radial-gradient sphere fill, reused by every sphere-based type —
+// always shaded dark-to-light off-center (never a flat saturated circle
+// with a centered highlight, which is exactly a dot's signature).
+function fillShadedSphere(radius, hue, sat, lightCore, lightMid, lightEdge, lx, ly) {
+  const grad = ctx.createRadialGradient(lx, ly, radius * 0.1, 0, 0, radius * 1.15);
+  grad.addColorStop(0, `hsl(${hue}, ${sat}%, ${lightCore}%)`);
+  grad.addColorStop(0.6, `hsl(${hue}, ${sat}%, ${lightMid}%)`);
+  grad.addColorStop(1, `hsl(${hue}, ${sat}%, ${lightEdge}%)`);
+  ctx.beginPath();
+  ctx.arc(0, 0, radius, 0, Math.PI * 2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+}
+
+function drawSoftGlow(radius, hue, alpha) {
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
+  g.addColorStop(0, `hsla(${hue}, 85%, 75%, ${alpha})`);
+  g.addColorStop(1, 'hsla(0,0%,0%,0)');
+  ctx.beginPath();
+  ctx.fillStyle = g;
+  ctx.arc(0, 0, radius, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawCelestialRing(radius, hue, ringAngle, behindSphere, satL, ringWidthMul, alpha) {
   ctx.save();
-  ctx.rotate(body.ringAngle);
+  ctx.rotate(ringAngle);
   ctx.scale(1, 0.32);
   ctx.beginPath();
   const start = behindSphere ? Math.PI * 0.02 : Math.PI * 1.02;
   const end = behindSphere ? Math.PI * 0.98 : Math.PI * 1.98;
-  ctx.arc(0, 0, body.radius * 1.8, start, end);
-  ctx.strokeStyle = `hsla(${body.hue}, 30%, 75%, 0.5)`;
-  ctx.lineWidth = body.radius * 0.32;
+  ctx.arc(0, 0, radius * 1.8, start, end);
+  ctx.strokeStyle = `hsla(${hue}, ${satL}, ${alpha})`;
+  ctx.lineWidth = radius * ringWidthMul;
   ctx.stroke();
   ctx.restore();
 }
@@ -2176,79 +2324,267 @@ function drawCelestialBodies() {
     ctx.globalAlpha = body.alpha;
     ctx.translate(body.x, body.y);
 
-    if (body.type === 'sun') {
-      for (let i = 3; i >= 1; i--) {
-        const r = body.radius * (1 + i * 0.6);
-        const glow = ctx.createRadialGradient(0, 0, body.radius * 0.3, 0, 0, r);
-        glow.addColorStop(0, `hsla(${body.hue}, 90%, 70%, ${(0.22 / i).toFixed(3)})`);
-        glow.addColorStop(1, 'hsla(0,0%,0%,0)');
-        ctx.beginPath();
-        ctx.fillStyle = glow;
-        ctx.arc(0, 0, r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      const core = ctx.createRadialGradient(-body.radius * 0.2, -body.radius * 0.2, 0, 0, 0, body.radius);
-      core.addColorStop(0, `hsl(${body.hue}, 95%, 90%)`);
-      core.addColorStop(1, `hsl(${body.hue}, 90%, 60%)`);
-      ctx.beginPath();
-      ctx.fillStyle = core;
-      ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
-      ctx.fill();
-    } else {
-      if (body.type === 'ringed') drawCelestialRing(body, true);
+    const lx = Math.cos(body.lightAngle) * body.radius * 0.6;
+    const ly = Math.sin(body.lightAngle) * body.radius * 0.6;
 
-      ctx.rotate(body.rotation);
-      const lx = Math.cos(body.lightAngle) * body.radius * 0.6;
-      const ly = Math.sin(body.lightAngle) * body.radius * 0.6;
-      const sphere = ctx.createRadialGradient(lx, ly, body.radius * 0.1, 0, 0, body.radius * 1.15);
-      if (body.type === 'gasGiant') {
-        sphere.addColorStop(0, `hsl(${body.hue}, 55%, 62%)`);
-        sphere.addColorStop(0.6, `hsl(${body.hue}, 50%, 42%)`);
-        sphere.addColorStop(1, `hsl(${body.hue}, 45%, 14%)`);
-      } else if (body.type === 'moon') {
-        sphere.addColorStop(0, `hsl(${body.hue}, 8%, 68%)`);
-        sphere.addColorStop(0.6, `hsl(${body.hue}, 8%, 42%)`);
-        sphere.addColorStop(1, `hsl(${body.hue}, 10%, 10%)`);
-      } else {
-        sphere.addColorStop(0, `hsl(${body.hue}, 45%, 58%)`);
-        sphere.addColorStop(0.6, `hsl(${body.hue}, 40%, 36%)`);
-        sphere.addColorStop(1, `hsl(${body.hue}, 35%, 10%)`);
-      }
-      ctx.beginPath();
-      ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
-      ctx.fillStyle = sphere;
-      ctx.fill();
-
-      if (body.bands) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
-        ctx.clip();
-        for (const b of body.bands) {
-          const yPos = (b.pos - 0.5) * body.radius * 2;
-          ctx.fillStyle = `hsla(${body.hue}, 40%, ${(b.lightness * 100).toFixed(0)}%, 0.35)`;
-          ctx.fillRect(-body.radius, yPos, body.radius * 2, b.width * body.radius * 2);
+    switch (body.type) {
+      case 'rocky':
+      case 'moon': {
+        ctx.rotate(body.rotation);
+        const sat = body.type === 'moon' ? 8 : 45;
+        fillShadedSphere(body.radius, body.hue, sat, body.type === 'moon' ? 68 : 58, body.type === 'moon' ? 42 : 36, body.type === 'moon' ? 10 : 10, lx, ly);
+        if (body.craters) {
+          for (const c of body.craters) {
+            ctx.beginPath();
+            ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(0,0,0,0.18)';
+            ctx.fill();
+          }
         }
-        ctx.restore();
+        ctx.beginPath();
+        ctx.arc(0, 0, body.radius * 1.02, 0, Math.PI * 2);
+        ctx.strokeStyle = `hsla(${body.hue}, 60%, 70%, 0.15)`;
+        ctx.lineWidth = body.radius * 0.08;
+        ctx.stroke();
+        break;
       }
-
-      if (body.craters) {
-        for (const c of body.craters) {
+      case 'gasGiant':
+      case 'iceGiant': {
+        ctx.rotate(body.rotation);
+        const cool = body.type === 'iceGiant';
+        fillShadedSphere(body.radius, body.hue, cool ? 35 : 55, cool ? 75 : 62, cool ? 55 : 42, cool ? 25 : 14, lx, ly);
+        if (body.bands) {
+          ctx.save();
           ctx.beginPath();
-          ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(0,0,0,0.18)';
+          ctx.arc(0, 0, body.radius, 0, Math.PI * 2);
+          ctx.clip();
+          for (const b of body.bands) {
+            const yPos = (b.pos - 0.5) * body.radius * 2;
+            ctx.fillStyle = `hsla(${body.hue}, ${cool ? 25 : 40}%, ${(b.lightness * 100).toFixed(0)}%, 0.35)`;
+            ctx.fillRect(-body.radius, yPos, body.radius * 2, b.width * body.radius * 2);
+          }
+          ctx.restore();
+        }
+        ctx.beginPath();
+        ctx.arc(0, 0, body.radius * 1.02, 0, Math.PI * 2);
+        ctx.strokeStyle = `hsla(${body.hue}, 60%, 70%, 0.15)`;
+        ctx.lineWidth = body.radius * 0.08;
+        ctx.stroke();
+        break;
+      }
+      case 'ringed': {
+        drawCelestialRing(body.radius, body.hue, body.ringAngle, true, '30%, 75%', 0.32, '0.5)');
+        ctx.rotate(body.rotation);
+        fillShadedSphere(body.radius, body.hue, 45, 58, 36, 10, lx, ly);
+        ctx.rotate(-body.rotation);
+        drawCelestialRing(body.radius, body.hue, body.ringAngle, false, '30%, 75%', 0.32, '0.5)');
+        break;
+      }
+      case 'redGiant': {
+        drawSoftGlow(body.radius * 2.2, body.hue, 0.18);
+        fillShadedSphere(body.radius * 1.3, body.hue, 70, 75, 55, 30, lx * 0.5, ly * 0.5);
+        break;
+      }
+      case 'whiteDwarf': {
+        const r = body.radius * 0.35;
+        drawSoftGlow(r * 4, body.hue, 0.35);
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fillStyle = `hsl(${body.hue}, 30%, 92%)`;
+        ctx.fill();
+        // thin sharp corona rays — reads as a dense point source, not a filled circle
+        ctx.strokeStyle = `hsla(${body.hue}, 40%, 90%, 0.4)`;
+        ctx.lineWidth = 1.5;
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2 + body.rotation;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a) * r * 1.4, Math.sin(a) * r * 1.4);
+          ctx.lineTo(Math.cos(a) * r * 4, Math.sin(a) * r * 4);
+          ctx.stroke();
+        }
+        break;
+      }
+      case 'blackHole': {
+        drawCelestialRing(body.radius, body.hue, body.ringAngle, true, '55%, 70%', 0.22, '0.6)');
+        ctx.beginPath();
+        ctx.arc(0, 0, body.radius * 0.7, 0, Math.PI * 2);
+        ctx.fillStyle = '#000000';
+        ctx.fill();
+        drawCelestialRing(body.radius, body.hue, body.ringAngle, false, '55%, 70%', 0.22, '0.6)');
+        break;
+      }
+      case 'protoplanetaryDisk': {
+        drawCelestialRing(body.radius * 1.4, body.hue, body.ringAngle, true, '30%, 60%', 0.5, '0.28)');
+        drawSoftGlow(body.radius * 0.6, body.hue, 0.5);
+        ctx.beginPath();
+        ctx.arc(0, 0, body.radius * 0.18, 0, Math.PI * 2);
+        ctx.fillStyle = `hsl(${body.hue}, 40%, 90%)`;
+        ctx.fill();
+        drawCelestialRing(body.radius * 1.4, body.hue, body.ringAngle, false, '30%, 60%', 0.5, '0.28)');
+        break;
+      }
+      case 'supernovaRemnant': {
+        for (let i = 0; i < 3; i++) {
+          ctx.beginPath();
+          ctx.arc(0, 0, body.radius * (0.7 + i * 0.22), i * 0.7, i * 0.7 + Math.PI * 1.6);
+          ctx.strokeStyle = `hsla(${body.hue + i * 12}, 60%, 65%, ${0.22 - i * 0.05})`;
+          ctx.lineWidth = body.radius * 0.1;
+          ctx.stroke();
+        }
+        drawSoftGlow(body.radius * 0.5, body.hue, 0.15);
+        break;
+      }
+      case 'pulsar':
+      case 'quasar': {
+        const isQuasar = body.type === 'quasar';
+        const r = Math.max(26, body.radius * (isQuasar ? 0.4 : 0.32)); // floor so the bright core alone still reads bigger than a dot
+        drawSoftGlow(r * 3, body.hue, isQuasar ? 0.4 : 0.25);
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fillStyle = `hsl(${body.hue}, 50%, 88%)`;
+        ctx.fill();
+        ctx.save();
+        ctx.rotate(body.beamAngle);
+        const beamLen = body.radius * (isQuasar ? 3.2 : 2.2);
+        for (const dir of [1, -1]) {
+          const grad = ctx.createLinearGradient(0, 0, 0, dir * beamLen);
+          grad.addColorStop(0, `hsla(${body.hue}, 70%, 85%, ${isQuasar ? 0.55 : 0.35})`);
+          grad.addColorStop(1, 'hsla(0,0%,0%,0)');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.moveTo(-r * 0.5, 0);
+          ctx.lineTo(r * 0.5, 0);
+          ctx.lineTo(r * 0.12, dir * beamLen);
+          ctx.lineTo(-r * 0.12, dir * beamLen);
+          ctx.closePath();
           ctx.fill();
         }
+        ctx.restore();
+        break;
       }
-
-      ctx.beginPath();
-      ctx.arc(0, 0, body.radius * 1.02, 0, Math.PI * 2);
-      ctx.strokeStyle = `hsla(${body.hue}, 60%, 70%, 0.15)`;
-      ctx.lineWidth = body.radius * 0.08;
-      ctx.stroke();
-
-      ctx.rotate(-body.rotation);
-      if (body.type === 'ringed') drawCelestialRing(body, false);
+      case 'binaryStar': {
+        // Sized off `spread`, not `radius` — each star needs to individually
+        // stay well above a dot's size, not just their combined footprint.
+        const orbitR = body.spread * 0.32;
+        const starR = body.spread * 0.32;
+        for (const sign of [1, -1]) {
+          const a = body.orbitPhase + (sign === 1 ? 0 : Math.PI);
+          ctx.save();
+          ctx.translate(Math.cos(a) * orbitR, Math.sin(a) * orbitR * 0.4);
+          drawSoftGlow(starR * 1.4, body.hue + (sign === 1 ? 0 : 20), 0.3);
+          fillShadedSphere(starR, body.hue + (sign === 1 ? 0 : 20), 55, 75, 55, 25, starR * 0.25, starR * 0.25);
+          ctx.restore();
+        }
+        break;
+      }
+      case 'starCluster': {
+        for (const p of body.points) {
+          const tw = 0.6 + 0.4 * Math.sin(body.rotation * 30 + p.phase);
+          ctx.beginPath();
+          ctx.fillStyle = `hsla(${body.hue}, 60%, 88%, ${tw})`;
+          ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        break;
+      }
+      case 'asteroidField': {
+        for (const rock of body.rocks) {
+          ctx.save();
+          ctx.translate(rock.x, rock.y);
+          ctx.rotate(rock.rot);
+          ctx.beginPath();
+          const n = rock.verts.length;
+          for (let i = 0; i < n; i++) {
+            const a = (i / n) * Math.PI * 2;
+            const r = rock.r * rock.verts[i];
+            const vx = Math.cos(a) * r, vy = Math.sin(a) * r;
+            if (i === 0) ctx.moveTo(vx, vy); else ctx.lineTo(vx, vy);
+          }
+          ctx.closePath();
+          ctx.fillStyle = 'rgba(130,125,120,0.45)';
+          ctx.strokeStyle = 'rgba(190,185,180,0.3)';
+          ctx.lineWidth = 1;
+          ctx.fill();
+          ctx.stroke();
+          ctx.restore();
+        }
+        break;
+      }
+      case 'nebula': {
+        for (const b of body.blobs) {
+          ctx.save();
+          ctx.translate(b.x, b.y);
+          drawSoftGlow(b.r, body.hue + b.hueOffset, 0.1);
+          ctx.restore();
+        }
+        break;
+      }
+      case 'spiralGalaxy': {
+        drawSoftGlow(body.spread * 0.5, body.hue, 0.14);
+        ctx.rotate(body.rotation);
+        for (const p of body.armPoints) {
+          ctx.beginPath();
+          ctx.fillStyle = `hsla(${body.hue}, 55%, 80%, 0.5)`;
+          ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.beginPath();
+        ctx.fillStyle = `hsl(${body.hue}, 60%, 88%)`;
+        ctx.arc(0, 0, body.spread * 0.06, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      }
+      case 'aurora': {
+        for (const r of body.ribbons) {
+          const wobble = Math.sin(body.rotation * 20 + r.phase) * body.spread * 0.08;
+          ctx.beginPath();
+          ctx.moveTo(-body.spread, r.yOffset + wobble);
+          ctx.quadraticCurveTo(0, r.yOffset - wobble * 2, body.spread, r.yOffset + wobble);
+          ctx.strokeStyle = `hsla(${body.hue + r.hueOffset}, 70%, 65%, 0.18)`;
+          ctx.lineWidth = body.spread * 0.22;
+          ctx.lineCap = 'round';
+          ctx.stroke();
+        }
+        break;
+      }
+      case 'greatComet': {
+        ctx.save();
+        ctx.rotate(body.tailAngle);
+        const tailLen = body.spread * 1.1;
+        const grad = ctx.createLinearGradient(0, 0, -tailLen, 0);
+        grad.addColorStop(0, `hsla(${body.hue}, 60%, 85%, 0.35)`);
+        grad.addColorStop(1, 'hsla(0,0%,0%,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.moveTo(0, -body.radius * 0.22);
+        ctx.lineTo(-tailLen, -body.radius * 0.06);
+        ctx.lineTo(-tailLen, body.radius * 0.06);
+        ctx.lineTo(0, body.radius * 0.22);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        drawSoftGlow(body.radius * 0.6, body.hue, 0.4);
+        ctx.beginPath();
+        ctx.arc(0, 0, body.radius * 0.22, 0, Math.PI * 2);
+        ctx.fillStyle = `hsl(${body.hue}, 50%, 88%)`;
+        ctx.fill();
+        break;
+      }
+      case 'meteorShower': {
+        for (const s of body.streaks) {
+          const grad = ctx.createLinearGradient(s.x1, s.y1, s.x2, s.y2);
+          grad.addColorStop(0, 'hsla(0,0%,0%,0)');
+          grad.addColorStop(1, `hsla(${body.hue}, 50%, 85%, 0.55)`);
+          ctx.strokeStyle = grad;
+          ctx.lineWidth = 2;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(s.x1, s.y1);
+          ctx.lineTo(s.x2, s.y2);
+          ctx.stroke();
+        }
+        break;
+      }
     }
 
     ctx.restore();
