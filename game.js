@@ -511,7 +511,7 @@ const TRAVELING_LIGHT_CONFIG = {
   // Constant physical speed for every connection's drip, regardless of the
   // line's own length — a long line's drip just takes proportionally
   // longer to cross it, rather than visibly outrunning a short line's.
-  SPEED_PX_PER_BEAT: 260,
+  SPEED_PX_PER_BEAT: 130,
   MIN_BEATS_PER_TRAVERSAL: 0.8, // keeps a very short line from cycling absurdly fast
   // A new drip is born this often (in beats), same interval on every
   // connection — smaller than MIN_BEATS_PER_TRAVERSAL so even the
