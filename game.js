@@ -1827,7 +1827,7 @@ function completeConnection(dotA, dotB) {
   STATE.score += Math.round(pathLength(STATE.currentPath) * SCORE_PER_LINE_PIXEL);
   updateWaveDisplay();
 
-  checkTutorialDismiss(false);
+  checkTutorialDismiss();
 
   STATE.activeDot = null;
   STATE.currentPath = [];
@@ -1894,7 +1894,10 @@ function checkWaveComplete() {
   const allConnected = STATE.dots.every(dot => dot.connected);
   if (!allConnected) return;
 
-  checkTutorialDismiss(true);
+  // Tutorial text must never coexist with the WAVE COMPLETE overlay —
+  // hide it instantly (no fade) rather than leaving it to whatever dismiss
+  // condition that wave's hint happened to be waiting on.
+  hideTutorialHint(true);
 
   STATE.phase = 'WAVE_COMPLETE';
   STATE.waveCompleteAdvancing = false;
@@ -1906,7 +1909,10 @@ function checkWaveComplete() {
 
   haptic('waveComplete');
 
-  showMessage('WAVE COMPLETE', 'wave ' + STATE.wave + '  —  tap to continue');
+  // Wave number is already shown persistently in the top-left HUD — no
+  // need to repeat it here, which keeps this line short enough to never
+  // wrap into the title above it on narrow screens.
+  showMessage('WAVE COMPLETE', 'tap or click to advance');
   // The rest of the galaxy reveals itself as a reward for finishing the
   // wave — only the sparse stars scattered around each connected dot are
   // visible while still playing (see spawnStarsAroundDots).
@@ -3085,7 +3091,7 @@ function exitToTitle() {
   STATE.celestialBodies = [];
   STATE.beatSync = null;
   STATE.song = null;
-  hideTutorialHint(); // in-wave UI must never linger over the title screen
+  hideTutorialHint(true); // in-wave UI must never linger over the title screen
   document.getElementById('achievement-toast').classList.remove('visible');
   STATE.achievementQueue = [];
   STATE.achievementToastActive = false;
@@ -3095,7 +3101,11 @@ function exitToTitle() {
   // session) so the title screen accurately offers to continue from it.
   STATE.pendingResume = loadSave();
   updateWaveDisplay();
-  showMessage('LUMINA', STATE.pendingResume ? `tap to continue — wave ${STATE.pendingResume.wave}` : 'connect the dots');
+  showMessage(
+    'LUMINA',
+    STATE.pendingResume ? `tap or click to resume — wave ${STATE.pendingResume.wave}` : 'connect the dots. make the music.',
+    { showSoundHint: true }
+  );
 }
 
 // Rotating pause-menu content: 50 curated facts + 20 game tips, plus any
@@ -3188,10 +3198,13 @@ function setupPauseMenuListeners() {
 // ============================================================
 // SECTION 9: UI AND MESSAGES
 // ============================================================
-function showMessage(title, subtitle) {
+function showMessage(title, subtitle, opts) {
   document.getElementById('message-title').textContent = title;
   document.getElementById('message-subtitle').textContent = subtitle;
   document.getElementById('message-overlay').style.opacity = '1';
+  // Only the title screen gets the "turn your sound on" reminder — it'd be
+  // noise repeated on every WAVE COMPLETE otherwise.
+  document.getElementById('sound-hint').classList.toggle('visible', !!(opts && opts.showSoundHint));
 }
 
 function hideMessage() {
@@ -3309,20 +3322,43 @@ function layoutTutorialHint(text) {
   }
 }
 
-function hideTutorialHint() {
-  if (STATE.tutorialWave === null) return;
+// `instant`, when true, skips the normal 1.4s CSS fade — used anywhere the
+// hint must be guaranteed gone by the very next frame (e.g. the moment a
+// wave completes) rather than still visibly fading out over another
+// overlay. Always forces the DOM opacity, even if state was already clear,
+// so it also works as a defensive "make sure this is really hidden" call.
+function hideTutorialHint(instant) {
   STATE.tutorialWave = null;
   STATE.tutorialDismissWhen = null;
-  document.getElementById('tutorial-hint').style.opacity = '0';
+  const el = document.getElementById('tutorial-hint');
+  if (instant) {
+    el.style.transition = 'none';
+    el.style.opacity = '0';
+    void el.offsetHeight; // flush the style change before restoring the transition
+    el.style.transition = '';
+  } else {
+    el.style.opacity = '0';
+  }
 }
 
-// Called after any dot-pair connection and after a wave completes — clears
-// the current tutorial hint if its condition is satisfied. A no-op once all
+// Called after any dot-pair connection — clears the current tutorial hint
+// if its dismiss condition is 'connect'. ('complete'-dismiss hints, and
+// the wave-complete safety net, are handled by hideTutorialHint(true) in
+// checkWaveComplete and enforceTutorialHintInvariant.) A no-op once all
 // five tutorial waves are past (tutorialWave stays null).
-function checkTutorialDismiss(justCompletedWave) {
+function checkTutorialDismiss() {
   if (STATE.tutorialWave === null) return;
-  if (justCompletedWave && STATE.tutorialDismissWhen === 'complete') hideTutorialHint();
-  else if (!justCompletedWave && STATE.tutorialDismissWhen === 'connect') hideTutorialHint();
+  if (STATE.tutorialDismissWhen === 'connect') hideTutorialHint();
+}
+
+// Hard guarantee, checked every frame: tutorial text may only be on screen
+// while actually PLAYING. Any phase change that forgets to explicitly
+// clear it (a future code path, an edge case) gets caught here instead of
+// producing a repeat of "tutorial text visible during WAVE COMPLETE".
+function enforceTutorialHintInvariant() {
+  if (STATE.phase !== 'PLAYING' && STATE.tutorialWave !== null) {
+    hideTutorialHint(true);
+  }
 }
 
 function updateWaveDisplay() {
@@ -3334,6 +3370,8 @@ function updateWaveDisplay() {
 // SECTION 10: GAME LOOP
 // ============================================================
 function update() {
+  enforceTutorialHintInvariant();
+
   for (const dot of STATE.dots) {
     dot.pulsePhase += CONFIG.DOT_PULSE_SPEED;
   }
@@ -3436,7 +3474,11 @@ function init() {
 
   STATE.phase = 'TITLE';
   STATE.pendingResume = loadSave();
-  showMessage('LUMINA', STATE.pendingResume ? `tap to continue — wave ${STATE.pendingResume.wave}` : 'connect the dots');
+  showMessage(
+    'LUMINA',
+    STATE.pendingResume ? `tap or click to resume — wave ${STATE.pendingResume.wave}` : 'connect the dots. make the music.',
+    { showSoundHint: true }
+  );
   updateWaveDisplay();
 
   gameLoop();

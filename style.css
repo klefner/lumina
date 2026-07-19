@@ -234,6 +234,23 @@ html, body {
   50% { opacity: 1; }
 }
 
+/* Only shown on the title screen (see showMessage's showSoundHint option) —
+   a lot of first-time players don't realize this is a music game and start
+   with the device muted. Kept quiet/secondary so it never competes with
+   the subtitle for attention. */
+#sound-hint {
+  display: none;
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.5);
+  letter-spacing: 0.1em;
+  text-align: center;
+  max-width: 85%;
+}
+#sound-hint.visible {
+  display: block;
+}
+
 #version-display {
   position: fixed;
   bottom: 10px;
