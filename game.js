@@ -497,12 +497,12 @@ function playResolvedSample(instrument, nearestName, targetMidi, t, peak, dest) 
   trackSource(src).start(t);
 }
 
-function playSample(instrument, targetMidi, t, peak, dest) {
-  playResolvedSample(instrument, nearestSampleNote(instrument, targetMidi), targetMidi, t, peak, dest);
+function playSample(instrument, targetMidi, t, peak, dest, resolvedName) {
+  playResolvedSample(instrument, resolvedName || nearestSampleNote(instrument, targetMidi), targetMidi, t, peak, dest);
 }
 
-function playSampleChord(instrument, midiList, t, peak, dest) {
-  const names = nearestDistinctSampleNotes(instrument, midiList);
+function playSampleChord(instrument, midiList, t, peak, dest, resolvedNames) {
+  const names = resolvedNames || nearestDistinctSampleNotes(instrument, midiList);
   midiList.forEach((midi, i) => playResolvedSample(instrument, names[i], midi, t, peak, dest));
 }
 
@@ -521,9 +521,9 @@ function playScheduledNote(note, startTime, beatDur, dest) {
   const vel = note.vel || 1;
   const peak = (KIND_PEAK[note.role] || 0.4) * vel;
   if (note.role === 'pad') {
-    playSampleChord(note.instrument, note.midiList, t, peak, dest);
+    playSampleChord(note.instrument, note.midiList, t, peak, dest, note.resolvedSamples);
   } else {
-    playSample(note.instrument, note.midi, t, peak, dest);
+    playSample(note.instrument, note.midi, t, peak, dest, note.resolvedSample);
   }
 }
 
@@ -662,8 +662,50 @@ function generateSong(pairCount) {
   });
 
   capNoteGaps(notes, pairCount, totalBeats, 3.5);
+  resolveInstrumentCollisions(notes);
 
   return { genre, totalBeats, pairCount, notes };
+}
+
+// Genres reassign roles to instruments (see GENRES above), which can put
+// two different roles — say a drone and an accent — on the SAME instrument
+// with beats that land at (or drift close to) the exact same instant. If
+// each resolved its nearest sample independently, they could both land on
+// the identical recording and phase against each other the same way an
+// un-folded chord did (see foldChordToInstrumentRange). This is the general
+// case of that fix: any group of notes sharing an instrument within a
+// hair of the same beat gets its sample choices resolved TOGETHER, so two
+// simultaneous notes on one instrument can never collide onto one file.
+// Planned once at song-generation time, not re-derived per note at
+// playback, so what's "allowed to sound at once" is decided in advance.
+const SIMULTANEOUS_BEAT_TOLERANCE = 0.15; // wider than any humanizeBeat jitter, narrower than a step (0.5 beat)
+function resolveInstrumentCollisions(notes) {
+  const byInstrument = {};
+  for (const note of notes) {
+    (byInstrument[note.instrument] = byInstrument[note.instrument] || []).push(note);
+  }
+  for (const instrument in byInstrument) {
+    const list = byInstrument[instrument].slice().sort((a, b) => a.beat - b.beat);
+    let i = 0;
+    while (i < list.length) {
+      let j = i + 1;
+      while (j < list.length && list[j].beat - list[i].beat < SIMULTANEOUS_BEAT_TOLERANCE) j++;
+      const group = list.slice(i, j);
+      if (group.length > 1) {
+        const targets = [];
+        for (const n of group) targets.push(...(n.midiList || [n.midi]));
+        const resolved = nearestDistinctSampleNotes(instrument, targets);
+        let k = 0;
+        for (const n of group) {
+          const count = n.midiList ? n.midiList.length : 1;
+          if (n.midiList) n.resolvedSamples = resolved.slice(k, k + count);
+          else n.resolvedSample = resolved[k];
+          k += count;
+        }
+      }
+      i = j;
+    }
+  }
 }
 
 // Melody/arpeggio/accent notes are placed with per-bar randomness, which
