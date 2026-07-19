@@ -23,6 +23,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Stamp build version
+        run: |
+          BUILD="${GITHUB_SHA::7}"
+          VERSION="${BUILD} . $(date -u +%Y-%m-%d)"
+          sed -i "s/__BUILD__/${BUILD}/g; s/__VERSION__/${VERSION}/g" index.html
       - name: Configure Pages
         uses: actions/configure-pages@v5
         with:
