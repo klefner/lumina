@@ -340,68 +340,94 @@ const INSTRUMENTS = [
   { hex: '#AA88FF', glow: 'rgba(170,136,255,', name: 'violet'  },
 ];
 
-// Procedural song genres — all tuned to sound like something you'd hear
-// during a spa treatment or massage: slow tempo, a plain major scale, and
-// chord progressions restricted to I/IV/V/vi (every triad consonant, no
-// diminished/tense chords). Each genre is a different combination of real
-// instrument voices in different registers/roles so replaying gives a
-// different-sounding but equally calm arrangement — the same curated
-// palette, recombined. See sounds/CREDITS.md for instrument sourcing
-// (University of Iowa Musical Instrument Samples, free for any use).
-const GENRES = [
+// Genre FAMILIES bundle everything that should stay consistent across an
+// entire style (which chord types it uses, its rhythmic feel) — SEEDS
+// within a family vary tempo/key/chord-progression-order/instrument-role
+// assignment, same as a single "genre" always has. generateSong() picks a
+// family, then a seed within it, then merges the two into one flat
+// `genre` object so every existing call site (song.genre.bpm, etc.) keeps
+// working unchanged regardless of how many families exist.
+//
+// 'spa' is the only family right now — tuned to sound like something
+// you'd hear during a spa treatment or massage: slow tempo, a plain major
+// scale, chord progressions restricted to I/IV/V/vi (every triad
+// consonant, no diminished/tense chords). Each seed is a different
+// combination of real instrument voices in different registers/roles so
+// replaying gives a different-sounding but equally calm arrangement — the
+// same curated palette, recombined. See sounds/CREDITS.md for instrument
+// sourcing (University of Iowa Musical Instrument Samples, free for any
+// use).
+const GENRE_FAMILIES = [
   {
-    name: 'serenity', bpm: 56, rootMidi: 60,
-    scaleIntervals: [0, 2, 4, 5, 7, 9, 11], // Ionian (major)
-    chordProgression: [0, 3, 0, 4],          // I - IV - I - V
-    roles: [
-      { kind: 'melody',   instrument: 'flute' },
-      { kind: 'arpeggio', instrument: 'piano' },
-      { kind: 'pad',      instrument: 'vibraphone' }, // temporarily off cello
-      { kind: 'drone',    instrument: 'marimba' },    // temporarily off cello
-      { kind: 'accent',   instrument: 'marimba' },
-      { kind: 'accent',   instrument: 'vibraphone' },
-    ],
-  },
-  {
-    name: 'moonlit pool', bpm: 52, rootMidi: 57,
-    scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
-    chordProgression: [0, 5, 3, 4],          // I - vi - IV - V
-    roles: [
-      { kind: 'melody',   instrument: 'vibraphone' },
-      { kind: 'arpeggio', instrument: 'piano' },
-      { kind: 'pad',      instrument: 'marimba' },    // temporarily off cello
-      { kind: 'drone',    instrument: 'vibraphone' }, // temporarily off cello
-      { kind: 'accent',   instrument: 'flute' },
-      { kind: 'accent',   instrument: 'marimba' },
-    ],
-  },
-  {
-    name: 'warm stone', bpm: 60, rootMidi: 62,
-    scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
-    chordProgression: [0, 4, 5, 3],          // I - V - vi - IV
-    roles: [
-      { kind: 'melody',   instrument: 'piano' },
-      { kind: 'arpeggio', instrument: 'marimba' },
-      { kind: 'pad',      instrument: 'vibraphone' }, // temporarily off cello
-      { kind: 'drone',    instrument: 'marimba' },    // temporarily off cello
-      { kind: 'accent',   instrument: 'flute' },
-      { kind: 'accent',   instrument: 'vibraphone' },
-    ],
-  },
-  {
-    name: 'ocean mist', bpm: 54, rootMidi: 65,
-    scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
-    chordProgression: [0, 3, 4, 0],          // I - IV - V - I
-    roles: [
-      { kind: 'melody',   instrument: 'marimba' },
-      { kind: 'arpeggio', instrument: 'vibraphone' },
-      { kind: 'pad',      instrument: 'piano' },      // temporarily off cello
-      { kind: 'drone',    instrument: 'vibraphone' }, // temporarily off cello
-      { kind: 'accent',   instrument: 'flute' },
-      { kind: 'accent',   instrument: 'piano' },
+    name: 'spa',
+    chordVocabulary: 'triad', // see CHORD_VOCABULARIES
+    groove: { swing: 0, hasDrumRole: false },
+    seeds: [
+      {
+        name: 'serenity', bpm: 56, rootMidi: 60,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11], // Ionian (major)
+        chordProgression: [0, 3, 0, 4],          // I - IV - I - V
+        roles: [
+          { kind: 'melody',   instrument: 'flute' },
+          { kind: 'arpeggio', instrument: 'piano' },
+          { kind: 'pad',      instrument: 'vibraphone' }, // temporarily off cello
+          { kind: 'drone',    instrument: 'marimba' },    // temporarily off cello
+          { kind: 'accent',   instrument: 'marimba' },
+          { kind: 'accent',   instrument: 'vibraphone' },
+        ],
+      },
+      {
+        name: 'moonlit pool', bpm: 52, rootMidi: 57,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 5, 3, 4],          // I - vi - IV - V
+        roles: [
+          { kind: 'melody',   instrument: 'vibraphone' },
+          { kind: 'arpeggio', instrument: 'piano' },
+          { kind: 'pad',      instrument: 'marimba' },    // temporarily off cello
+          { kind: 'drone',    instrument: 'vibraphone' }, // temporarily off cello
+          { kind: 'accent',   instrument: 'flute' },
+          { kind: 'accent',   instrument: 'marimba' },
+        ],
+      },
+      {
+        name: 'warm stone', bpm: 60, rootMidi: 62,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 4, 5, 3],          // I - V - vi - IV
+        roles: [
+          { kind: 'melody',   instrument: 'piano' },
+          { kind: 'arpeggio', instrument: 'marimba' },
+          { kind: 'pad',      instrument: 'vibraphone' }, // temporarily off cello
+          { kind: 'drone',    instrument: 'marimba' },    // temporarily off cello
+          { kind: 'accent',   instrument: 'flute' },
+          { kind: 'accent',   instrument: 'vibraphone' },
+        ],
+      },
+      {
+        name: 'ocean mist', bpm: 54, rootMidi: 65,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 3, 4, 0],          // I - IV - V - I
+        roles: [
+          { kind: 'melody',   instrument: 'marimba' },
+          { kind: 'arpeggio', instrument: 'vibraphone' },
+          { kind: 'pad',      instrument: 'piano' },      // temporarily off cello
+          { kind: 'drone',    instrument: 'vibraphone' }, // temporarily off cello
+          { kind: 'accent',   instrument: 'flute' },
+          { kind: 'accent',   instrument: 'piano' },
+        ],
+      },
     ],
   },
 ];
+
+// Chord-tone degree offsets from the chord root, keyed by family-level
+// chordVocabulary. 'triad' is today's plain root/3rd/5th (every chord in
+// every spa progression is I/IV/V/vi, always consonant). 'seventh' isn't
+// used by any family yet — added here so the generation loop below never
+// needs to change again when one does.
+const CHORD_VOCABULARIES = {
+  triad: (root) => [root, root + 2, root + 4],
+  seventh: (root) => [root, root + 2, root + 4, root + 6],
+};
 
 // Note: trumpet and double bass sample files remain in sounds/ from an
 // earlier, more upbeat set of genres but are omitted here (and so never
@@ -1103,7 +1129,14 @@ function humanizeVelocity() {
 // stem is audible within a beat or two of being opened instead of waiting
 // for a private slot to come around in a shared timeline.
 function generateSong(pairCount) {
-  const genre = GENRES[Math.floor(Math.random() * GENRES.length)];
+  const family = GENRE_FAMILIES[Math.floor(Math.random() * GENRE_FAMILIES.length)];
+  const seed = family.seeds[Math.floor(Math.random() * family.seeds.length)];
+  // Flattened so every existing call site (song.genre.bpm, song.genre.rootMidi,
+  // etc.) keeps working unchanged — family-level rules just ride along as
+  // extra fields on the same object.
+  const genre = { ...seed, family: family.name, chordVocabulary: family.chordVocabulary, groove: family.groove };
+  const buildChord = CHORD_VOCABULARIES[genre.chordVocabulary];
+
   const beatsPerBar = 4;
   const progressionBars = genre.chordProgression.length; // the shared harmonic cycle every stem plays over
   const totalBeats = progressionBars * beatsPerBar;
@@ -1124,7 +1157,7 @@ function generateSong(pairCount) {
 
     for (let bar = 0; bar < progressionBars; bar++) {
       const chordRoot = genre.chordProgression[bar % genre.chordProgression.length];
-      const chordDegrees = [chordRoot, chordRoot + 2, chordRoot + 4];
+      const chordDegrees = buildChord(chordRoot);
       const barStartBeat = bar * beatsPerBar;
 
       if (kind === 'melody') {
@@ -1219,7 +1252,7 @@ function generateSong(pairCount) {
   return { genre, totalBeats, pairCount, notes };
 }
 
-// Genres reassign roles to instruments (see GENRES above), which can put
+// Genre seeds reassign roles to instruments (see GENRE_FAMILIES above), which can put
 // two different roles — say a drone and an accent — on the SAME instrument
 // with beats that land at (or drift close to) the exact same instant. If
 // each resolved its nearest sample independently, they could both land on
