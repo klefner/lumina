@@ -1,0 +1,11 @@
+{
+  "name": "lumina",
+  "private": true,
+  "description": "CI tooling only — the game itself is a plain static site with no build step.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}
