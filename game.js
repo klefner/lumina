@@ -47,6 +47,149 @@ const TUTORIAL_MESSAGES = [
   { text: 'This game is about making relaxing music. Please enjoy.', dismissWhen: 'connect' },
 ];
 
+// ============================================================
+// ACHIEVEMENTS — persisted personal-best milestones, celebrated with a
+// top-center toast (badge + short label) and a short synthesized jingle.
+// Persistence is per-browser (localStorage), not tied to a wave/session,
+// so "best ever" genuinely means best ever on this device.
+// ============================================================
+const STATS_KEY = 'lumina_stats_v1';
+function loadStats() {
+  try {
+    const raw = localStorage.getItem(STATS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { bestWave: parsed.bestWave || 0, bestWaveScore: parsed.bestWaveScore || 0 };
+    }
+  } catch (e) { /* localStorage unavailable/corrupt — start fresh, don't block the game on it */ }
+  return { bestWave: 0, bestWaveScore: 0 };
+}
+function saveStats(stats) {
+  try { localStorage.setItem(STATS_KEY, JSON.stringify(stats)); } catch (e) { /* best-effort only */ }
+}
+
+// Every-10th-wave milestone tiers, each fancier than the last. Cycles
+// through an escalating shimmer beyond the last named tier (wave 60+)
+// rather than capping out, so the milestone keeps feeling special forever.
+const MILESTONE_TIERS = [
+  { name: 'Bronze',   glyph: '✦', bg: 'radial-gradient(circle at 35% 30%, #e8b27a, #8c5a2b)', glow: 'rgba(205,127,50,0.6)' },
+  { name: 'Silver',   glyph: '✦', bg: 'radial-gradient(circle at 35% 30%, #f2f2f2, #9a9a9a)', glow: 'rgba(200,200,210,0.65)' },
+  { name: 'Gold',     glyph: '✦', bg: 'radial-gradient(circle at 35% 30%, #ffe9a8, #d4a017)', glow: 'rgba(255,215,0,0.65)' },
+  { name: 'Platinum', glyph: '✨', bg: 'radial-gradient(circle at 35% 30%, #f4faff, #b9c3cc)', glow: 'rgba(220,235,245,0.7)' },
+  { name: 'Diamond',  glyph: '✨', bg: 'radial-gradient(circle at 35% 30%, #d4f6ff, #4fc3f7)', glow: 'rgba(79,195,247,0.75)' },
+  { name: 'Prism',    glyph: '✨', bg: 'conic-gradient(from 0deg, #ff6b6b, #ffd93d, #6bffb8, #6bc6ff, #c66bff, #ff6b6b)', glow: 'rgba(255,255,255,0.8)' },
+];
+function milestoneTierForWave(wave) {
+  const tier = Math.floor(wave / 10) - 1; // wave10->0(Bronze), wave20->1(Silver), ...
+  return MILESTONE_TIERS[Math.min(tier, MILESTONE_TIERS.length - 1)];
+}
+
+function queueAchievement(entry) {
+  STATE.achievementQueue.push(entry);
+  maybeShowNextAchievement();
+}
+
+// Checks all three milestone types against this wave's result and queues
+// a toast for each one earned. Called once per completed wave.
+function checkAchievements(waveScore) {
+  if (STATE.wave % 10 === 0) {
+    const tier = milestoneTierForWave(STATE.wave);
+    queueAchievement({ glyph: tier.glyph, bg: tier.bg, glow: tier.glow, label: `Wave ${STATE.wave} Cleared` });
+  }
+  if (STATE.wave > STATE.stats.bestWave) {
+    STATE.stats.bestWave = STATE.wave;
+    saveStats(STATE.stats);
+    queueAchievement({
+      glyph: '🏆', // 🏆
+      bg: 'radial-gradient(circle at 35% 30%, #ffe9a8, #d4a017)',
+      glow: 'rgba(255,215,0,0.65)',
+      label: 'New Best Wave',
+    });
+  }
+  if (waveScore > STATE.stats.bestWaveScore) {
+    STATE.stats.bestWaveScore = waveScore;
+    saveStats(STATE.stats);
+    queueAchievement({
+      glyph: '⭐', // ⭐
+      bg: 'radial-gradient(circle at 35% 30%, #cfe8ff, #5b8def)',
+      glow: 'rgba(91,141,239,0.65)',
+      label: 'Best Wave Score',
+    });
+  }
+}
+
+function maybeShowNextAchievement() {
+  if (STATE.achievementToastActive) return;
+  const next = STATE.achievementQueue.shift();
+  if (!next) return;
+  STATE.achievementToastActive = true;
+  showAchievementToast(next);
+}
+
+const ACHIEVEMENT_VISIBLE_MS = 3200;
+function showAchievementToast(entry) {
+  const toast = document.getElementById('achievement-toast');
+  const badge = document.getElementById('achievement-badge');
+  badge.style.setProperty('--badge-bg', entry.bg);
+  badge.style.setProperty('--badge-glow', entry.glow);
+  badge.textContent = entry.glyph;
+  // Re-trigger the pop animation even if a previous toast just used it.
+  badge.style.animation = 'none';
+  void badge.offsetWidth; // force reflow so the animation restarts
+  badge.style.animation = '';
+
+  layoutAchievementToast(toast, entry.label);
+  toast.classList.add('visible');
+  playAchievementJingle();
+
+  setTimeout(() => {
+    toast.classList.remove('visible');
+    STATE.achievementToastActive = false;
+    setTimeout(maybeShowNextAchievement, 700); // let the fade-out finish before the next one pops in
+  }, ACHIEVEMENT_VISIBLE_MS);
+}
+
+// Same center-out, dot-avoiding search as layoutTutorialHint, anchored near
+// the top of the screen instead of dead-center, and reflowing the label
+// text (not the badge, which is a fixed-size circle) to shrink the toast's
+// footprint when needed.
+function layoutAchievementToast(toast, text) {
+  const label = document.getElementById('achievement-label');
+  const words = text.split(' ');
+  const lineOptions = [];
+  for (let lineCount = 1; lineCount <= words.length; lineCount++) lineOptions.push(wrapIntoLines(words, lineCount));
+
+  const maxRadius = Math.min(canvas.width, canvas.height) * 0.5;
+  const positions = tutorialPositionCandidates(maxRadius, 25);
+
+  for (const fontSize of [20, 17, 15, 13]) {
+    label.style.fontSize = fontSize + 'px';
+    for (const { dx, dy } of positions) {
+      toast.style.left = `calc(50% + ${dx}px)`;
+      toast.style.top = `calc(14% + ${dy}px)`;
+      for (const lines of lineOptions) {
+        label.innerHTML = lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
+        if (!rectOverlapsAnyDot(toast.getBoundingClientRect())) return;
+      }
+    }
+  }
+}
+
+// A quick, bright ascending flourish — independent of the song's own
+// scheduling, fired once as a one-shot celebration. Uses the vibraphone
+// samples already loaded for the current genre (or piano as a fallback
+// before any wave has picked a genre), so no extra assets are needed.
+function playAchievementJingle() {
+  if (!STATE.audioCtx || !STATE.masterBus) return;
+  const instrument = STATE.sampleBuffers.vibraphone ? 'vibraphone' : 'piano';
+  const root = STATE.song ? STATE.song.genre.rootMidi : 60;
+  const notes = [root + 12, root + 16, root + 19, root + 24]; // major triad + octave, rising
+  const t0 = STATE.audioCtx.currentTime + 0.02;
+  notes.forEach((midi, i) => {
+    playSample(instrument, midi, t0 + i * 0.09, 0.5, STATE.masterBus);
+  });
+}
+
 // Color palette — each index is one instrument/color
 const INSTRUMENTS = [
   { hex: '#00FFFF', glow: 'rgba(0,255,255,',   name: 'crystal' },
@@ -240,6 +383,12 @@ const STATE = {
 
   tutorialWave: null,        // wave number the current on-screen tutorial hint belongs to, or null
   tutorialDismissWhen: null, // 'connect' | 'complete' — what the player needs to do to dismiss it
+
+  waveStartScore: 0,     // STATE.score snapshot at the start of the current wave — the difference
+                          // at wave-complete is that wave's own score, for the best-single-wave record
+  stats: loadStats(),    // persisted personal bests (see loadStats/saveStats) — survives across visits
+  achievementQueue: [],  // pending {glyph, bg, glow, label} toasts, shown one at a time
+  achievementToastActive: false,
 };
 
 // ============================================================
@@ -1399,6 +1548,7 @@ function checkWaveComplete() {
   fillSpaceGalaxy();
 
   STATE.score += STATE.wave * 100;
+  checkAchievements(STATE.score - STATE.waveStartScore);
 
   // The song keeps looping (already playing in full) for as long as the
   // player lingers here — there's no auto-advance. Only a tap, click, or
@@ -1430,6 +1580,7 @@ function startWave(waveNumber) {
   STATE.isDrawing = false;
   STATE.spaceObjects = [];
   STATE.spaceSpawnTimer = 0;
+  STATE.waveStartScore = STATE.score;
 
   showTutorialHint(waveNumber);
 
