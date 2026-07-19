@@ -614,6 +614,43 @@ const TRAVELING_LIGHT_CONFIG = {
   SPAWN_INTERVAL_BEATS: 0.7,
 };
 
+// Dots are placed in "world" space, which starts equal to the screen but
+// grows for a wave whenever its dot count needs more room than the screen
+// can offer at CONFIG.MIN_DOT_DISTANCE spacing (see computeWorldSize) — on
+// intense difficulty especially, a crowded wave used to force dots closer
+// together than a fingertip could disambiguate, occasionally overlapping
+// two connectable dots into an untappable mess. Growing the world instead
+// of shrinking the spacing keeps every dot's tap target fully clear; the
+// camera then zooms out just enough to fit that (possibly larger) world
+// back into the screen, and the player can additionally pull further out
+// (never in tighter than that guaranteed-fit view, which would risk
+// pushing dots off-screen) via scroll wheel or a two-finger pinch.
+const CAMERA_CONFIG = {
+  // Ideal circle-packing density inflated for headroom: random placement
+  // (not a perfect hex pack) needs real slack beyond the geometric minimum
+  // to actually find a valid spot within findValidPosition's attempt budget.
+  PACKING_AREA_FACTOR: 1.6,
+  MAX_WORLD_GROWTH: 2.2,     // world's linear size never exceeds this many x the screen's
+  ZOOM_LERP: 0.08,           // per-frame smoothing toward the target camera scale
+  MIN_USER_PULLBACK: 0.65,   // manual zoom-out floor, relative to the auto-fit scale
+  WHEEL_ZOOM_STEP: 0.0015,   // userZoom change per wheel-delta unit
+};
+
+// Sizes the world for a wave with `dotCount` dots: big enough that random
+// placement can comfortably keep every dot CONFIG.MIN_DOT_DISTANCE apart,
+// never smaller than the screen itself (so low dot counts never appear
+// artificially zoomed in), and capped so a pathological dot count can't
+// balloon the world (and therefore zoom out) without bound.
+function computeWorldSize(dotCount) {
+  const screenW = canvas.width, screenH = canvas.height;
+  const usableW = Math.max(1, screenW - CONFIG.EDGE_MARGIN * 2);
+  const usableH = Math.max(1, screenH - CONFIG.EDGE_MARGIN * 2);
+  const areaPerDot = Math.PI * (CONFIG.MIN_DOT_DISTANCE / 2) ** 2 * CAMERA_CONFIG.PACKING_AREA_FACTOR;
+  const requiredArea = dotCount * areaPerDot;
+  const growth = Math.min(CAMERA_CONFIG.MAX_WORLD_GROWTH, Math.sqrt(Math.max(1, requiredArea / (usableW * usableH))));
+  return { w: screenW * growth, h: screenH * growth };
+}
+
 const BARRIER_CONFIG = {
   START_WAVE: 3,          // barriers begin appearing at this wave
   WAVES_PER_BARRIER: 2,   // one more barrier every N waves after START_WAVE
@@ -765,6 +802,16 @@ const STATE = {
   dotUnion: {},        // dot.id -> dot.id — union-find over same-color dots, tracks which are
                         // already linked (directly or transitively) so a color with 3+ dots can
                         // be solved by connecting them into one network, not just fixed pairs
+
+  world: { w: 0, h: 0 },  // world-space board size for the current wave (see computeWorldSize) —
+                           // >= the screen size; grows for crowded waves so dots keep their clearance
+  camera: {
+    autoScale: 1,          // scale that fits the whole world into the current screen
+    scale: 1,               // actual rendered scale, lerped toward targetScale each frame
+    targetScale: 1,          // autoScale * userZoom
+    userZoom: 1,              // manual pull-back, 1 = the guaranteed-fit view, down to MIN_USER_PULLBACK
+  },
+  pinch: null,          // { startDist, startZoom } while a two-finger touch is in progress
 
   activeDot: null,     // The dot currently being dragged from
   currentPath: [],     // Points being drawn right now [{x, y}]
@@ -1788,9 +1835,49 @@ const ctx = canvas.getContext('2d');
 function resizeCanvas() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
+  // Keep the camera's fit scale correct if the viewport changes mid-wave
+  // (orientation change, desktop window resize). world.w is 0 until the
+  // first wave starts, so this is a no-op at the initial page-load call.
+  if (STATE.world.w > 0) {
+    STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
+    STATE.camera.targetScale = STATE.camera.autoScale * STATE.camera.userZoom;
+  }
 }
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
+
+// ------------------------------------------------------------
+// Camera: screen <-> world coordinate conversion. World space is centered
+// under the screen's center and scaled by STATE.camera.scale — see
+// CAMERA_CONFIG/computeWorldSize above for why the world can be larger
+// than the screen in the first place.
+// ------------------------------------------------------------
+function applyCameraTransform() {
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.scale(STATE.camera.scale, STATE.camera.scale);
+  ctx.translate(-STATE.world.w / 2, -STATE.world.h / 2);
+}
+
+function screenToWorld(sx, sy) {
+  const s = STATE.camera.scale || 1;
+  return {
+    x: (sx - canvas.width / 2) / s + STATE.world.w / 2,
+    y: (sy - canvas.height / 2) / s + STATE.world.h / 2,
+  };
+}
+
+function worldToScreen(wx, wy) {
+  const s = STATE.camera.scale || 1;
+  return {
+    x: (wx - STATE.world.w / 2) * s + canvas.width / 2,
+    y: (wy - STATE.world.h / 2) * s + canvas.height / 2,
+  };
+}
+
+function setUserZoom(z) {
+  STATE.camera.userZoom = Math.max(CAMERA_CONFIG.MIN_USER_PULLBACK, Math.min(1, z));
+  STATE.camera.targetScale = STATE.camera.autoScale * STATE.camera.userZoom;
+}
 
 function getBeatPulse() {
   if (!STATE.beatSync) return null;
@@ -2097,16 +2184,27 @@ function getPairCountForWave(wave) {
 
 function generateDots(wave) {
   const pairCount = getPairCountForWave(wave);
-  const dots = [];
-  let idCounter = 0;
-
   const shuffledInstruments = shuffleArray([...Array(INSTRUMENTS.length).keys()]).slice(0, pairCount);
 
+  // Group sizes are rolled up front (rather than as each dot is placed) so
+  // the total dot count for the wave is known before anything gets a
+  // position — computeWorldSize needs that total to decide whether this
+  // wave's board needs to grow to keep every dot properly spaced.
+  const groupSizes = [];
+  let totalDots = 0;
+  for (let pairId = 0; pairId < pairCount; pairId++) {
+    const size = groupSizeForColor(wave);
+    groupSizes.push(size);
+    totalDots += size;
+  }
+
+  STATE.world = computeWorldSize(totalDots);
+
+  const dots = [];
+  let idCounter = 0;
   for (let pairId = 0; pairId < pairCount; pairId++) {
     const colorIndex = shuffledInstruments[pairId];
-    const groupSize = groupSizeForColor(wave);
-
-    for (let k = 0; k < groupSize; k++) {
+    for (let k = 0; k < groupSizes[pairId]; k++) {
       const pos = findValidPosition(dots);
       dots.push({
         id: idCounter++,
@@ -2126,10 +2224,11 @@ function generateDots(wave) {
 
 function findValidPosition(existingDots) {
   const maxAttempts = 200;
+  const w = STATE.world.w, h = STATE.world.h;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const x = CONFIG.EDGE_MARGIN + Math.random() * (canvas.width - CONFIG.EDGE_MARGIN * 2);
-    const y = CONFIG.EDGE_MARGIN + Math.random() * (canvas.height - CONFIG.EDGE_MARGIN * 2);
+    const x = CONFIG.EDGE_MARGIN + Math.random() * (w - CONFIG.EDGE_MARGIN * 2);
+    const y = CONFIG.EDGE_MARGIN + Math.random() * (h - CONFIG.EDGE_MARGIN * 2);
 
     let valid = true;
     for (const dot of existingDots) {
@@ -2143,20 +2242,48 @@ function findValidPosition(existingDots) {
     if (valid) return { x, y };
   }
 
-  return fallbackGridPosition(existingDots.length);
+  // computeWorldSize sizes the board so this should essentially never be
+  // reached — but if an unlucky run of random attempts still comes up
+  // empty, fall through to a deterministic search for whichever candidate
+  // point is farthest from its single nearest existing dot, rather than
+  // the old fixed grid that placed a dot without checking existing dots
+  // at all (the actual cause of dots landing directly on top of each
+  // other on crowded intense-difficulty waves). This always returns the
+  // best spacing actually available, never a silent overlap.
+  return bestCandidatePosition(existingDots);
 }
 
-// Defense in depth on top of fallbackGridPosition itself: whatever the
-// reason a dot's final position might land outside the visible canvas
-// (a future regression, a screen-size edge case, anything), catch it here
-// too. An off-canvas dot is invisible and untappable — indistinguishable,
-// from the player's side, from "this dot has no matching pair" — so this
-// is checked once, right after generation, rather than trusted to never
-// happen again.
-function ensureAllDotsOnScreen(dots) {
+function bestCandidatePosition(existingDots) {
+  const w = STATE.world.w, h = STATE.world.h;
+  const cols = 24, rows = 24;
+  let best = { x: w / 2, y: h / 2 }, bestDist = -1;
+
+  for (let r = 0; r <= rows; r++) {
+    for (let c = 0; c <= cols; c++) {
+      const x = CONFIG.EDGE_MARGIN + (c / cols) * (w - CONFIG.EDGE_MARGIN * 2);
+      const y = CONFIG.EDGE_MARGIN + (r / rows) * (h - CONFIG.EDGE_MARGIN * 2);
+      let nearest = Infinity;
+      for (const dot of existingDots) {
+        nearest = Math.min(nearest, Math.hypot(dot.x - x, dot.y - y));
+      }
+      if (nearest > bestDist) { bestDist = nearest; best = { x, y }; }
+    }
+  }
+
+  return best;
+}
+
+// Defense in depth on top of findValidPosition/bestCandidatePosition
+// themselves: whatever the reason a dot's final position might land
+// outside its world bounds (a future regression, a screen-size edge case,
+// anything), catch it here too. An out-of-bounds dot is invisible and
+// untappable — indistinguishable, from the player's side, from "this dot
+// has no matching pair" — so this is checked once, right after
+// generation, rather than trusted to never happen again.
+function ensureAllDotsInWorldBounds(dots) {
   for (const dot of dots) {
-    const onScreen = dot.x >= 0 && dot.x <= canvas.width && dot.y >= 0 && dot.y <= canvas.height;
-    if (onScreen) continue;
+    const inBounds = dot.x >= 0 && dot.x <= STATE.world.w && dot.y >= 0 && dot.y <= STATE.world.h;
+    if (inBounds) continue;
     const others = dots.filter(d => d !== dot);
     const pos = findValidPosition(others);
     dot.x = pos.x;
@@ -2173,6 +2300,7 @@ canvas.addEventListener('touchend', onInputEnd, { passive: false });
 canvas.addEventListener('mousedown', onInputStart, { passive: false });
 canvas.addEventListener('mousemove', onInputMove, { passive: false });
 canvas.addEventListener('mouseup', onInputEnd, { passive: false });
+canvas.addEventListener('wheel', onWheelZoom, { passive: false });
 
 // A key press also advances past the WAVE_COMPLETE screen, same as a tap.
 window.addEventListener('keydown', () => {
@@ -2181,23 +2309,48 @@ window.addEventListener('keydown', () => {
   }
 });
 
+// Returns world-space coordinates (see screenToWorld) — every caller wants
+// to compare against dot.x/dot.y, which live in world space once the
+// board is zoomed, not raw screen pixels.
 function getEventPos(e) {
   const rect = canvas.getBoundingClientRect();
   if (e.touches && e.touches.length > 0) {
-    return {
-      x: e.touches[0].clientX - rect.left,
-      y: e.touches[0].clientY - rect.top,
-    };
+    return screenToWorld(e.touches[0].clientX - rect.left, e.touches[0].clientY - rect.top);
   }
-  return {
-    x: e.clientX - rect.left,
-    y: e.clientY - rect.top,
-  };
+  return screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+}
+
+function pinchDistance(touches) {
+  return Math.hypot(touches[1].clientX - touches[0].clientX, touches[1].clientY - touches[0].clientY);
+}
+
+function beginPinch(e) {
+  // A second finger landing mid-draw means the player's going for a pinch,
+  // not finishing the line they were drawing — drop the in-progress line
+  // rather than completing/rejecting a connection they didn't intend.
+  if (STATE.isDrawing) cancelActiveLine();
+  STATE.pinch = { startDist: pinchDistance(e.touches), startZoom: STATE.camera.userZoom };
+}
+
+function updatePinch(e) {
+  if (!STATE.pinch) { beginPinch(e); return; }
+  setUserZoom(STATE.pinch.startZoom * (pinchDistance(e.touches) / STATE.pinch.startDist));
+}
+
+function onWheelZoom(e) {
+  if (STATE.phase !== 'PLAYING' || STATE.paused) return;
+  e.preventDefault();
+  setUserZoom(STATE.camera.userZoom - e.deltaY * CAMERA_CONFIG.WHEEL_ZOOM_STEP);
 }
 
 function onInputStart(e) {
   e.preventDefault();
   if (STATE.paused) return; // pause menu handles its own input via real DOM buttons
+
+  if (STATE.phase === 'PLAYING' && e.touches && e.touches.length >= 2) {
+    beginPinch(e);
+    return;
+  }
 
   initAudio();
 
@@ -2234,7 +2387,14 @@ function onInputStart(e) {
 
 function onInputMove(e) {
   e.preventDefault();
-  if (!STATE.isDrawing || STATE.phase !== 'PLAYING' || STATE.paused) return;
+  if (STATE.paused) return;
+
+  if (STATE.phase === 'PLAYING' && e.touches && e.touches.length >= 2) {
+    updatePinch(e);
+    return;
+  }
+
+  if (!STATE.isDrawing || STATE.phase !== 'PLAYING') return;
 
   const pos = getEventPos(e);
 
@@ -2255,14 +2415,22 @@ function onInputMove(e) {
 
 function onInputEnd(e) {
   e.preventDefault();
-  if (!STATE.isDrawing || !STATE.activeDot || STATE.paused) return;
+  if (STATE.paused) return;
+
+  // Lifting one finger of a pinch still leaves e.touches.length === 1, so
+  // this only clears once every finger is up; a still-active pinch (2+
+  // remaining touches, e.g. a three-finger gesture) is left alone.
+  if (e.touches && e.touches.length >= 2) return;
+  if (STATE.pinch) { STATE.pinch = null; return; }
+
+  if (!STATE.isDrawing || !STATE.activeDot) return;
 
   STATE.isDrawing = false;
 
-  const pos = getEventPos(e);
+  let pos = getEventPos(e);
   if (e.changedTouches && e.changedTouches.length > 0) {
-    pos.x = e.changedTouches[0].clientX - canvas.getBoundingClientRect().left;
-    pos.y = e.changedTouches[0].clientY - canvas.getBoundingClientRect().top;
+    const rect = canvas.getBoundingClientRect();
+    pos = screenToWorld(e.changedTouches[0].clientX - rect.left, e.changedTouches[0].clientY - rect.top);
   }
 
   const targetDot = findDotAt(pos.x, pos.y, false);
@@ -2537,9 +2705,13 @@ function isReachableAround(fromX, fromY, toX, toY, blocked, size, cols, rows) {
 // as a group, but the board geometry that accumulates over the course of
 // play can still trap one of them).
 function wouldStrandAnyDot(newSegments, dotA, dotB) {
+  // Dots and connection segments live in world space, which can be larger
+  // than the screen on a crowded wave (see computeWorldSize) — the grid
+  // has to cover the whole world or it'd silently clip off part of the
+  // board and miss strandings that happen out past the screen's own size.
   const size = STRAND_CHECK_CELL_SIZE;
-  const cols = Math.ceil(canvas.width / size) + 1;
-  const rows = Math.ceil(canvas.height / size) + 1;
+  const cols = Math.ceil(STATE.world.w / size) + 1;
+  const rows = Math.ceil(STATE.world.h / size) + 1;
   const blocked = buildBlockedGrid(existingConnectionSegments(newSegments), size);
 
   for (const dot of STATE.dots) {
@@ -2616,8 +2788,20 @@ function checkWaveComplete() {
 function startWave(waveNumber) {
   STATE.wave = waveNumber;
   STATE.phase = 'PLAYING';
-  STATE.dots = generateDots(waveNumber);
-  ensureAllDotsOnScreen(STATE.dots);
+  STATE.dots = generateDots(waveNumber); // also sets STATE.world to fit this wave's dot count
+  ensureAllDotsInWorldBounds(STATE.dots);
+
+  // Fit the (possibly grown) world back into the screen. Manual zoom
+  // resets to the guaranteed-fit view on every new wave, since the layout
+  // — and therefore what "fits" means — is different each time; the
+  // camera's rendered scale is left where it was so the transition
+  // animates smoothly into the new wave rather than snapping.
+  STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
+  STATE.camera.userZoom = 1;
+  STATE.camera.targetScale = STATE.camera.autoScale;
+  if (!STATE.camera.scale) STATE.camera.scale = STATE.camera.autoScale; // first wave: nothing to animate from
+  STATE.pinch = null;
+
   STATE.dotUnion = {};
   for (const dot of STATE.dots) STATE.dotUnion[dot.id] = dot.id;
   STATE.connections = [];
@@ -2818,8 +3002,8 @@ function generateBarriers(wave, dots) {
     const { x1, y1, x2, y2 } = barrierEndpoints(pivotX, pivotY, angle, length);
 
     const c = BARRIER_CONFIG.SCREEN_CLEARANCE;
-    if (x1 < c || x1 > canvas.width - c || x2 < c || x2 > canvas.width - c) continue;
-    if (y1 < c || y1 > canvas.height - c || y2 < c || y2 > canvas.height - c) continue;
+    if (x1 < c || x1 > STATE.world.w - c || x2 < c || x2 > STATE.world.w - c) continue;
+    if (y1 < c || y1 > STATE.world.h - c || y2 < c || y2 > STATE.world.h - c) continue;
     if (!segmentClearsAllDots(x1, y1, x2, y2, dots)) continue;
 
     const rotating = barriers.length < rotatingCount;
@@ -3034,12 +3218,17 @@ function fillBaseStarfield() {
 
 function spawnStarsAroundDots(dotA, dotB) {
   const perDot = Math.round(STARFIELD_CONFIG.STARS_PER_CONNECTION / 2);
+  // Stars live in screen space (drawStars runs outside the camera
+  // transform, see render()) but dot.x/y are world-space — convert once
+  // per dot rather than spawning stars at what would be the wrong screen
+  // location whenever the camera is zoomed.
   for (const dot of [dotA, dotB]) {
+    const p = worldToScreen(dot.x, dot.y);
     for (let i = 0; i < perDot; i++) {
       if (STATE.stars.length >= STARFIELD_CONFIG.MAX_STARS) return;
       const angle = Math.random() * Math.PI * 2;
       const dist = Math.random() * STARFIELD_CONFIG.CONNECTION_STAR_RADIUS;
-      STATE.stars.push(makeStar(dot.x + Math.cos(angle) * dist, dot.y + Math.sin(angle) * dist, STARFIELD_CONFIG.STAR_FADE_IN_SPEED));
+      STATE.stars.push(makeStar(p.x + Math.cos(angle) * dist, p.y + Math.sin(angle) * dist, STARFIELD_CONFIG.STAR_FADE_IN_SPEED));
     }
   }
 }
@@ -3925,11 +4114,15 @@ function wrapIntoLines(words, lineCount) {
 }
 
 function rectOverlapsAnyDot(rect) {
-  const exclusion = CONFIG.DOT_RADIUS_CONNECTED_MAX + 14; // clear space beyond the dot's largest visible pulse radius
+  // rect is a screen-space DOM box (the tutorial hint); dot.x/y are
+  // world-space, so each dot's on-screen position — and its exclusion
+  // radius, in screen px — has to go through the camera transform first.
+  const exclusion = (CONFIG.DOT_RADIUS_CONNECTED_MAX + 14) * (STATE.camera.scale || 1);
   for (const dot of STATE.dots) {
-    const cx = Math.max(rect.left, Math.min(dot.x, rect.right));
-    const cy = Math.max(rect.top, Math.min(dot.y, rect.bottom));
-    if (Math.hypot(dot.x - cx, dot.y - cy) < exclusion) return true;
+    const p = worldToScreen(dot.x, dot.y);
+    const cx = Math.max(rect.left, Math.min(p.x, rect.right));
+    const cy = Math.max(rect.top, Math.min(p.y, rect.bottom));
+    if (Math.hypot(p.x - cx, p.y - cy) < exclusion) return true;
   }
   return false;
 }
@@ -4080,6 +4273,8 @@ function update() {
 
   STATE.lines = STATE.lines.filter(l => !l.complete);
 
+  STATE.camera.scale += (STATE.camera.targetScale - STATE.camera.scale) * CAMERA_CONFIG.ZOOM_LERP;
+
   updateStars();
   // Asteroids/satellites/comets only drift through once the whole wave's
   // line-galaxy is complete — they'd be a distraction while still connecting.
@@ -4108,8 +4303,14 @@ function updateDrawScoreDisplay() {
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+  // Background stays in screen space regardless of camera zoom, like a
+  // fixed backdrop behind the (possibly zoomed-out) board.
   drawStars();
   if (STATE.phase === 'WAVE_COMPLETE') { drawCelestialBodies(); drawSpaceObjects(); }
+
+  ctx.save();
+  applyCameraTransform();
+
   drawBarriers();
 
   for (const line of STATE.lines) {
@@ -4124,6 +4325,8 @@ function render() {
   }
 
   drawTravelingLights();
+
+  ctx.restore();
 
   drawFadeOverlay();
 }
@@ -4218,31 +4421,6 @@ function shuffleArray(arr) {
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
-}
-
-// Used only when 200 random attempts couldn't find a clear spot — which a
-// crowded high-wave board (many 3+ dot groups) hits routinely, not as a
-// rare edge case. The old version divided row position by a hardcoded 3,
-// so any dot past index ~8 landed further down than the grid it assumed —
-// eventually off the bottom of the canvas entirely: invisible and
-// untappable, which is exactly what a dot with no reachable pair looks
-// like to a player. Tiling a fixed-size grid and wrapping (with a small
-// jitter on each wrap so repeats don't stack exactly on top of each
-// other) guarantees every fallback position stays on screen no matter how
-// many dots need one.
-function fallbackGridPosition(index) {
-  const cols = 5, rows = 5;
-  const slot = index % (cols * rows);
-  const wrap = Math.floor(index / (cols * rows));
-  const col = slot % cols;
-  const row = Math.floor(slot / cols);
-  const usableW = canvas.width - CONFIG.EDGE_MARGIN * 2;
-  const usableH = canvas.height - CONFIG.EDGE_MARGIN * 2;
-  const jitter = wrap * 13;
-  return {
-    x: CONFIG.EDGE_MARGIN + ((col * usableW / (cols - 1)) + jitter) % usableW,
-    y: CONFIG.EDGE_MARGIN + ((row * usableH / (rows - 1)) + jitter) % usableH,
-  };
 }
 
 window.addEventListener('load', init);

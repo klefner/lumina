@@ -74,6 +74,45 @@ test('connecting a dot pair registers and scores', async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+// Regression guard for a defect where a crowded intense-difficulty wave
+// could place two same- or different-colored dots close enough together
+// that neither could be individually tapped (their touch targets
+// overlapped). The fix grows the board's world space to keep every dot
+// CONFIG.MIN_DOT_DISTANCE apart regardless of how many dots a wave needs,
+// with the camera zooming out to fit; this walks a long run of intense
+// waves directly (via the game's own startWave, exposed globally as a
+// plain script) and asserts no two dots ever end up within touching
+// distance of each other.
+test('crowded intense-difficulty waves never place two dots close enough to overlap their tap targets', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'intense'));
+  await page.reload();
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(500);
+
+  const result = await page.evaluate(() => {
+    const hitDiameter = CONFIG.DOT_HIT_RADIUS * 2;
+    let worst = Infinity;
+    for (let wave = 1; wave <= 60; wave++) {
+      startWave(wave);
+      const dots = window.__lumina.getDots();
+      for (let i = 0; i < dots.length; i++) {
+        for (let j = i + 1; j < dots.length; j++) {
+          const d = Math.hypot(dots[i].x - dots[j].x, dots[i].y - dots[j].y);
+          if (d < worst) worst = d;
+        }
+      }
+    }
+    return { worst, hitDiameter };
+  });
+
+  expect(result.worst).toBeGreaterThanOrEqual(result.hitDiameter);
+  expect(errors).toEqual([]);
+});
+
 test('pause button appears once playing and opens the pause menu', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
