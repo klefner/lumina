@@ -559,6 +559,102 @@ const BARRIER_CONFIG = {
   ROTATION_SPEED_MAX: 0.009,
 };
 
+// Real player feedback: the ramp that was tuned to feel "deceptively
+// simple at first, intentionally brutal by wave 30" is exactly right for
+// some players and a hard wall for others who bail out before wave 10.
+// Rather than picking one curve, difficulty scales how fast every ramp
+// (pair count, multi-dot groups, barriers, rotating barriers) advances —
+// 'normal' is the original tuning, unchanged for anyone who doesn't touch
+// the setting.
+const DIFFICULTY_PRESETS = {
+  relaxed: {
+    label: 'Relaxed',
+    pairsPerWaveIncrease: 4,
+    groupStartWave: 21,
+    groupWavesPerTier: 16,
+    extraGroupChance: 0.3,
+    barrierStartWave: 6,
+    barrierWavesPerBarrier: 4,
+    rotationStartWave: 14,
+    rotationSpeedScale: 0.7,
+  },
+  normal: {
+    label: 'Normal',
+    pairsPerWaveIncrease: 2,
+    groupStartWave: 11,
+    groupWavesPerTier: 10,
+    extraGroupChance: 0.45,
+    barrierStartWave: 3,
+    barrierWavesPerBarrier: 2,
+    rotationStartWave: 6,
+    rotationSpeedScale: 1,
+  },
+  intense: {
+    label: 'Intense',
+    pairsPerWaveIncrease: 1,
+    groupStartWave: 8,
+    groupWavesPerTier: 7,
+    extraGroupChance: 0.55,
+    barrierStartWave: 2,
+    barrierWavesPerBarrier: 1,
+    rotationStartWave: 4,
+    rotationSpeedScale: 1.3,
+  },
+};
+const DIFFICULTY_KEY = 'lumina_difficulty_v1';
+// Fixed base rotation speeds — always scaled from these, never from
+// BARRIER_CONFIG's current (already-scaled) values, so switching
+// difficulty back and forth repeatedly can never compound/drift.
+const BASE_ROTATION_SPEED = { base: 0.0045, perWave: 0.00025, max: 0.009 };
+
+function loadDifficulty() {
+  try {
+    const saved = localStorage.getItem(DIFFICULTY_KEY);
+    return DIFFICULTY_PRESETS[saved] ? saved : 'normal';
+  } catch (e) {
+    return 'normal';
+  }
+}
+
+function saveDifficulty(level) {
+  try { localStorage.setItem(DIFFICULTY_KEY, level); } catch (e) { /* ignore */ }
+}
+
+function applyDifficulty(level) {
+  const preset = DIFFICULTY_PRESETS[level] ? level : 'normal';
+  const p = DIFFICULTY_PRESETS[preset];
+  STATE.difficulty = preset;
+  CONFIG.PAIRS_PER_WAVE_INCREASE = p.pairsPerWaveIncrease;
+  GROUP_CONFIG.START_WAVE = p.groupStartWave;
+  GROUP_CONFIG.WAVES_PER_TIER = p.groupWavesPerTier;
+  GROUP_CONFIG.EXTRA_GROUP_CHANCE = p.extraGroupChance;
+  BARRIER_CONFIG.START_WAVE = p.barrierStartWave;
+  BARRIER_CONFIG.WAVES_PER_BARRIER = p.barrierWavesPerBarrier;
+  BARRIER_CONFIG.ROTATION_START_WAVE = p.rotationStartWave;
+  BARRIER_CONFIG.ROTATION_SPEED_BASE = BASE_ROTATION_SPEED.base * p.rotationSpeedScale;
+  BARRIER_CONFIG.ROTATION_SPEED_PER_WAVE = BASE_ROTATION_SPEED.perWave * p.rotationSpeedScale;
+  BARRIER_CONFIG.ROTATION_SPEED_MAX = BASE_ROTATION_SPEED.max * p.rotationSpeedScale;
+}
+
+function refreshDifficultyButtons() {
+  const buttons = document.querySelectorAll('#difficulty-selector .difficulty-btn');
+  for (const btn of buttons) {
+    btn.classList.toggle('active', btn.dataset.difficulty === STATE.difficulty);
+  }
+}
+
+function setupDifficultySelectorListeners() {
+  const buttons = document.querySelectorAll('#difficulty-selector .difficulty-btn');
+  for (const btn of buttons) {
+    btn.addEventListener('click', () => {
+      const level = btn.dataset.difficulty;
+      applyDifficulty(level);
+      saveDifficulty(level);
+      refreshDifficultyButtons();
+    });
+  }
+}
+
 // ============================================================
 // SECTION 2: STATE
 // ============================================================
@@ -1353,8 +1449,66 @@ function getBeatPulse() {
   return (Math.sin(beatPhase) + 1) / 2; // 0..1, one full pulse per beat
 }
 
+// One shape per instrument/color slot (index-matched to INSTRUMENTS) — real
+// player feedback (including from a colorblind tester) was that several of
+// the hues read as near-identical at a glance ("blue and green", "orange
+// and yellow", "pink and red"). Shape gives every pair a second, color-
+// independent way to tell it apart. Hit-testing (findDotAt) stays a plain
+// circle regardless — only the drawn silhouette changes.
+const DOT_SHAPES = ['circle', 'diamond', 'square', 'triangle', 'star', 'hexagon'];
+
+function traceDotShapePath(shape, cx, cy, r) {
+  switch (shape) {
+    case 'diamond':
+      ctx.moveTo(cx, cy - r);
+      ctx.lineTo(cx + r, cy);
+      ctx.lineTo(cx, cy + r);
+      ctx.lineTo(cx - r, cy);
+      ctx.closePath();
+      break;
+    case 'square': {
+      const s = r * 0.82; // slightly smaller so it reads as similar visual weight to the circle
+      ctx.rect(cx - s, cy - s, s * 2, s * 2);
+      break;
+    }
+    case 'triangle':
+      for (let i = 0; i < 3; i++) {
+        const angle = -Math.PI / 2 + i * (2 * Math.PI / 3);
+        const px = cx + Math.cos(angle) * r * 1.15;
+        const py = cy + Math.sin(angle) * r * 1.15;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      break;
+    case 'star':
+      for (let i = 0; i < 10; i++) {
+        const angle = -Math.PI / 2 + i * (Math.PI / 5);
+        const rad = i % 2 === 0 ? r * 1.2 : r * 0.5;
+        const px = cx + Math.cos(angle) * rad;
+        const py = cy + Math.sin(angle) * rad;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      break;
+    case 'hexagon':
+      for (let i = 0; i < 6; i++) {
+        const angle = -Math.PI / 2 + i * (Math.PI / 3);
+        const px = cx + Math.cos(angle) * r;
+        const py = cy + Math.sin(angle) * r;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      break;
+    case 'circle':
+    default:
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      break;
+  }
+}
+
 function drawDot(dot) {
   const instrument = INSTRUMENTS[dot.colorIndex];
+  const shape = DOT_SHAPES[dot.colorIndex] || 'circle';
 
   let radius;
   const beatPulse = getBeatPulse();
@@ -1372,13 +1526,13 @@ function drawDot(dot) {
   ctx.shadowBlur = 35;
   ctx.shadowColor = instrument.hex;
   ctx.beginPath();
-  ctx.arc(dot.x, dot.y, radius, 0, Math.PI * 2);
+  traceDotShapePath(shape, dot.x, dot.y, radius);
   ctx.fillStyle = instrument.hex;
   ctx.fill();
 
   ctx.shadowBlur = 12;
   ctx.beginPath();
-  ctx.arc(dot.x, dot.y, radius * 0.55, 0, Math.PI * 2);
+  traceDotShapePath(shape, dot.x, dot.y, radius * 0.55);
   ctx.fillStyle = '#ffffff';
   ctx.fill();
   ctx.restore();
@@ -1612,6 +1766,24 @@ function findValidPosition(existingDots) {
   }
 
   return fallbackGridPosition(existingDots.length);
+}
+
+// Defense in depth on top of fallbackGridPosition itself: whatever the
+// reason a dot's final position might land outside the visible canvas
+// (a future regression, a screen-size edge case, anything), catch it here
+// too. An off-canvas dot is invisible and untappable — indistinguishable,
+// from the player's side, from "this dot has no matching pair" — so this
+// is checked once, right after generation, rather than trusted to never
+// happen again.
+function ensureAllDotsOnScreen(dots) {
+  for (const dot of dots) {
+    const onScreen = dot.x >= 0 && dot.x <= canvas.width && dot.y >= 0 && dot.y <= canvas.height;
+    if (onScreen) continue;
+    const others = dots.filter(d => d !== dot);
+    const pos = findValidPosition(others);
+    dot.x = pos.x;
+    dot.y = pos.y;
+  }
 }
 
 // ============================================================
@@ -2067,6 +2239,7 @@ function startWave(waveNumber) {
   STATE.wave = waveNumber;
   STATE.phase = 'PLAYING';
   STATE.dots = generateDots(waveNumber);
+  ensureAllDotsOnScreen(STATE.dots);
   STATE.dotUnion = {};
   for (const dot of STATE.dots) STATE.dotUnion[dot.id] = dot.id;
   STATE.connections = [];
@@ -3225,7 +3398,7 @@ function exitToTitle() {
   showMessage(
     'LUMINA',
     STATE.pendingResume ? `tap or click to resume — wave ${STATE.pendingResume.wave}` : 'connect the dots. make the music.',
-    { showSoundHint: true }
+    { isTitleScreen: true }
   );
 }
 
@@ -3323,13 +3496,22 @@ function showMessage(title, subtitle, opts) {
   document.getElementById('message-title').textContent = title;
   document.getElementById('message-subtitle').textContent = subtitle;
   document.getElementById('message-overlay').style.opacity = '1';
-  // Only the title screen gets the "turn your sound on" reminder — it'd be
-  // noise repeated on every WAVE COMPLETE otherwise.
-  document.getElementById('sound-hint').classList.toggle('visible', !!(opts && opts.showSoundHint));
+  // Only the title screen gets the "turn your sound on" reminder and the
+  // difficulty picker — both would just be repeated noise on every WAVE
+  // COMPLETE otherwise.
+  const isTitleScreen = !!(opts && opts.isTitleScreen);
+  document.getElementById('sound-hint').classList.toggle('visible', isTitleScreen);
+  document.getElementById('difficulty-selector').classList.toggle('visible', isTitleScreen);
+  if (isTitleScreen) refreshDifficultyButtons();
 }
 
 function hideMessage() {
   document.getElementById('message-overlay').style.opacity = '0';
+  // The difficulty selector is the one element in here with real
+  // pointer-events — without explicitly clearing it too, its buttons stay
+  // clickable (invisibly, opacity alone doesn't disable pointer-events)
+  // over whatever dots happen to render underneath once play starts.
+  document.getElementById('difficulty-selector').classList.remove('visible');
 }
 
 function showTutorialHint(waveNumber) {
@@ -3585,20 +3767,56 @@ function gameLoop() {
   requestAnimationFrame(gameLoop);
 }
 
+// Runs once per page load only (never mid-session, and never again after
+// this same reload) — compares this page's build to whatever's actually
+// live on the server right now, and if a newer one has shipped since this
+// page was fetched (a stale service worker/HTTP cache, a tab left open
+// across a deploy, etc.), does a single cache-busted reload so the player
+// lands on the latest version without ever having to manually refresh.
+// Any failure (offline, blocked fetch, no version.json yet) just leaves
+// the current version running — this is a nice-to-have, never a blocker.
+async function checkForNewVersionAndReload() {
+  try {
+    const scriptEl = document.querySelector('script[src*="game.js"]');
+    const currentBuild = scriptEl ? new URL(scriptEl.src, location.href).searchParams.get('v') : null;
+    if (!currentBuild) return;
+
+    const res = await fetch('version.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.build || data.build === currentBuild) return;
+
+    // Guard against a reload loop: only ever attempt one reload per
+    // target build, in case version.json is ever transiently wrong right
+    // after a reload (e.g. a CDN edge still serving the old file).
+    const guardKey = 'lumina_reload_attempted_for';
+    if (sessionStorage.getItem(guardKey) === data.build) return;
+    sessionStorage.setItem(guardKey, data.build);
+
+    location.replace(location.pathname + '?_r=' + Date.now());
+  } catch (e) {
+    // No network, fetch blocked, etc. — keep playing on the current version.
+  }
+}
+
 // ============================================================
 // SECTION 11: INITIALIZATION
 // ============================================================
 function init() {
+  checkForNewVersionAndReload();
   resizeCanvas();
   preloadSampleBytes(); // start fetching instrument samples now, overlapping the "tap to begin" wait
   setupPauseMenuListeners();
 
   STATE.phase = 'TITLE';
   STATE.pendingResume = loadSave();
+  STATE.difficulty = loadDifficulty();
+  applyDifficulty(STATE.difficulty);
+  setupDifficultySelectorListeners();
   showMessage(
     'LUMINA',
     STATE.pendingResume ? `tap or click to resume — wave ${STATE.pendingResume.wave}` : 'connect the dots. make the music.',
-    { showSoundHint: true }
+    { isTitleScreen: true }
   );
   updateWaveDisplay();
 

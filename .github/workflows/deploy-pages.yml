@@ -27,7 +27,7 @@ jobs:
         run: |
           BUILD="${GITHUB_SHA::7}"
           VERSION="${BUILD} . $(date -u +%Y-%m-%d)"
-          sed -i "s/__BUILD__/${BUILD}/g; s/__VERSION__/${VERSION}/g" index.html
+          sed -i "s/__BUILD__/${BUILD}/g; s/__VERSION__/${VERSION}/g" index.html version.json
       - name: Configure Pages
         uses: actions/configure-pages@v5
         with:

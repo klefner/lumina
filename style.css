@@ -234,7 +234,7 @@ html, body {
   50% { opacity: 1; }
 }
 
-/* Only shown on the title screen (see showMessage's showSoundHint option) —
+/* Only shown on the title screen (see showMessage's isTitleScreen option) —
    a lot of first-time players don't realize this is a music game and start
    with the device muted. Kept quiet/secondary so it never competes with
    the subtitle for attention. */
@@ -249,6 +249,42 @@ html, body {
 }
 #sound-hint.visible {
   display: block;
+}
+
+/* Title-screen-only difficulty picker (see showMessage's isTitleScreen
+   option and setupDifficultySelectorListeners). Sits below the sound
+   hint, quiet until interacted with — the active choice gets a soft
+   highlight so it reads as a persistent setting, not a one-off prompt. */
+#difficulty-selector {
+  display: none;
+  gap: 10px;
+  margin-top: 8px;
+  pointer-events: auto;
+}
+#difficulty-selector.visible {
+  display: flex;
+}
+.difficulty-btn {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+.difficulty-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.8);
+}
+.difficulty-btn.active {
+  background: rgba(120, 200, 255, 0.18);
+  border-color: rgba(120, 200, 255, 0.55);
+  color: rgba(255, 255, 255, 0.95);
 }
 
 #version-display {
