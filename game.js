@@ -507,7 +507,8 @@ const CELESTIAL_TYPES = [
 // end at a constant speed, slow-to-fast per drip like a drop of wax
 // releasing and falling, rather than bouncing back and forth.
 const TRAVELING_LIGHT_CONFIG = {
-  RADIUS: 5,
+  RADIUS: 5,           // radius of the fat leading head
+  TAIL_LENGTH: 13,      // how far the tapered tail drags behind the head
   // Constant physical speed for every connection's drip, regardless of the
   // line's own length — a long line's drip just takes proportionally
   // longer to cross it, rather than visibly outrunning a short line's.
@@ -1678,6 +1679,27 @@ function dripEase(t) {
   return t * t;
 }
 
+// A drip of melted wax sliding down a string isn't a circle — it's a fat
+// rounded head leading the way with a tapered tail dragging behind it,
+// pulled backward by drag as the head pushes forward. Drawn in the drip's
+// own local space (forward = +x) then rotated to the actual direction of
+// travel: a tail tip behind the head, two quadratic curves sweeping out
+// to the head's "shoulders", and an arc around the leading hemisphere of
+// the head to close the shape.
+function drawWaxDrip(x, y, angle, headRadius, tailLength) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.beginPath();
+  ctx.moveTo(-tailLength, 0);
+  ctx.quadraticCurveTo(-tailLength * 0.3, headRadius * 0.9, 0, headRadius);
+  ctx.arc(0, 0, headRadius, Math.PI / 2, -Math.PI / 2, true);
+  ctx.quadraticCurveTo(-tailLength * 0.3, -headRadius * 0.9, -tailLength, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
 function segmentsLength(segments) {
   let total = 0;
   for (const s of segments) total += Math.hypot(s.x2 - s.x1, s.y2 - s.y1);
@@ -1719,17 +1741,23 @@ function drawTravelingLights() {
       if (age < 0 || age > beatsPerTraversal) continue; // not born yet, or already arrived
 
       const lifeFrac = age / beatsPerTraversal; // 0 (just born) .. 1 (arriving)
-      const pos = pointAtProgress(connection.segments, dripEase(lifeFrac));
+      const rawT = dripEase(lifeFrac);
+      const pos = pointAtProgress(connection.segments, rawT);
       if (!pos) continue;
+
+      // Direction of travel at this point on the (possibly curved) path —
+      // sampled a hair behind the drip's current position — is what the
+      // wax-drip shape orients itself to, fat head leading.
+      const behindPos = pointAtProgress(connection.segments, Math.max(0, rawT - 0.01)) || pos;
+      const dx = pos.x - behindPos.x, dy = pos.y - behindPos.y;
+      const angle = (dx === 0 && dy === 0) ? 0 : Math.atan2(dy, dx);
 
       // Fades in right after birth and fades out right before arrival, so
       // drips never pop in/out abruptly at either end of the line.
       const alpha = Math.min(1, lifeFrac * 6) * Math.min(1, (1 - lifeFrac) * 5);
       ctx.globalAlpha = 0.2 + 0.75 * alpha;
-      ctx.beginPath();
       ctx.fillStyle = instrument.hex;
-      ctx.arc(pos.x, pos.y, TRAVELING_LIGHT_CONFIG.RADIUS, 0, Math.PI * 2);
-      ctx.fill();
+      drawWaxDrip(pos.x, pos.y, angle, TRAVELING_LIGHT_CONFIG.RADIUS, TRAVELING_LIGHT_CONFIG.TAIL_LENGTH);
     }
 
     ctx.restore();
