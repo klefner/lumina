@@ -3694,6 +3694,12 @@ function enforceTutorialHintInvariant() {
 function updateWaveDisplay() {
   document.getElementById('wave-display').textContent = 'wave ' + STATE.wave;
   document.getElementById('score-display').textContent = STATE.score > 0 ? STATE.score : '';
+  // The button was always visible, including on the title screen, where
+  // togglePause() is a deliberate no-op (nothing to pause before the game
+  // has started) — that reads as a broken button rather than an
+  // intentionally absent one. Hidden here instead, at the same place
+  // every phase transition already runs through.
+  document.getElementById('pause-button').classList.toggle('visible', STATE.phase !== 'TITLE');
 }
 
 // ============================================================
