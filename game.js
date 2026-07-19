@@ -41,6 +41,7 @@ const FADE_CONFIG = {
 // connection; `'complete'` waits for the whole wave to be finished.
 const TUTORIAL_MESSAGES = [
   { text: 'Tap/Click hold to draw a line from one colored dot to its pair.', dismissWhen: 'connect' },
+  { text: 'Lines break when they cross other lines.', dismissWhen: 'connect' },
   { text: 'Each connected dot pair is a part of a series of musical notes.', dismissWhen: 'connect' },
   { text: 'Connect all the dots to hear the song.', dismissWhen: 'complete' },
   { text: 'The longer the lines you draw, the higher your score.', dismissWhen: 'connect' },
@@ -2272,6 +2273,20 @@ function update() {
   updateBreakSparks();
   updateFade();
   maybeTopUpSongSchedule();
+  updateDrawScoreDisplay();
+}
+
+// Live points for the line being drawn right now — the same formula
+// completeConnection uses, so what's shown while dragging is exactly what
+// lands in the total the instant the connection completes. Encourages
+// drawing a longer, more deliberate path instead of a quick short stroke.
+function updateDrawScoreDisplay() {
+  const el = document.getElementById('draw-score-display');
+  if (STATE.isDrawing && STATE.phase === 'PLAYING') {
+    el.textContent = '+' + Math.round(pathLength(STATE.currentPath) * SCORE_PER_LINE_PIXEL);
+  } else if (el.textContent !== '') {
+    el.textContent = '';
+  }
 }
 
 function render() {
