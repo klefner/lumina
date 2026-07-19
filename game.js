@@ -1741,6 +1741,17 @@ function onInputEnd(e) {
     return;
   }
 
+  // Long, winding paths are explicitly rewarded by scoring, but that same
+  // freedom can wall off part of the board — completing this exact line
+  // could leave some other dot with no remaining straight-line route to
+  // any of its groupmates, which would make the wave permanently
+  // uncompleteable. Reject it the same way a plain crossing is rejected;
+  // the player just needs a different order or a less enclosing route.
+  if (wouldStrandAnyDot(pathToSegments(STATE.currentPath), STATE.activeDot, targetDot)) {
+    rejectConnection();
+    return;
+  }
+
   completeConnection(STATE.activeDot, targetDot);
 }
 
@@ -1886,6 +1897,116 @@ function pathCrossesExistingConnections(path) {
         if (segmentsIntersect(newSeg, existingSeg)) return true;
       }
     }
+  }
+  return false;
+}
+
+// Only already-drawn CONNECTIONS count as obstacles here, deliberately
+// excluding barriers — a barrier is a single short finite segment that's
+// always meant to be curved around (that's its entire purpose; it's
+// placed specifically to cross a pair's straight line, so treating it as
+// blocking would reject nearly every barrier wave's legitimate moves).
+// A completed connection is different: it's permanent for the rest of the
+// wave and can be arbitrarily long and looping (scoring rewards exactly
+// that), which is what can actually wall off part of the board for good.
+function existingConnectionSegments(extraSegments) {
+  const segs = [];
+  for (const connection of STATE.connections) segs.push(...connection.segments);
+  if (extraSegments) segs.push(...extraSegments);
+  return segs;
+}
+
+// A single crossing line is completely normal and fully routable around —
+// the tutorial itself teaches players to expect lines near each other —
+// so "is the straight chord blocked" is the wrong test for stranding; it
+// would reject constantly. What actually matters is whether a dot is cut
+// off by a genuine enclosure (a loop that fully surrounds it), and that
+// requires real path-existence, not a single blocked segment. Rather than
+// a full curved-path solver, this rasterizes every obstacle segment onto
+// a coarse grid and flood-fills from the dot's cell — cheap, and it
+// correctly lets a path route around any number of individual obstacles,
+// only failing when there's truly no way out.
+const STRAND_CHECK_CELL_SIZE = 24;
+
+function rasterizeSegmentToGrid(seg, size, blocked) {
+  const dist = Math.hypot(seg.x2 - seg.x1, seg.y2 - seg.y1);
+  const steps = Math.max(1, Math.ceil(dist / (size * 0.5)));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const x = seg.x1 + (seg.x2 - seg.x1) * t;
+    const y = seg.y1 + (seg.y2 - seg.y1) * t;
+    blocked.add(Math.round(x / size) + ',' + Math.round(y / size));
+  }
+}
+
+function buildBlockedGrid(segments, size) {
+  const blocked = new Set();
+  for (const seg of segments) rasterizeSegmentToGrid(seg, size, blocked);
+  return blocked;
+}
+
+// 8-directional flood fill over the blocked-cell grid. The start cell's
+// own blocked state is ignored (a dot must always be able to leave from
+// where it stands), and reaching the target cell always counts even if
+// that cell is itself marked blocked (same reasoning, for the groupmate).
+function isReachableAround(fromX, fromY, toX, toY, blocked, size, cols, rows) {
+  const startCol = Math.round(fromX / size), startRow = Math.round(fromY / size);
+  const toCol = Math.round(toX / size), toRow = Math.round(toY / size);
+  if (startCol === toCol && startRow === toRow) return true;
+
+  const visited = new Set([startCol + ',' + startRow]);
+  const queue = [[startCol, startRow]];
+  const dirs = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
+
+  while (queue.length) {
+    const [col, row] = queue.shift();
+    for (const [dc, dr] of dirs) {
+      const ncol = col + dc, nrow = row + dr;
+      if (ncol < 0 || ncol > cols || nrow < 0 || nrow > rows) continue;
+      // No cutting corners: a diagonal move between two blocked orthogonal
+      // neighbors would let the flood fill leak straight through a wall
+      // that's only one cell thick wherever it happens to run diagonally
+      // (exactly the shape a hand-drawn loop's boundary usually takes).
+      if (dc !== 0 && dr !== 0 && blocked.has(col + dc + ',' + row) && blocked.has(col + ',' + (row + dr))) continue;
+      const key = ncol + ',' + nrow;
+      if (visited.has(key)) continue;
+      if (ncol === toCol && nrow === toRow) return true;
+      if (blocked.has(key)) continue;
+      visited.add(key);
+      queue.push([ncol, nrow]);
+    }
+  }
+  return false;
+}
+
+// Long, winding paths are explicitly rewarded by scoring (see
+// SCORE_PER_LINE_PIXEL), but a big enough loop can wall off part of the
+// board — a dot fully enclosed by one can end up with no route left to
+// any of its groupmates, making the wave permanently uncompleteable (the
+// actual defect this guards against: a color's dots generate correctly
+// as a group, but the board geometry that accumulates over the course of
+// play can still trap one of them).
+function wouldStrandAnyDot(newSegments, dotA, dotB) {
+  const size = STRAND_CHECK_CELL_SIZE;
+  const cols = Math.ceil(canvas.width / size) + 1;
+  const rows = Math.ceil(canvas.height / size) + 1;
+  const blocked = buildBlockedGrid(existingConnectionSegments(newSegments), size);
+
+  for (const dot of STATE.dots) {
+    if (dot.connected) continue;
+    const groupmates = STATE.dots.filter(d => d.pairId === dot.pairId && d.id !== dot.id && !ufConnected(d.id, dot.id));
+    if (groupmates.length === 0) continue;
+    const hasRoute = groupmates.some(g => {
+      // The pair actually being connected right now is trivially reachable
+      // via the very line about to be drawn between them — that new
+      // segment is already baked into `blocked`, so testing it against
+      // the grid would treat their own about-to-exist connection as a
+      // wall between them.
+      const isActivePair = (dot.id === dotA.id && g.id === dotB.id) || (dot.id === dotB.id && g.id === dotA.id);
+      if (isActivePair) return true;
+      return isReachableAround(dot.x, dot.y, g.x, g.y, blocked, size, cols, rows);
+    });
+    if (!hasRoute) return true;
   }
   return false;
 }
@@ -3492,13 +3613,28 @@ function shuffleArray(arr) {
   return arr;
 }
 
+// Used only when 200 random attempts couldn't find a clear spot — which a
+// crowded high-wave board (many 3+ dot groups) hits routinely, not as a
+// rare edge case. The old version divided row position by a hardcoded 3,
+// so any dot past index ~8 landed further down than the grid it assumed —
+// eventually off the bottom of the canvas entirely: invisible and
+// untappable, which is exactly what a dot with no reachable pair looks
+// like to a player. Tiling a fixed-size grid and wrapping (with a small
+// jitter on each wrap so repeats don't stack exactly on top of each
+// other) guarantees every fallback position stays on screen no matter how
+// many dots need one.
 function fallbackGridPosition(index) {
-  const cols = 3;
-  const col = index % cols;
-  const row = Math.floor(index / cols);
+  const cols = 5, rows = 5;
+  const slot = index % (cols * rows);
+  const wrap = Math.floor(index / (cols * rows));
+  const col = slot % cols;
+  const row = Math.floor(slot / cols);
+  const usableW = canvas.width - CONFIG.EDGE_MARGIN * 2;
+  const usableH = canvas.height - CONFIG.EDGE_MARGIN * 2;
+  const jitter = wrap * 13;
   return {
-    x: CONFIG.EDGE_MARGIN + col * (canvas.width - CONFIG.EDGE_MARGIN * 2) / 2,
-    y: CONFIG.EDGE_MARGIN + row * (canvas.height - CONFIG.EDGE_MARGIN * 2) / 3,
+    x: CONFIG.EDGE_MARGIN + ((col * usableW / (cols - 1)) + jitter) % usableW,
+    y: CONFIG.EDGE_MARGIN + ((row * usableH / (rows - 1)) + jitter) % usableH,
   };
 }
 
