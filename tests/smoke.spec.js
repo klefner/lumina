@@ -74,6 +74,59 @@ test('connecting a dot pair registers and scores', async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+// Regression guard for a defect where a completed connection's stored
+// line/segments could trail off short of the dot it was actually drawn
+// to. Root cause: the recorded path only ever gained points from move
+// events (smoothed, lagged behind the raw pointer), never from the
+// release position itself — so a real release, especially after quick
+// final movement, often wasn't preceded by a move event landing exactly
+// on the dot. The fading line fades within seconds either way, but the
+// long-lived traveling lights ride along `connection.segments` for the
+// rest of the wave, so this is what actually made a completed connection
+// look like it never reached its pair, deep into a wave, long after the
+// initial line was gone.
+test('a completed connection reaches exactly to the dot it was drawn to, not short of it', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+
+  const dots = await page.evaluate(() => window.__lumina.getDots());
+  const byPair = {};
+  for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+  const pair = Object.values(byPair)[0];
+  const [a, b] = pair;
+
+  // A winding multi-point drag (not a straight 2-point line) whose final
+  // move lands exactly on the target dot — realistic enough that the old
+  // code still produced a real gap, since the smoothed cursor recording
+  // the path lags behind quick final movement even when the raw pointer
+  // itself reaches the dot.
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  const steps = 10;
+  for (let s = 1; s <= steps; s++) {
+    const t = s / steps;
+    const wobble = Math.sin(t * Math.PI * 3) * 15;
+    await page.mouse.move(a.x + (b.x - a.x) * t + wobble, a.y + (b.y - a.y) * t);
+  }
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+
+  const gap = await page.evaluate((dotB) => {
+    const conn = window.__lumina.getState().connections[0];
+    if (!conn) return null;
+    const last = conn.segments[conn.segments.length - 1];
+    return Math.hypot(last.x2 - dotB.x, last.y2 - dotB.y);
+  }, b);
+
+  expect(gap).not.toBeNull();
+  expect(gap).toBeLessThan(0.5);
+  expect(errors).toEqual([]);
+});
+
 // Regression guard for a defect where a crowded intense-difficulty wave
 // could place two same- or different-colored dots close enough together
 // that neither could be individually tapped (their touch targets
