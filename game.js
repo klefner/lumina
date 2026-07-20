@@ -1972,10 +1972,17 @@ function drawSmoothedPath(points, strokeStyleFn) {
     const alpha = strokeStyleFn.alpha(p0, p1);
     if (alpha <= 0.01) continue;
 
+    // Symmetric with the start: the very first sub-curve starts exactly at
+    // p0 (not a midpoint) so the line begins exactly at the dot it was
+    // drawn from; the very last one has to end exactly at p2 for the same
+    // reason, or the rendered line visibly stops short of the dot it was
+    // drawn to — every interior joint in between still rounds through a
+    // midpoint, which is the actual smoothing.
+    const isLast = i === points.length - 2;
     const startX = i === 1 ? p0.x : (p0.x + p1.x) / 2;
     const startY = i === 1 ? p0.y : (p0.y + p1.y) / 2;
-    const endX = (p1.x + p2.x) / 2;
-    const endY = (p1.y + p2.y) / 2;
+    const endX = isLast ? p2.x : (p1.x + p2.x) / 2;
+    const endY = isLast ? p2.y : (p1.y + p2.y) / 2;
 
     ctx.beginPath();
     ctx.strokeStyle = strokeStyleFn.style(alpha);
@@ -2422,6 +2429,15 @@ function onInputEnd(e) {
     return;
   }
 
+  // findDotAt validated that the release position `pos` was within
+  // DOT_HIT_RADIUS of targetDot, but `pos` itself was never added to
+  // currentPath — only smoothed move events are, and a real release often
+  // isn't preceded by one landing exactly there. Without this, the stored
+  // line/segments (and the traveling lights that ride along them for the
+  // rest of the wave, long after the initial line has faded) could trail
+  // off short of the dot by a real, visible gap instead of reaching it.
+  STATE.currentPath.push({ x: targetDot.x, y: targetDot.y });
+
   if (pathCrossesExistingConnections(STATE.currentPath) || pathCrossesBarriers(STATE.currentPath)) {
     rejectConnection();
     return;
@@ -2571,10 +2587,18 @@ function smoothedCurveSegments(path) {
   const curvePoints = [path[0]];
   for (let i = 1; i < path.length - 1; i++) {
     const p0 = path[i - 1], p1 = path[i], p2 = path[i + 1];
+    // Symmetric with the start (which is exactly path[0]): the last
+    // sub-curve has to end exactly at path[length-1], the point that was
+    // actually validated as touching the target dot — not a midpoint
+    // short of it — or every downstream consumer of these segments
+    // (barrier/connection crossing checks, the would-strand check, and
+    // what the traveling lights travel along) ends up stopping visibly
+    // short of the dot it was drawn to.
+    const isLast = i === path.length - 2;
     const startX = i === 1 ? p0.x : (p0.x + p1.x) / 2;
     const startY = i === 1 ? p0.y : (p0.y + p1.y) / 2;
-    const endX = (p1.x + p2.x) / 2;
-    const endY = (p1.y + p2.y) / 2;
+    const endX = isLast ? p2.x : (p1.x + p2.x) / 2;
+    const endY = isLast ? p2.y : (p1.y + p2.y) / 2;
     for (let s = 1; s <= SAMPLES_PER_SPAN; s++) {
       const t = s / SAMPLES_PER_SPAN;
       const mt = 1 - t;
