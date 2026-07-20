@@ -70,6 +70,7 @@ const TUTORIAL_MESSAGES = [
   { text: 'Connect all the dots to hear the song.', dismissWhen: 'complete' },
   { text: 'The longer the lines you draw, the higher your score.', dismissWhen: 'connect' },
   { text: 'This game is about making relaxing music. Please enjoy.', dismissWhen: 'connect' },
+  { text: 'Pinch or scroll to zoom in and out.', dismissWhen: 'connect' },
 ];
 
 // ============================================================
@@ -268,51 +269,18 @@ function showAchievementToast(entry) {
   void badge.offsetWidth; // force reflow so the animation restarts
   badge.style.animation = '';
 
-  layoutAchievementToast(toast, entry.label);
+  // The card is opaque and always dead-center now (see style.css), so it
+  // no longer needs the dot-avoidance reflow the old translucent toast
+  // used — just set the text and let it wrap naturally inside the card.
+  document.getElementById('achievement-label').textContent = entry.label;
   toast.classList.add('visible');
   playAchievementJingle();
 
   setTimeout(() => {
     toast.classList.remove('visible');
     STATE.achievementToastActive = false;
-    setTimeout(maybeShowNextAchievement, 700); // let the fade-out finish before the next one pops in
+    setTimeout(maybeShowNextAchievement, 500); // let the retract finish before the next one drops in
   }, ACHIEVEMENT_VISIBLE_MS);
-}
-
-// Same center-out, dot-avoiding search as layoutTutorialHint, anchored near
-// the top of the screen instead of dead-center, and reflowing the label
-// text (not the badge, which is a fixed-size circle) to shrink the toast's
-// footprint when needed.
-function layoutAchievementToast(toast, text) {
-  const label = document.getElementById('achievement-label');
-  const words = text.split(' ');
-  const lineOptions = [];
-  for (let lineCount = 1; lineCount <= words.length; lineCount++) lineOptions.push(wrapIntoLines(words, lineCount));
-
-  const maxRadius = Math.min(canvas.width, canvas.height) * 0.5;
-  const positions = tutorialPositionCandidates(maxRadius, 25);
-
-  let fallback = null; // best layout that at least stays on-screen, even if it still grazes a dot
-  for (const fontSize of [20, 17, 15, 13]) {
-    label.style.fontSize = fontSize + 'px';
-    for (const { dx, dy } of positions) {
-      toast.style.left = `calc(50% + ${dx}px)`;
-      toast.style.top = `calc(14% + ${dy}px)`;
-      for (const lines of lineOptions) {
-        label.innerHTML = lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
-        const rect = toast.getBoundingClientRect();
-        if (rectOutOfBounds(rect)) continue; // never render part of the toast off the edge of the phone
-        if (!rectOverlapsAnyDot(rect)) return; // ideal: on-screen AND clear of every dot
-        if (!fallback) fallback = { fontSize, dx, dy, lines };
-      }
-    }
-  }
-  if (fallback) {
-    label.style.fontSize = fallback.fontSize + 'px';
-    toast.style.left = `calc(50% + ${fallback.dx}px)`;
-    toast.style.top = `calc(14% + ${fallback.dy}px)`;
-    label.innerHTML = fallback.lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
-  }
 }
 
 // A quick, bright ascending flourish — independent of the song's own
@@ -2465,7 +2433,7 @@ function onInputEnd(e) {
   // any of its groupmates, which would make the wave permanently
   // uncompleteable. Reject it the same way a plain crossing is rejected;
   // the player just needs a different order or a less enclosing route.
-  if (wouldStrandAnyDot(pathToSegments(STATE.currentPath), STATE.activeDot, targetDot)) {
+  if (wouldStrandAnyDot(smoothedCurveSegments(STATE.currentPath), STATE.activeDot, targetDot)) {
     rejectConnection();
     return;
   }
@@ -2534,7 +2502,7 @@ function completeConnection(dotA, dotB) {
     dotB: dotB.id,
     colorIndex: dotA.colorIndex,
     pairId: dotA.pairId,
-    segments: pathToSegments(STATE.currentPath),
+    segments: smoothedCurveSegments(STATE.currentPath),
   });
 
   const fadingLine = {
@@ -2585,6 +2553,43 @@ function pathToSegments(path) {
   return segments;
 }
 
+// Every crossing/stranding check needs to reason about the same curve the
+// player actually sees, not the sparser raw recorded points connected by
+// straight lines. drawSmoothedPath renders a quadratic curve through the
+// midpoint of each consecutive pair of points (classic corner-rounding
+// smoothing) — at a sharp turn, like curling tightly around a barrier's
+// tip, that rounded curve and the raw straight-segment polyline can
+// diverge enough that a line which visibly clears an obstacle still
+// crosses it in the polyline actually being tested (or the reverse).
+// Sampling the exact rendered curve into fine segments keeps what's
+// tested and what's shown in agreement, so a line that looks clean is
+// never rejected for a crossing the player can't see.
+function smoothedCurveSegments(path) {
+  if (path.length < 3) return pathToSegments(path);
+
+  const SAMPLES_PER_SPAN = 8;
+  const curvePoints = [path[0]];
+  for (let i = 1; i < path.length - 1; i++) {
+    const p0 = path[i - 1], p1 = path[i], p2 = path[i + 1];
+    const startX = i === 1 ? p0.x : (p0.x + p1.x) / 2;
+    const startY = i === 1 ? p0.y : (p0.y + p1.y) / 2;
+    const endX = (p1.x + p2.x) / 2;
+    const endY = (p1.y + p2.y) / 2;
+    for (let s = 1; s <= SAMPLES_PER_SPAN; s++) {
+      const t = s / SAMPLES_PER_SPAN;
+      const mt = 1 - t;
+      // Same quadratic bezier (start, control=p1, end) that
+      // ctx.quadraticCurveTo(p1.x, p1.y, endX, endY) draws from
+      // (startX, startY) in drawSmoothedPath — sampled instead of drawn.
+      curvePoints.push({
+        x: mt * mt * startX + 2 * mt * t * p1.x + t * t * endX,
+        y: mt * mt * startY + 2 * mt * t * p1.y + t * t * endY,
+      });
+    }
+  }
+  return pathToSegments(curvePoints);
+}
+
 function pathLength(path) {
   let total = 0;
   for (let i = 1; i < path.length; i++) {
@@ -2607,7 +2612,7 @@ function segmentsIntersect(s1, s2) {
 }
 
 function pathCrossesExistingConnections(path) {
-  const newSegments = pathToSegments(path);
+  const newSegments = smoothedCurveSegments(path);
 
   for (const connection of STATE.connections) {
     for (const existingSeg of connection.segments) {
@@ -3086,7 +3091,7 @@ function breakConnection(pairId, colorIndex, sparkX, sparkY) {
 }
 
 function pathCrossesBarriers(path) {
-  const segs = pathToSegments(path);
+  const segs = smoothedCurveSegments(path);
   for (const b of STATE.barriers) {
     for (const seg of segs) {
       if (segmentsIntersect(seg, { x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 })) return true;

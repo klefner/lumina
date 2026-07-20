@@ -113,6 +113,50 @@ test('crowded intense-difficulty waves never place two dots close enough to over
   expect(errors).toEqual([]);
 });
 
+// Regression guard for a defect where a line curling tightly around a
+// barrier's tip could get rejected even though the player never saw it
+// touch anything: collision detection tested the raw, sparsely-recorded
+// polyline, while drawSmoothedPath renders a rounded quadratic curve
+// through each pair of points' midpoints — at a sharp turn the two shapes
+// can diverge enough that the invisible raw polyline still crosses an
+// obstacle the visible rounded curve clears. The fix (smoothedCurveSegments)
+// samples the same curve that's rendered for every crossing/stranding
+// check, so what's tested always matches what's shown.
+test('a line that visually clears a barrier at a sharp turn is not rejected', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // A sharp right-angle turn — the shape of curling tightly around an
+    // obstacle's tip — with a barrier sitting just past the outside of
+    // that corner, strictly between segment endpoints (not the shared
+    // vertex, which segmentsIntersect's own endpoint tolerance already
+    // excludes and wouldn't exercise this bug).
+    const path = [{ x: 0, y: 400 }, { x: 200, y: 400 }, { x: 200, y: 200 }];
+    const nearCornerBarrier = { x1: 190, y1: 395, x2: 210, y2: 395 };
+    // Sanity check on the test setup itself: the raw polyline (the old,
+    // buggy behavior) really does cross this barrier, so a false "pass"
+    // below couldn't be explained by a barrier that was never a threat.
+    const rawWouldReject = pathToSegments(path).some(s => segmentsIntersect(s, nearCornerBarrier));
+
+    const smoothCrosses = smoothedCurveSegments(path).some(s => segmentsIntersect(s, nearCornerBarrier));
+
+    // Control case: a barrier squarely in the middle of a straight run
+    // must still be caught — this isn't a blanket weakening of the check.
+    const straightPath = [{ x: 0, y: 400 }, { x: 100, y: 400 }, { x: 400, y: 400 }];
+    const middleBarrier = { x1: 190, y1: 350, x2: 210, y2: 450 };
+    const genuineCrossingCaught = smoothedCurveSegments(straightPath).some(s => segmentsIntersect(s, middleBarrier));
+
+    return { rawWouldReject, smoothCrosses, genuineCrossingCaught };
+  });
+
+  expect(result.rawWouldReject).toBe(true);
+  expect(result.smoothCrosses).toBe(false);
+  expect(result.genuineCrossingCaught).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 test('pause button appears once playing and opens the pause menu', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
