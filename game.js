@@ -91,7 +91,11 @@ const TUTORIAL_MESSAGES = [
   { text: 'Connect all the dots to hear the song.', dismissWhen: 'complete' },
   { text: 'The longer the lines you draw, the higher your score.', dismissWhen: 'connect' },
   { text: 'This game is about making relaxing music. Please enjoy.', dismissWhen: 'connect' },
-  { text: 'Pinch or scroll to zoom in and out.', dismissWhen: 'connect' },
+  // Not "zoom in and out" — userZoom only ever pulls back from the
+  // guaranteed-fit default (see CAMERA_CONFIG.MIN_USER_PULLBACK), it never
+  // zooms in past it, so the hint should describe what actually happens:
+  // pulling back to see more of the board, then returning to normal.
+  { text: 'Pinch out (mobile) or scroll down (PC) to zoom out and see more of the board. Reverse it to zoom back in.', dismissWhen: 'connect' },
 ];
 
 // ============================================================
@@ -680,6 +684,63 @@ const BARRIER_CONFIG = {
   ROTATION_SPEED_MAX: 0.009,
 };
 
+// Maze barriers: a wall with multiple corner turns and a few small gaps,
+// requiring an actual routing decision instead of a single detour around
+// one straight segment. Introduced at wave 40 as its own separate, additive
+// budget on top of the regular static/rotating barriers above — always
+// one per wave once unlocked, never rotating (a moving multi-corner wall
+// would be nearly unreadable), starting at its simplest possible shape (one
+// corner, one gap) and growing a leg/gap every so many waves after that.
+const MAZE_CONFIG = {
+  START_WAVE: 40,
+  WAVES_PER_LEG: 10,   // one more corner every N waves after START_WAVE
+  MAX_LEGS: 5,
+  WAVES_PER_GAP: 10,   // one more gap every N waves after START_WAVE
+  MAX_GAPS: 4,
+  GAP_WIDTH: 70,        // px a connection can actually pass through
+  // A fraction of the world's smaller dimension, not a fixed px range —
+  // a fixed 220-420px leg was tuned against a desktop-sized world and
+  // reliably failed to fit (blowing past SCREEN_CLEARANCE, retried out
+  // at generateMazeBarrier's attempt cap) on a phone-sized viewport's
+  // much narrower world, where a maze barrier could end up never
+  // spawning at all. Clamped to an absolute range so it's never
+  // absurdly short on a tiny world or absurdly long on a huge one.
+  LEG_LENGTH_MIN_FRACTION: 0.16,
+  LEG_LENGTH_MAX_FRACTION: 0.30,
+  LEG_LENGTH_ABS_MIN: 90,
+  LEG_LENGTH_ABS_MAX: 420,
+  CORNER_ANGLE_MIN: Math.PI * 0.3,  // ~54 degrees
+  CORNER_ANGLE_MAX: Math.PI * 0.6,  // ~108 degrees
+  PAIR_LINE_MIN_T: 0.28,
+  PAIR_LINE_MAX_T: 0.72,
+  ANGLE_JITTER: Math.PI / 7.2,
+  DOT_CLEARANCE: 60,
+  SCREEN_CLEARANCE: 10,
+};
+
+// A rare cosmetic-but-real obstacle: a small square barrier with one of the
+// curated pause-menu fun facts (see PAUSE_FACTS) printed inside it, so
+// there's a chance of stumbling on one mid-play instead of only at pause.
+// It's a genuine barrier — solid, lines can't cross it, same as any other —
+// not just a decoration; independent of wave number and the regular/maze
+// barrier budgets, showing up on about 1 in 5 waves.
+const FACT_BOX_CONFIG = {
+  PROBABILITY: 0.2,
+  // A box needs a whole dot-free 2D area, not just clearance along a line
+  // the way a barrier does — a fixed 130px box with 70px of clearance
+  // rarely found room on a small/crowded mobile-sized world (same class of
+  // problem as the maze legs above, worse: attempts here scaled the
+  // dimension, not the clearance too). Both now scale with the world's
+  // smaller dimension, clamped to a sane absolute range.
+  SIZE_FRACTION: 0.16,
+  SIZE_ABS_MIN: 80,
+  SIZE_ABS_MAX: 130,
+  DOT_CLEARANCE_FRACTION: 0.09,
+  DOT_CLEARANCE_ABS_MIN: 45,
+  DOT_CLEARANCE_ABS_MAX: 70,
+  SCREEN_CLEARANCE: 16,
+};
+
 // Real player feedback: the ramp that was tuned to feel "deceptively
 // simple at first, intentionally brutal by wave 30" is exactly right for
 // some players and a hard wall for others who bail out before wave 10.
@@ -848,7 +909,7 @@ const STATE = {
 
   paused: false,           // freezes update()/input while the pause menu is open (see pauseGame/resumeGame)
   pauseFactHistory: [],    // last few pause-menu fact/tip strings shown, so the rotation never repeats too soon
-  pauseFactTimer: null,    // setInterval id for the 10s rotation, running only while paused
+  pauseFactTimer: null,    // setInterval id for the 13s rotation, running only while paused
   onlineFacts: [],         // bonus facts fetched live this session (see fetchOnlineFacts) — empty if offline/failed
   pendingResume: null,     // { wave, score } loaded from a save, offered on the title screen (see init/onInputStart)
 };
@@ -1949,8 +2010,16 @@ function drawDot(dot) {
     radius = CONFIG.DOT_RADIUS_BASE + (CONFIG.DOT_RADIUS_IDLE_MAX - CONFIG.DOT_RADIUS_BASE) * pulse;
   }
 
+  // The pulse-amplitude difference above (idle vs. connected) is real but
+  // subtle — on a busy, colorful board, especially with a 3+-dot group
+  // (see GROUP_CONFIG) where dot.connected only flips true once the WHOLE
+  // group is linked, it was easy to glance past a couple of still-pending
+  // dots and read the group as done. A flat dimming while unconnected
+  // makes "still needs a link" and "fully connected" impossible to confuse
+  // at a glance, independent of where each dot's pulse phase happens to be.
   ctx.save();
-  ctx.shadowBlur = 35;
+  if (!dot.connected) ctx.globalAlpha *= 0.55;
+  ctx.shadowBlur = dot.connected ? 35 : 18;
   ctx.shadowColor = instrument.hex;
   ctx.beginPath();
   traceDotShapePath(shape, dot.x, dot.y, radius);
@@ -2811,8 +2880,8 @@ function wouldStrandAnyDot(newSegments, dotA, dotB) {
   // 6 real generated waves 15-60, eliminated after this fix, with the only
   // remaining rare "stuck" cases being a currently-in-the-way *rotating*
   // barrier — transient and self-resolving, not permanent.
-  const barrierSegments = STATE.barriers.map(b => ({ x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 }));
-  const blocked = buildBlockedGrid([...existingConnectionSegments(newSegments), ...barrierSegments], size);
+  const barrierSegs = STATE.barriers.flatMap(segmentsOfBarrier);
+  const blocked = buildBlockedGrid([...existingConnectionSegments(newSegments), ...barrierSegs], size);
 
   for (const dot of STATE.dots) {
     if (dot.connected) continue;
@@ -2923,7 +2992,7 @@ function startWave(waveNumber) {
 
   const pairCount = getPairCountForWave(waveNumber);
   STATE.song = generateSong(pairCount);
-  STATE.barriers = generateBarriers(waveNumber, STATE.dots);
+  STATE.barriers = generateBarriersSafely(waveNumber, STATE.dots);
 
   updateWaveDisplay();
 
@@ -3059,6 +3128,16 @@ function barrierEndpoints(pivotX, pivotY, angle, length) {
   return { x1: pivotX - hx, y1: pivotY - hy, x2: pivotX + hx, y2: pivotY + hy };
 }
 
+// Every barrier except a maze barrier (see MAZE_CONFIG) is one straight
+// x1..y2 segment. A maze barrier is a multi-corner wall with a few gaps
+// carved out of it, so it stores its actual drawn/collision shape as a
+// `segments` array of the solid pieces instead. This is the one place that
+// difference gets resolved, so rendering, path-crossing, and reachability
+// checks can all treat every barrier uniformly.
+function segmentsOfBarrier(b) {
+  return b.segments || [{ x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 }];
+}
+
 // Places each barrier to actually cross the straight line between one
 // color pair's two dots — at a random point along that line (not always
 // the middle) and at a near-perpendicular angle — so it genuinely blocks
@@ -3130,6 +3209,253 @@ function generateBarriers(wave, dots) {
   return barriers;
 }
 
+function mazeLegCountForWave(wave) {
+  if (wave < MAZE_CONFIG.START_WAVE) return 0;
+  const extra = Math.floor((wave - MAZE_CONFIG.START_WAVE) / MAZE_CONFIG.WAVES_PER_LEG);
+  return Math.min(2 + extra, MAZE_CONFIG.MAX_LEGS); // wave 40 itself: 2 legs = one corner, the training case
+}
+
+function mazeGapCountForWave(wave) {
+  if (wave < MAZE_CONFIG.START_WAVE) return 0;
+  const extra = Math.floor((wave - MAZE_CONFIG.START_WAVE) / MAZE_CONFIG.WAVES_PER_GAP);
+  return Math.min(1 + extra, MAZE_CONFIG.MAX_GAPS); // wave 40 itself: 1 gap
+}
+
+// Walks the maze's corner-to-corner waypoint chain and returns the point
+// `s` px along it (arc length from waypoints[0]), used to turn a cut point
+// on the spine back into real x/y coordinates once gaps are carved out.
+function mazePointAtArc(waypoints, legLens, cumLens, s) {
+  for (let i = 0; i < legLens.length; i++) {
+    if (s <= cumLens[i + 1] || i === legLens.length - 1) {
+      const local = Math.max(0, Math.min(legLens[i], s - cumLens[i]));
+      const t = legLens[i] === 0 ? 0 : local / legLens[i];
+      const p0 = waypoints[i], p1 = waypoints[i + 1];
+      return { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t };
+    }
+  }
+  return waypoints[waypoints.length - 1];
+}
+
+// One maze barrier: a multi-corner "spine" (see the waypoint chain built
+// below) crossing one color pair's direct path, with a few small gaps cut
+// out of it that a connection actually has to route through. Static only —
+// a moving multi-corner wall would be unreadable — and additive to the
+// regular static/rotating barrier budget above, roughly one per wave once
+// unlocked at MAZE_CONFIG.START_WAVE.
+function generateMazeBarrier(wave, dots) {
+  const legCount = mazeLegCountForWave(wave);
+  if (legCount < 2) return null;
+  const gapCount = mazeGapCountForWave(wave);
+  const pairCount = new Set(dots.map(d => d.pairId)).size;
+  const c = MAZE_CONFIG.SCREEN_CLEARANCE;
+  const inBounds = (p) => p.x >= c && p.x <= STATE.world.w - c && p.y >= c && p.y <= STATE.world.h - c;
+
+  const worldMinDim = Math.min(STATE.world.w, STATE.world.h);
+  const legLenMin = Math.max(MAZE_CONFIG.LEG_LENGTH_ABS_MIN, worldMinDim * MAZE_CONFIG.LEG_LENGTH_MIN_FRACTION);
+  const legLenMax = Math.max(legLenMin, Math.min(MAZE_CONFIG.LEG_LENGTH_ABS_MAX, worldMinDim * MAZE_CONFIG.LEG_LENGTH_MAX_FRACTION));
+
+  for (let attempts = 0; attempts < 60; attempts++) {
+    const pairId = Math.floor(Math.random() * pairCount);
+    const groupDots = dots.filter(d => d.pairId === pairId);
+    if (groupDots.length < 2) continue;
+    const gi = Math.floor(Math.random() * groupDots.length);
+    let gj = Math.floor(Math.random() * (groupDots.length - 1));
+    if (gj >= gi) gj++;
+    const a = groupDots[gi], b = groupDots[gj];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const pairDist = Math.hypot(dx, dy);
+    if (pairDist < 40) continue;
+
+    const t = MAZE_CONFIG.PAIR_LINE_MIN_T + Math.random() * (MAZE_CONFIG.PAIR_LINE_MAX_T - MAZE_CONFIG.PAIR_LINE_MIN_T);
+    const pivotX = a.x + dx * t, pivotY = a.y + dy * t;
+    const lineAngle = Math.atan2(dy, dx);
+    let angle = lineAngle + Math.PI / 2 + (Math.random() - 0.5) * MAZE_CONFIG.ANGLE_JITTER;
+    let legLen = legLenMin + Math.random() * (legLenMax - legLenMin);
+
+    // The first leg is centered on the pivot (like a regular barrier) so it
+    // actually crosses the pair's direct path; every leg after that grows
+    // from the previous leg's far end, turning by a fresh random corner
+    // angle each time.
+    const waypoints = [
+      { x: pivotX - Math.cos(angle) * legLen / 2, y: pivotY - Math.sin(angle) * legLen / 2 },
+      { x: pivotX + Math.cos(angle) * legLen / 2, y: pivotY + Math.sin(angle) * legLen / 2 },
+    ];
+    let valid = inBounds(waypoints[0]) && inBounds(waypoints[1]) &&
+      segmentClearsAllDots(waypoints[0].x, waypoints[0].y, waypoints[1].x, waypoints[1].y, dots);
+
+    for (let leg = 1; valid && leg < legCount; leg++) {
+      const turn = MAZE_CONFIG.CORNER_ANGLE_MIN + Math.random() * (MAZE_CONFIG.CORNER_ANGLE_MAX - MAZE_CONFIG.CORNER_ANGLE_MIN);
+      angle += (Math.random() < 0.5 ? -1 : 1) * turn;
+      legLen = legLenMin + Math.random() * (legLenMax - legLenMin);
+      const prev = waypoints[waypoints.length - 1];
+      const next = { x: prev.x + Math.cos(angle) * legLen, y: prev.y + Math.sin(angle) * legLen };
+      if (!inBounds(next) || !segmentClearsAllDots(prev.x, prev.y, next.x, next.y, dots)) { valid = false; break; }
+      waypoints.push(next);
+    }
+    if (!valid) continue;
+
+    const legLens = [];
+    const cumLens = [0];
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      const len = Math.hypot(waypoints[i + 1].x - waypoints[i].x, waypoints[i + 1].y - waypoints[i].y);
+      legLens.push(len);
+      cumLens.push(cumLens[i] + len);
+    }
+    const total = cumLens[cumLens.length - 1];
+    if (total < gapCount * MAZE_CONFIG.GAP_WIDTH * 1.6) continue; // not enough spine length for this many gaps
+
+    // Stratified gap placement: divide the spine into gapCount buckets and
+    // drop one gap at a random spot within each, so gaps land spread out
+    // along the wall instead of clustering, and never overlap.
+    const gapIntervals = [];
+    const bucket = total / gapCount;
+    const half = MAZE_CONFIG.GAP_WIDTH / 2;
+    for (let g = 0; g < gapCount; g++) {
+      const margin = MAZE_CONFIG.GAP_WIDTH * 0.75;
+      const lo = g * bucket + margin, hi = (g + 1) * bucket - margin;
+      const center = lo >= hi ? (lo + hi) / 2 : lo + Math.random() * (hi - lo);
+      gapIntervals.push([Math.max(0, center - half), Math.min(total, center + half)]);
+    }
+
+    // The complement of the gap intervals is what's left solid. A solid
+    // stretch that spans a corner waypoint has to become two segments, not
+    // one straight line cutting the corner off — hence splitting further
+    // at any waypoint that falls inside it.
+    const segments = [];
+    let cursor = 0;
+    const emitSolid = (s0, s1) => {
+      const breaks = [s0];
+      for (let i = 1; i < cumLens.length - 1; i++) {
+        if (cumLens[i] > s0 + 1 && cumLens[i] < s1 - 1) breaks.push(cumLens[i]);
+      }
+      breaks.push(s1);
+      for (let i = 0; i < breaks.length - 1; i++) {
+        const p0 = mazePointAtArc(waypoints, legLens, cumLens, breaks[i]);
+        const p1 = mazePointAtArc(waypoints, legLens, cumLens, breaks[i + 1]);
+        segments.push({ x1: p0.x, y1: p0.y, x2: p1.x, y2: p1.y });
+      }
+    };
+    for (const [gs, ge] of gapIntervals) {
+      if (gs > cursor + 1) emitSolid(cursor, gs);
+      cursor = Math.max(cursor, ge);
+    }
+    if (cursor < total - 1) emitSolid(cursor, total);
+    if (segments.length === 0) continue;
+
+    return {
+      type: 'maze',
+      segments,
+      rotating: false,
+      angularSpeed: 0,
+      targetPairId: pairId,
+      colorIndex: a.colorIndex,
+      // Mirrors the first solid piece so any code that isn't segment-aware
+      // still sees a sane (if partial) fallback segment instead of undefined.
+      x1: segments[0].x1, y1: segments[0].y1, x2: segments[0].x2, y2: segments[0].y2,
+    };
+  }
+  return null; // couldn't place a valid maze this many attempts — skip it for this wave
+}
+
+// Places a fact-box barrier (see FACT_BOX_CONFIG) somewhere clear of every
+// dot. Whether a wave gets one at all is decided once by the caller — this
+// only ever handles placement, so retrying generation doesn't silently
+// re-roll and inflate the "1 in 5" odds.
+function generateFactBoxBarrier(dots) {
+  const worldMinDim = Math.min(STATE.world.w, STATE.world.h);
+  const size = Math.max(FACT_BOX_CONFIG.SIZE_ABS_MIN, Math.min(FACT_BOX_CONFIG.SIZE_ABS_MAX, worldMinDim * FACT_BOX_CONFIG.SIZE_FRACTION));
+  const dotClearance = Math.max(FACT_BOX_CONFIG.DOT_CLEARANCE_ABS_MIN, Math.min(FACT_BOX_CONFIG.DOT_CLEARANCE_ABS_MAX, worldMinDim * FACT_BOX_CONFIG.DOT_CLEARANCE_FRACTION));
+  const half = size / 2;
+  const c = FACT_BOX_CONFIG.SCREEN_CLEARANCE;
+  const spanX = STATE.world.w - 2 * (c + half);
+  const spanY = STATE.world.h - 2 * (c + half);
+  if (spanX <= 0 || spanY <= 0) return null; // world too small for the box to fit at all
+
+  for (let attempts = 0; attempts < 80; attempts++) {
+    const cx = c + half + Math.random() * spanX;
+    const cy = c + half + Math.random() * spanY;
+    const tooClose = dots.some(d =>
+      Math.max(Math.abs(d.x - cx), Math.abs(d.y - cy)) < half + dotClearance
+    );
+    if (tooClose) continue;
+
+    const x1 = cx - half, x2 = cx + half, y1 = cy - half, y2 = cy + half;
+    const segments = [
+      { x1, y1, x2, y2: y1 },
+      { x1: x2, y1, x2, y2 },
+      { x1: x2, y1: y2, x2: x1, y2 },
+      { x1, y1: y2, x2: x1, y2: y1 },
+    ];
+
+    return {
+      type: 'factBox',
+      segments,
+      rotating: false,
+      angularSpeed: 0,
+      targetPairId: null,
+      colorIndex: Math.floor(Math.random() * INSTRUMENTS.length),
+      cx, cy, size,
+      text: PAUSE_FACTS[Math.floor(Math.random() * PAUSE_FACTS.length)],
+      x1: segments[0].x1, y1: segments[0].y1, x2: segments[0].x2, y2: segments[0].y2,
+    };
+  }
+  return null; // couldn't find a clear spot this many attempts — skip it for this wave
+}
+
+// Proactive version of the same reachability question wouldStrandAnyDot
+// asks reactively on every move: with these barriers in place and zero
+// connections drawn yet, can every dot in each color group still reach
+// every one of its groupmates at all? Barriers are generated independently
+// of each other and can happen to gang up — a maze barrier's gaps landing
+// behind a static barrier's own coverage, say — and seal a dot in before
+// the wave even starts. wouldStrandAnyDot alone can't catch that: it only
+// runs once the player is mid-drag, by which point a wave that was already
+// unsolvable at spawn just looks like an unplayable one with no recourse.
+function allDotsReachableGivenBarriers(dots, barriers) {
+  const size = STRAND_CHECK_CELL_SIZE;
+  const cols = Math.ceil(STATE.world.w / size) + 1;
+  const rows = Math.ceil(STATE.world.h / size) + 1;
+  const blocked = buildBlockedGrid(barriers.flatMap(segmentsOfBarrier), size);
+
+  const byPair = {};
+  for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+  for (const groupDots of Object.values(byPair)) {
+    for (let i = 1; i < groupDots.length; i++) {
+      // Reachability is transitive (it's just "in the same connected
+      // free-space region"), so checking every groupmate against dot 0
+      // is enough to guarantee the whole group is mutually reachable.
+      if (!isReachableAround(groupDots[0].x, groupDots[0].y, groupDots[i].x, groupDots[i].y, blocked, size, cols, rows)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Generates a wave's full barrier set (regular + maze) and verifies it
+// doesn't seal any dot away from its groupmates before ever handing it to
+// the player — regenerating from scratch on failure, and giving up on
+// barriers entirely (rather than ever shipping an unplayable wave) if
+// nothing valid turns up after a generous number of attempts.
+function generateBarriersSafely(wave, dots) {
+  // Rolled once per wave, not once per retry attempt below — otherwise a
+  // wave that happens to need a few retries to find a solvable layout would
+  // get several independent shots at the fact-box roll, quietly inflating
+  // the odds past the intended 1 in 5.
+  const wantFactBox = Math.random() < FACT_BOX_CONFIG.PROBABILITY;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const barriers = generateBarriers(wave, dots);
+    const maze = generateMazeBarrier(wave, dots);
+    if (maze) barriers.push(maze);
+    if (wantFactBox) {
+      const factBox = generateFactBoxBarrier(dots);
+      if (factBox) barriers.push(factBox);
+    }
+    if (allDotsReachableGivenBarriers(dots, barriers)) return barriers;
+  }
+  return [];
+}
+
 // Advances every rotating barrier's angle and recomputes its endpoints —
 // called once per frame from update().
 function updateBarriers() {
@@ -3199,8 +3525,10 @@ function breakConnection(pairId, colorIndex, sparkX, sparkY) {
 function pathCrossesBarriers(path) {
   const segs = smoothedCurveSegments(path);
   for (const b of STATE.barriers) {
-    for (const seg of segs) {
-      if (segmentsIntersect(seg, { x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 })) return true;
+    for (const bSeg of segmentsOfBarrier(b)) {
+      for (const seg of segs) {
+        if (segmentsIntersect(seg, bSeg)) return true;
+      }
     }
   }
   return false;
@@ -3240,10 +3568,12 @@ function drawBarriers() {
       ctx.shadowBlur = 6;
       ctx.shadowColor = instrument.hex;
     }
-    ctx.beginPath();
-    ctx.moveTo(b.x1, b.y1);
-    ctx.lineTo(b.x2, b.y2);
-    ctx.stroke();
+    for (const seg of segmentsOfBarrier(b)) {
+      ctx.beginPath();
+      ctx.moveTo(seg.x1, seg.y1);
+      ctx.lineTo(seg.x2, seg.y2);
+      ctx.stroke();
+    }
 
     if (b.rotating) {
       // Rivet-style pivot markers — a dark center with a bright ring in
@@ -3264,8 +3594,52 @@ function drawBarriers() {
         ctx.stroke();
       }
     }
+
+    if (b.type === 'factBox') {
+      // A small in-game "plaque" — the same curated facts the pause menu
+      // rotates through (see PAUSE_FACTS), occasionally stumbled into
+      // mid-play instead of only read while paused. Clipped to the box's
+      // interior so a long fact can never visibly spill past its own wall.
+      const half = b.size / 2;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(b.cx - half + 8, b.cy - half + 8, b.size - 16, b.size - 16);
+      ctx.clip();
+      ctx.setLineDash([]);
+      ctx.shadowBlur = 0;
+      ctx.font = 'italic 10px Georgia, "Times New Roman", serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.82)';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const lines = wrapCanvasText(b.text, b.size - 24);
+      const lineHeight = 13;
+      const startY = b.cy - ((lines.length - 1) * lineHeight) / 2;
+      for (let i = 0; i < lines.length; i++) {
+        ctx.fillText(lines[i], b.cx, startY + i * lineHeight);
+      }
+      ctx.restore();
+    }
   }
   ctx.restore();
+}
+
+// Simple greedy word-wrap for canvas text — measureText relies on ctx.font
+// already being set to the font the caller is about to draw with.
+function wrapCanvasText(text, maxWidth) {
+  const words = text.split(' ');
+  const lines = [];
+  let current = '';
+  for (const word of words) {
+    const candidate = current ? current + ' ' + word : word;
+    if (current && ctx.measureText(candidate).width > maxWidth) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
 }
 
 // Brief radial particle burst marking where a rotating barrier snapped a
@@ -4128,7 +4502,7 @@ function showNextPauseFact() {
 function startPauseFactRotation() {
   stopPauseFactRotation();
   showNextPauseFact(); // show one right away, don't wait 10s for the first
-  STATE.pauseFactTimer = setInterval(showNextPauseFact, 10000);
+  STATE.pauseFactTimer = setInterval(showNextPauseFact, 13000);
   maybeFetchOnlineFacts();
 }
 
