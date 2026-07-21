@@ -3126,7 +3126,6 @@ function pathCrossesBarriers(path) {
 
 function drawBarriers() {
   ctx.save();
-  ctx.lineCap = 'round';
   for (const b of STATE.barriers) {
     // Tinted to the color of the pair it actually blocks — a generic
     // red/orange hazard color gave no visual clue which path a barrier
@@ -3134,20 +3133,29 @@ function drawBarriers() {
     // line sitting there." Both barrier types are always dashed —
     // nothing else in the game strokes a dashed line — specifically so a
     // barrier can never be mistaken for a connection, which is always
-    // solid. Rotating barriers get a tighter, busier dash rhythm than a
-    // static one's, hinting at motion even in a still frame.
+    // solid.
+    //
+    // The dash pattern alone wasn't enough: at the same heavy shadowBlur
+    // every connection line uses, the glow bloomed straight across the
+    // gaps and visually re-fused the dashes into what still read as a
+    // continuous glowing tube — a real bug, not just a subtle one, since
+    // it's exactly the confusion this whole convention exists to prevent.
+    // Barriers now glow far less than a connection ever does, with gaps
+    // wider than the dashes themselves and flat (not round) dash caps —
+    // reads as taut hazard tape, not a softer cousin of a connection line.
     const instrument = INSTRUMENTS[b.colorIndex] || INSTRUMENTS[0];
+    ctx.lineCap = 'butt';
     if (b.rotating) {
       ctx.lineWidth = 7;
-      ctx.setLineDash([10, 6]);
-      ctx.strokeStyle = instrument.glow + '0.8)';
-      ctx.shadowBlur = 24;
+      ctx.setLineDash([8, 14]);
+      ctx.strokeStyle = instrument.glow + '0.85)';
+      ctx.shadowBlur = 6;
       ctx.shadowColor = instrument.hex;
     } else {
       ctx.lineWidth = 8;
-      ctx.setLineDash([14, 10]);
-      ctx.strokeStyle = instrument.glow + '0.65)';
-      ctx.shadowBlur = 18;
+      ctx.setLineDash([12, 12]);
+      ctx.strokeStyle = instrument.glow + '0.7)';
+      ctx.shadowBlur = 6;
       ctx.shadowColor = instrument.hex;
     }
     ctx.beginPath();
@@ -3158,19 +3166,18 @@ function drawBarriers() {
     if (b.rotating) {
       // Rivet-style pivot markers — a dark center with a bright ring in
       // the barrier's own color — read as a mechanical pivot without
-      // resembling anything else in the game. The previous version used
-      // plain white-filled circles here, which (being the one other
-      // white-circle-on-a-line shape in the game) got mistaken for a
-      // connection's own endpoint more than once, exactly the confusion
-      // this whole dashed-vs-solid convention exists to prevent.
-      ctx.shadowBlur = 10;
+      // resembling anything else in the game (a dot's own white highlight
+      // always sits inside a colored shape, never the reverse). Kept to
+      // almost no glow for the same reason as the stroke above: too much
+      // bloom washes the dark center out into just another soft blob.
+      ctx.shadowBlur = 3;
       ctx.setLineDash([]); // the barrier's own dash pattern is still active here — the ring must be solid
       for (const [ex, ey] of [[b.x1, b.y1], [b.x2, b.y2]]) {
         ctx.beginPath();
         ctx.fillStyle = '#0a0a0f';
         ctx.arc(ex, ey, 5, 0, Math.PI * 2);
         ctx.fill();
-        ctx.lineWidth = 2;
+        ctx.lineWidth = 2.5;
         ctx.strokeStyle = instrument.hex;
         ctx.stroke();
       }
