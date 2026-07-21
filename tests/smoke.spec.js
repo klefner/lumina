@@ -798,3 +798,28 @@ test('a plain tap on the title screen always starts wave 1 unless Auto Load Last
   expect(await page.evaluate(() => window.__lumina.getState().wave)).toBe(7);
   expect(errors).toEqual([]);
 });
+
+test('the title subtitle updates immediately when Auto Load Last Save is toggled, not just on the next visit', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.waitForTimeout(300);
+
+  await page.evaluate(() => {
+    STATE.wave = 9; STATE.score = 900;
+    saveGame();
+    exitToTitle();
+  });
+  await page.waitForTimeout(200);
+  expect(await page.evaluate(() => document.getElementById('message-subtitle').textContent))
+    .not.toMatch(/resume/); // autoload starts off
+
+  await page.click('#autoload-checkbox');
+  expect(await page.evaluate(() => document.getElementById('message-subtitle').textContent))
+    .toMatch(/resume — wave 9/);
+
+  await page.click('#autoload-checkbox'); // uncheck again
+  expect(await page.evaluate(() => document.getElementById('message-subtitle').textContent))
+    .not.toMatch(/resume/);
+  expect(errors).toEqual([]);
+});

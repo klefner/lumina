@@ -876,6 +876,10 @@ function setupTitleLoadListeners() {
   document.getElementById('autoload-checkbox').addEventListener('change', (e) => {
     STATE.autoLoadEnabled = e.target.checked;
     saveAutoLoadSetting(STATE.autoLoadEnabled);
+    // Otherwise toggling the checkbox leaves whatever subtitle was set at
+    // page load/exitToTitle in place, silently promising the opposite of
+    // what a plain tap is now actually about to do.
+    document.getElementById('message-subtitle').textContent = titleSubtitleText();
   });
 }
 
