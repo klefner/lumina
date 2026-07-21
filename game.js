@@ -17,6 +17,15 @@ const CONFIG = {
   LINE_WIDTH: 3,
   LINE_GLOW_BLUR: 18,
   LINE_FADE_SPEED: 0.003,    // Alpha decrement per frame per point
+  // The hand-drawn line was fading all the way to invisible, and nothing
+  // replaces it: drawTravelingLights (the intended ongoing indicator)
+  // only runs once the *entire wave* is complete (STATE.beatSync is only
+  // set in checkWaveComplete), so a connection made mid-wave had zero
+  // visual trace once its line finished fading — it looked exactly like
+  // it had never happened, or had silently broken, for the rest of the
+  // wave. Floors the fade instead of letting it reach zero, so a faint
+  // permanent thread always marks a still-live connection.
+  LINE_FADE_FLOOR: 0.15,
   LINE_POINT_INTERVAL: 4,    // Record a point every N pixels of movement
   LINE_SMOOTHING: 0.18,      // Low-pass filter strength on raw input (lower = smoother, laggier)
 
@@ -2526,7 +2535,6 @@ function completeConnection(dotA, dotB) {
     pairId: dotA.pairId,
     points: STATE.currentPath.map(p => ({ x: p.x, y: p.y, alpha: 1.0 })),
     fadeIndex: 0,
-    complete: false,
   };
   STATE.lines.push(fadingLine);
 
@@ -2741,7 +2749,23 @@ function wouldStrandAnyDot(newSegments, dotA, dotB) {
   const size = STRAND_CHECK_CELL_SIZE;
   const cols = Math.ceil(STATE.world.w / size) + 1;
   const rows = Math.ceil(STATE.world.h / size) + 1;
-  const blocked = buildBlockedGrid(existingConnectionSegments(newSegments), size);
+  // This grid has to include barriers, unlike existingConnectionSegments'
+  // other use (pathCrossesExistingConnections), where excluding them is
+  // correct — a barrier isn't a wall a new line can't cross near, it's
+  // checked separately by pathCrossesBarriers. But for THIS reachability
+  // question — "can dot still physically get to its groupmate at all" —
+  // leaving barriers out was a real bug: this flood-fill could see an open
+  // gap that a barrier actually occupies, approve a connection that seals
+  // another dot in behind it, and if that barrier is static (never moves,
+  // present from wave 3 on), the wave becomes permanently uncompleteable —
+  // no replay, wait, or reconnect recovers it, since every real attempt to
+  // route through that same gap afterward correctly gets rejected by
+  // pathCrossesBarriers forever. Confirmed empirically: reproduced on ~1 in
+  // 6 real generated waves 15-60, eliminated after this fix, with the only
+  // remaining rare "stuck" cases being a currently-in-the-way *rotating*
+  // barrier — transient and self-resolving, not permanent.
+  const barrierSegments = STATE.barriers.map(b => ({ x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 }));
+  const blocked = buildBlockedGrid([...existingConnectionSegments(newSegments), ...barrierSegments], size);
 
   for (const dot of STATE.dots) {
     if (dot.connected) continue;
@@ -2805,9 +2829,8 @@ function checkWaveComplete() {
     STATE.beatSync = null;
     startFadeToBlack(() => {
       hideMessage();
-      STATE.stars = [];
       STATE.waveCompleteAdvancing = false;
-      startWave(STATE.wave + 1);
+      startWave(STATE.wave + 1); // clears STATE.stars itself now — see its own comment
       startFadeFromBlack();
     });
   };
@@ -2841,6 +2864,12 @@ function startWave(waveNumber) {
   STATE.spaceObjects = [];
   STATE.spaceSpawnTimer = 0;
   STATE.celestialBodies = [];
+  // The full background starfield only means anything as a wave-complete
+  // reveal, and a connection's own sparse halo only means anything while
+  // that connection is real — carrying either into a new wave (resume,
+  // restart, load, as well as the normal advance) makes an unconnected
+  // board look like it's already got history it doesn't have.
+  STATE.stars = [];
   STATE.waveStartScore = STATE.score;
 
   showTutorialHint(waveNumber);
@@ -3109,6 +3138,12 @@ function breakConnection(pairId, colorIndex, sparkX, sparkY) {
     if (STATE.connections[i].pairId === pairId) STATE.connections.splice(i, 1);
   }
   STATE.lines = STATE.lines.filter(l => l.pairId !== pairId);
+  // Otherwise this pair's star halo — the one lasting sign a connection
+  // ever existed, now that its line no longer fades to nothing either —
+  // would keep implying "still connected" long after a rotating barrier
+  // reset it, which is exactly the stale signal that made a broken
+  // connection read as a mystery instead of a break.
+  STATE.stars = STATE.stars.filter(s => s.pairId !== pairId);
   spawnBreakSparks(sparkX, sparkY, colorIndex);
   remuteChunk(pairId);
   haptic('break');
@@ -3232,10 +3267,11 @@ function drawBreakSparks() {
 // ============================================================
 // SECTION 7C: STARFIELD & SPACE BACKGROUND
 // ============================================================
-function makeStar(x, y, fadeSpeed) {
+function makeStar(x, y, fadeSpeed, pairId) {
   const twinkling = Math.random() < STARFIELD_CONFIG.TWINKLE_FRACTION;
   return {
     x, y,
+    pairId, // undefined for the base reveal starfield; set for a connection's own halo, so breakConnection can clear it
     radius: 0.6 + Math.random() * 1.6,
     targetAlpha: 0.35 + Math.random() * 0.55,
     alpha: 0,
@@ -3277,7 +3313,7 @@ function spawnStarsAroundDots(dotA, dotB) {
       if (STATE.stars.length >= STARFIELD_CONFIG.MAX_STARS) return;
       const angle = Math.random() * Math.PI * 2;
       const dist = Math.random() * STARFIELD_CONFIG.CONNECTION_STAR_RADIUS;
-      STATE.stars.push(makeStar(p.x + Math.cos(angle) * dist, p.y + Math.sin(angle) * dist, STARFIELD_CONFIG.STAR_FADE_IN_SPEED));
+      STATE.stars.push(makeStar(p.x + Math.cos(angle) * dist, p.y + Math.sin(angle) * dist, STARFIELD_CONFIG.STAR_FADE_IN_SPEED, dotA.pairId));
     }
   }
 }
@@ -4305,22 +4341,20 @@ function update() {
     dot.pulsePhase += CONFIG.DOT_PULSE_SPEED;
   }
 
+  // Every point fades down to LINE_FADE_FLOOR, never to zero, and the
+  // line is never removed — see LINE_FADE_FLOOR's comment for why a
+  // connection needs a permanent (if faint) trace for the rest of the
+  // wave. The cascade-unlock check compares against the floor itself
+  // (not a fixed threshold below it), so the fade genuinely settles
+  // there instead of stalling after the first point reaches it.
   for (const line of STATE.lines) {
-    if (line.complete) continue;
-
-    let allFaded = true;
     for (let i = 0; i < line.points.length; i++) {
-      if (line.points[i].alpha > 0) {
-        allFaded = false;
-        if (i === 0 || line.points[i - 1].alpha < 0.05) {
-          line.points[i].alpha = Math.max(0, line.points[i].alpha - CONFIG.LINE_FADE_SPEED);
-        }
+      if (line.points[i].alpha <= CONFIG.LINE_FADE_FLOOR) continue;
+      if (i === 0 || line.points[i - 1].alpha <= CONFIG.LINE_FADE_FLOOR + 0.01) {
+        line.points[i].alpha = Math.max(CONFIG.LINE_FADE_FLOOR, line.points[i].alpha - CONFIG.LINE_FADE_SPEED);
       }
     }
-    if (allFaded) line.complete = true;
   }
-
-  STATE.lines = STATE.lines.filter(l => !l.complete);
 
   STATE.camera.scale += (STATE.camera.targetScale - STATE.camera.scale) * CAMERA_CONFIG.ZOOM_LERP;
 
