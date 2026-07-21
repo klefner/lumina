@@ -3164,6 +3164,7 @@ function drawBarriers() {
       // connection's own endpoint more than once, exactly the confusion
       // this whole dashed-vs-solid convention exists to prevent.
       ctx.shadowBlur = 10;
+      ctx.setLineDash([]); // the barrier's own dash pattern is still active here — the ring must be solid
       for (const [ex, ey] of [[b.x1, b.y1], [b.x2, b.y2]]) {
         ctx.beginPath();
         ctx.fillStyle = '#0a0a0f';
