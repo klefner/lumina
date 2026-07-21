@@ -3607,12 +3607,10 @@ function drawBarriers() {
       ctx.clip();
       ctx.setLineDash([]);
       ctx.shadowBlur = 0;
-      ctx.font = 'italic 10px Georgia, "Times New Roman", serif';
       ctx.fillStyle = 'rgba(255,255,255,0.82)';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      const lines = wrapCanvasText(b.text, b.size - 24);
-      const lineHeight = 13;
+      const { lines, lineHeight } = fitFactText(b.text, b.size - 24, b.size - 16);
       const startY = b.cy - ((lines.length - 1) * lineHeight) / 2;
       for (let i = 0; i < lines.length; i++) {
         ctx.fillText(lines[i], b.cx, startY + i * lineHeight);
@@ -3640,6 +3638,35 @@ function wrapCanvasText(text, maxWidth) {
   }
   if (current) lines.push(current);
   return lines;
+}
+
+// A fact box's size varies with the world (see FACT_BOX_CONFIG), and
+// PAUSE_FACTS entries vary a lot in length — a fixed font size reliably
+// wrapped some facts to more lines than a small box's clipped interior
+// could show, silently cutting off both the start and end of the text
+// (caught in review). Shrinks the font to whatever size actually fits
+// first; only truncates, with an ellipsis, if even the smallest legible
+// size still doesn't fit.
+function fitFactText(text, maxWidth, maxHeight) {
+  const MAX_FONT_PX = 10, MIN_FONT_PX = 7, LINE_HEIGHT_RATIO = 1.3;
+  for (let fontPx = MAX_FONT_PX; fontPx >= MIN_FONT_PX; fontPx--) {
+    ctx.font = `italic ${fontPx}px Georgia, "Times New Roman", serif`;
+    const lineHeight = fontPx * LINE_HEIGHT_RATIO;
+    const lines = wrapCanvasText(text, maxWidth);
+    if (lines.length * lineHeight <= maxHeight) return { lines, lineHeight };
+  }
+
+  const lineHeight = MIN_FONT_PX * LINE_HEIGHT_RATIO;
+  ctx.font = `italic ${MIN_FONT_PX}px Georgia, "Times New Roman", serif`;
+  const allLines = wrapCanvasText(text, maxWidth);
+  const maxLines = Math.max(1, Math.floor(maxHeight / lineHeight));
+  const lines = allLines.slice(0, maxLines);
+  if (allLines.length > maxLines) {
+    let last = lines[lines.length - 1];
+    while (last.length > 0 && ctx.measureText(last + '…').width > maxWidth) last = last.slice(0, -1);
+    lines[lines.length - 1] = last.trimEnd() + '…';
+  }
+  return { lines, lineHeight };
 }
 
 // Brief radial particle burst marking where a rotating barrier snapped a

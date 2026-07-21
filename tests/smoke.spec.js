@@ -515,6 +515,33 @@ test('a fact-box barrier is a real solid obstacle and displays one of the curate
   expect(errors).toEqual([]);
 });
 
+test('the longest pause facts always fit inside a fact box, at every size the box can be, without silent clipping', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const longest = [...PAUSE_FACTS].sort((a, b) => b.length - a.length).slice(0, 5);
+    const out = [];
+    for (const text of longest) {
+      for (const size of [FACT_BOX_CONFIG.SIZE_ABS_MIN, FACT_BOX_CONFIG.SIZE_ABS_MAX]) {
+        const { lines, lineHeight } = fitFactText(text, size - 24, size - 16);
+        out.push({
+          fitsBox: lines.length * lineHeight <= size - 16 + 0.01,
+          firstWordMatches: text.split(' ')[0] === lines[0].split(' ')[0],
+        });
+      }
+    }
+    return out;
+  });
+
+  for (const r of result) {
+    expect(r.fitsBox).toBe(true); // shrunk to fit, or truncated -- never spills past the box's own clip region
+    expect(r.firstWordMatches).toBe(true); // always starts from the beginning of the fact, never mid-sentence
+  }
+  expect(errors).toEqual([]);
+});
+
 test('unconnected dots render visibly dimmer than fully-connected dots', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
