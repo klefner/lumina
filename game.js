@@ -3131,12 +3131,15 @@ function drawBarriers() {
     // Tinted to the color of the pair it actually blocks — a generic
     // red/orange hazard color gave no visual clue which path a barrier
     // related to, so a well-placed one could still read as "just some
-    // line sitting there." Dash pattern / solid+blade-caps still keeps it
-    // unmistakably a barrier rather than a connection line.
+    // line sitting there." Both barrier types are always dashed —
+    // nothing else in the game strokes a dashed line — specifically so a
+    // barrier can never be mistaken for a connection, which is always
+    // solid. Rotating barriers get a tighter, busier dash rhythm than a
+    // static one's, hinting at motion even in a still frame.
     const instrument = INSTRUMENTS[b.colorIndex] || INSTRUMENTS[0];
     if (b.rotating) {
       ctx.lineWidth = 7;
-      ctx.setLineDash([]);
+      ctx.setLineDash([10, 6]);
       ctx.strokeStyle = instrument.glow + '0.8)';
       ctx.shadowBlur = 24;
       ctx.shadowColor = instrument.hex;
@@ -3153,13 +3156,23 @@ function drawBarriers() {
     ctx.stroke();
 
     if (b.rotating) {
-      // Small end-caps read as a spinning blade/pendulum rather than a wall.
+      // Rivet-style pivot markers — a dark center with a bright ring in
+      // the barrier's own color — read as a mechanical pivot without
+      // resembling anything else in the game. The previous version used
+      // plain white-filled circles here, which (being the one other
+      // white-circle-on-a-line shape in the game) got mistaken for a
+      // connection's own endpoint more than once, exactly the confusion
+      // this whole dashed-vs-solid convention exists to prevent.
       ctx.shadowBlur = 10;
+      ctx.setLineDash([]); // the barrier's own dash pattern is still active here — the ring must be solid
       for (const [ex, ey] of [[b.x1, b.y1], [b.x2, b.y2]]) {
         ctx.beginPath();
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = '#0a0a0f';
         ctx.arc(ex, ey, 5, 0, Math.PI * 2);
         ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = instrument.hex;
+        ctx.stroke();
       }
     }
   }
