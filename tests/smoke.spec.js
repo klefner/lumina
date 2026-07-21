@@ -823,3 +823,51 @@ test('the title subtitle updates immediately when Auto Load Last Save is toggled
     .not.toMatch(/resume/);
   expect(errors).toEqual([]);
 });
+
+test('rotating the device mid-wave grows the world to fill the new aspect ratio instead of leaving it letterboxed, and rotating back never compounds the growth', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+
+  const portrait = await page.evaluate(() => ({ w: STATE.world.w, h: STATE.world.h, canvasW: canvas.width, canvasH: canvas.height }));
+
+  // Rotate to landscape (swap dimensions, same as a real device).
+  await page.setViewportSize({ width: portrait.canvasH, height: portrait.canvasW });
+  await page.waitForTimeout(300);
+  const landscape = await page.evaluate(() => ({
+    w: STATE.world.w, h: STATE.world.h, autoScale: STATE.camera.autoScale,
+    canvasW: canvas.width, canvasH: canvas.height,
+  }));
+
+  expect(landscape.w).toBeGreaterThan(portrait.w); // grew wider to match the new screen shape
+  expect(landscape.h).toBe(portrait.h); // height untouched -- existing dots' y-positions stay valid
+  // Both axes now land on the same scale factor -- the world fills the
+  // screen edge to edge instead of being shrunk to whichever axis is more
+  // constrained (the actual "terribly compressed" symptom reported).
+  expect(landscape.w * landscape.autoScale).toBeCloseTo(landscape.canvasW, 1);
+  expect(landscape.h * landscape.autoScale).toBeCloseTo(landscape.canvasH, 1);
+
+  // Rotate back to the original portrait shape.
+  await page.setViewportSize({ width: portrait.canvasW, height: portrait.canvasH });
+  await page.waitForTimeout(300);
+  const backToPortrait = await page.evaluate(() => ({ w: STATE.world.w, h: STATE.world.h }));
+  expect(backToPortrait.w).toBe(portrait.w);
+  expect(backToPortrait.h).toBe(portrait.h);
+
+  // Several more rotation cycles must never compound past the
+  // landscape-adjusted size -- each recomputes from the wave's fixed
+  // baseW/baseH, not from whatever the world had already grown to.
+  for (let i = 0; i < 4; i++) {
+    await page.setViewportSize({ width: portrait.canvasH, height: portrait.canvasW });
+    await page.waitForTimeout(100);
+    await page.setViewportSize({ width: portrait.canvasW, height: portrait.canvasH });
+    await page.waitForTimeout(100);
+  }
+  const afterCycles = await page.evaluate(() => ({ w: STATE.world.w, h: STATE.world.h }));
+  expect(afterCycles.w).toBe(portrait.w);
+  expect(afterCycles.h).toBe(portrait.h);
+  expect(errors).toEqual([]);
+});
