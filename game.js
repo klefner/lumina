@@ -16,7 +16,6 @@ const CONFIG = {
   // Lines
   LINE_WIDTH: 3,
   LINE_GLOW_BLUR: 18,
-  LINE_FADE_SPEED: 0.003,    // Alpha decrement per frame per point
   // The hand-drawn line was fading all the way to invisible, and nothing
   // replaces it: drawTravelingLights (the intended ongoing indicator)
   // only runs once the *entire wave* is complete (STATE.beatSync is only
@@ -26,6 +25,19 @@ const CONFIG = {
   // wave. Floors the fade instead of letting it reach zero, so a faint
   // permanent thread always marks a still-live connection.
   LINE_FADE_FLOOR: 0.15,
+  // Wall-clock time (not frames-per-point) for a line to fully settle at
+  // the floor, independent of how many points it has. A per-point
+  // sequential cascade (each point only starting once its predecessor
+  // fully finished) was the original design, but that makes total settle
+  // time scale with point count — a long, deliberately winding connection
+  // (which scoring explicitly rewards) could carry hundreds of points and
+  // take many minutes to ever reach "settled," during which it kept
+  // paying full per-segment render cost the whole time (see
+  // drawSettledPath's comment). This bounds every line to the same fixed
+  // duration regardless of length, still sweeping start-to-end (see the
+  // fade loop in update()), just staggered within that fixed window
+  // instead of chained one point at a time.
+  LINE_FADE_DURATION_MS: 3500,
   LINE_POINT_INTERVAL: 4,    // Record a point every N pixels of movement
   LINE_SMOOTHING: 0.18,      // Low-pass filter strength on raw input (lower = smoother, laggier)
 
@@ -2001,6 +2013,36 @@ function drawSmoothedPath(points, strokeStyleFn) {
   }
 }
 
+// Once every point in a line has settled at LINE_FADE_FLOOR (see its
+// comment), per-segment alpha variation is pointless — the whole line is
+// one uniform color now — so this strokes the entire smoothed curve as a
+// single continuous path instead of drawSmoothedPath's one stroke() call
+// per segment. That distinction matters specifically because a settled
+// line is never removed for the rest of the wave: a long, winding
+// connection (which scoring explicitly rewards) can carry hundreds of
+// points, and re-issuing hundreds of separate stroke() calls for it every
+// frame for the rest of the wave is real, avoidable, accumulating cost on
+// slower hardware. One call renders identically and doesn't scale with
+// point count.
+function drawSettledPath(points, style) {
+  if (points.length < 2) return;
+  ctx.strokeStyle = style;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  if (points.length === 2) {
+    ctx.lineTo(points[1].x, points[1].y);
+  } else {
+    for (let i = 1; i < points.length - 1; i++) {
+      const p1 = points[i], p2 = points[i + 1];
+      const isLast = i === points.length - 2;
+      const endX = isLast ? p2.x : (p1.x + p2.x) / 2;
+      const endY = isLast ? p2.y : (p1.y + p2.y) / 2;
+      ctx.quadraticCurveTo(p1.x, p1.y, endX, endY); // continues from the previous call's endpoint, chaining into one path
+    }
+  }
+  ctx.stroke();
+}
+
 function drawFadingLine(line) {
   const instrument = INSTRUMENTS[line.colorIndex];
   // getBeatPulse() returns non-null only once every dot is connected (see
@@ -2017,10 +2059,14 @@ function drawFadingLine(line) {
   ctx.shadowBlur = CONFIG.LINE_GLOW_BLUR * pulseBoost;
   ctx.shadowColor = instrument.hex;
 
-  drawSmoothedPath(line.points, {
-    alpha: (p0, p1) => Math.min(p0.alpha, p1.alpha),
-    style: (alpha) => instrument.glow + alpha + ')',
-  });
+  if (line.settled) {
+    drawSettledPath(line.points, instrument.glow + CONFIG.LINE_FADE_FLOOR + ')');
+  } else {
+    drawSmoothedPath(line.points, {
+      alpha: (p0, p1) => Math.min(p0.alpha, p1.alpha),
+      style: (alpha) => instrument.glow + alpha + ')',
+    });
+  }
 
   ctx.restore();
 }
@@ -2534,7 +2580,8 @@ function completeConnection(dotA, dotB) {
     colorIndex: dotA.colorIndex,
     pairId: dotA.pairId,
     points: STATE.currentPath.map(p => ({ x: p.x, y: p.y, alpha: 1.0 })),
-    fadeIndex: 0,
+    bornAt: performance.now(),
+    settled: false,
   };
   STATE.lines.push(fadingLine);
 
@@ -4341,19 +4388,29 @@ function update() {
     dot.pulsePhase += CONFIG.DOT_PULSE_SPEED;
   }
 
-  // Every point fades down to LINE_FADE_FLOOR, never to zero, and the
-  // line is never removed — see LINE_FADE_FLOOR's comment for why a
-  // connection needs a permanent (if faint) trace for the rest of the
-  // wave. The cascade-unlock check compares against the floor itself
-  // (not a fixed threshold below it), so the fade genuinely settles
-  // there instead of stalling after the first point reaches it.
+  // Every point fades from 1 down to LINE_FADE_FLOOR (never to zero — see
+  // its comment) over a fixed LINE_FADE_DURATION_MS, the same for every
+  // line regardless of point count (see that constant's comment for why
+  // a per-point cascade doesn't work here). Each point's own local fade
+  // is staggered by its position along the line — start points begin
+  // fading immediately, end points begin later — so it still sweeps
+  // start-to-end, just all within the one fixed window. Once elapsed
+  // time reaches the full duration, line.settled latches true and this
+  // skips the line entirely from then on — both this loop and, in
+  // drawFadingLine, the per-segment stroke calls that no longer have any
+  // per-segment alpha variation left to justify their cost.
+  const LOCAL_FADE_FRACTION = 0.4; // how much of the total duration each individual point's own transition takes
   for (const line of STATE.lines) {
-    for (let i = 0; i < line.points.length; i++) {
-      if (line.points[i].alpha <= CONFIG.LINE_FADE_FLOOR) continue;
-      if (i === 0 || line.points[i - 1].alpha <= CONFIG.LINE_FADE_FLOOR + 0.01) {
-        line.points[i].alpha = Math.max(CONFIG.LINE_FADE_FLOOR, line.points[i].alpha - CONFIG.LINE_FADE_SPEED);
-      }
+    if (line.settled) continue;
+    const elapsedFrac = Math.min(1, (performance.now() - line.bornAt) / CONFIG.LINE_FADE_DURATION_MS);
+    const n = line.points.length;
+    for (let i = 0; i < n; i++) {
+      const posFrac = n <= 1 ? 0 : i / (n - 1);
+      const startFrac = posFrac * (1 - LOCAL_FADE_FRACTION);
+      const localProgress = Math.min(1, Math.max(0, (elapsedFrac - startFrac) / LOCAL_FADE_FRACTION));
+      line.points[i].alpha = 1 - localProgress * (1 - CONFIG.LINE_FADE_FLOOR);
     }
+    if (elapsedFrac >= 1) line.settled = true;
   }
 
   STATE.camera.scale += (STATE.camera.targetScale - STATE.camera.scale) * CAMERA_CONFIG.ZOOM_LERP;

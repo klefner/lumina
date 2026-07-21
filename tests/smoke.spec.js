@@ -233,7 +233,7 @@ test('stars reset on a fresh wave, a connection line never fully disappears, and
   const freshStars = await page.evaluate(() => { startWave(1); return STATE.stars.length; });
   expect(freshStars).toBe(0);
 
-  const fadeResult = await page.evaluate(() => {
+  const setup = await page.evaluate(() => {
     const dots = window.__lumina.getDots();
     const byPair = {};
     for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
@@ -243,17 +243,23 @@ test('stars reset on a fresh wave, a connection line never fully disappears, and
     STATE.currentPath = [{ x: a.x, y: a.y }, { x: b.x, y: b.y }];
     completeConnection(a, b);
 
-    for (let i = 0; i < 2000; i++) update(); // well past a full fade-out at LINE_FADE_SPEED
-
-    return {
-      lineCount: STATE.lines.length,
-      settledAlpha: STATE.lines[0].points.map(p => p.alpha),
-      floor: CONFIG.LINE_FADE_FLOOR,
-      pairId: a.pairId,
-      colorIndex: a.colorIndex,
-      ax: a.x, ay: a.y,
-    };
+    return { duration: CONFIG.LINE_FADE_DURATION_MS, pairId: a.pairId, colorIndex: a.colorIndex, ax: a.x, ay: a.y };
   });
+
+  // The fade is wall-clock-timed (see LINE_FADE_DURATION_MS), not driven
+  // by calling update() a fixed number of times, so this waits real time
+  // and lets the page's own render loop run naturally in the background.
+  await page.waitForTimeout(setup.duration + 800);
+
+  const fadeResult = await page.evaluate(() => ({
+    lineCount: STATE.lines.length,
+    settledAlpha: STATE.lines[0].points.map(p => p.alpha),
+    floor: CONFIG.LINE_FADE_FLOOR,
+    pairId: STATE.lines[0].pairId,
+    colorIndex: STATE.lines[0].colorIndex,
+  }));
+  fadeResult.ax = setup.ax;
+  fadeResult.ay = setup.ay;
   expect(fadeResult.lineCount).toBe(1); // never removed
   for (const alpha of fadeResult.settledAlpha) {
     expect(alpha).toBeCloseTo(fadeResult.floor, 5); // settles at the floor, not 0
@@ -268,6 +274,76 @@ test('stars reset on a fresh wave, a connection line never fully disappears, and
   }, fadeResult);
   expect(breakResult.linesForPair).toBe(0);
   expect(breakResult.starsForPair).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+// Regression guard for a performance defect introduced by the fix above:
+// making a connection's line settle at a floor instead of disappearing
+// only helps if "settled" is actually reached quickly. The first version
+// of that fix used a per-point cascade where each point only started
+// fading once its predecessor fully finished -- total settle time scaled
+// with point count, so a long, deliberately winding connection (which
+// scoring explicitly rewards, and can carry hundreds of points) could
+// take many minutes to ever reach "settled," paying full per-segment
+// render cost -- one stroke() call per point, every frame -- the entire
+// time. Fixed by making the fade wall-clock-timed instead of point-count-
+// scaled: every line settles within the same fixed LINE_FADE_DURATION_MS
+// regardless of length. Builds a genuinely long (300+ point), winding
+// connection and asserts it settles within that fixed window and then
+// renders as a single stroke() call, not one per point.
+test('a long, winding connection settles within a fixed time regardless of point count, and renders as one draw call once settled', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('body');
+  await page.waitForTimeout(300);
+
+  const setup = await page.evaluate(() => {
+    const dots = window.__lumina.getDots();
+    const byPair = {};
+    for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+    const [a, b] = Object.values(byPair)[0];
+
+    const path = [{ x: a.x, y: a.y }];
+    const steps = 300;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      path.push({
+        x: a.x + (b.x - a.x) * t + Math.sin(t * 30) * 20,
+        y: a.y + (b.y - a.y) * t + Math.cos(t * 17) * 20,
+      });
+    }
+    path.push({ x: b.x, y: b.y });
+
+    STATE.activeDot = a;
+    STATE.currentPath = path;
+    completeConnection(a, b);
+    return { pointCount: STATE.lines[0].points.length, duration: CONFIG.LINE_FADE_DURATION_MS };
+  });
+  expect(setup.pointCount).toBeGreaterThan(200); // a genuinely long path, not a trivial case
+
+  await page.waitForTimeout(setup.duration + 800); // real time, well past the fixed settle window
+
+  const result = await page.evaluate(() => {
+    const alphas = STATE.lines[0].points.map(p => p.alpha);
+    let strokeCalls = 0;
+    const origStroke = ctx.stroke.bind(ctx);
+    ctx.stroke = function (...args) { strokeCalls++; return origStroke(...args); };
+    drawFadingLine(STATE.lines[0]);
+    ctx.stroke = origStroke;
+    return {
+      settled: STATE.lines[0].settled,
+      minAlpha: Math.min(...alphas),
+      maxAlpha: Math.max(...alphas),
+      floor: CONFIG.LINE_FADE_FLOOR,
+      strokeCalls,
+    };
+  });
+
+  expect(result.settled).toBe(true);
+  expect(result.minAlpha).toBeCloseTo(result.floor, 5);
+  expect(result.maxAlpha).toBeCloseTo(result.floor, 5);
+  expect(result.strokeCalls).toBe(1);
   expect(errors).toEqual([]);
 });
 
