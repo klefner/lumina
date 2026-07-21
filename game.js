@@ -220,6 +220,19 @@ function clearSave() {
   try { localStorage.removeItem(SAVE_KEY); } catch (e) { /* best-effort only */ }
 }
 
+// Whether tapping the title screen should silently resume a save (the
+// original, only behavior) or always start fresh at wave 1, leaving an
+// existing save to be picked up explicitly via the Load Game button.
+// Off by default -- an unconfigured player's next tap has always started
+// wave 1, and that stays true even once they've saved a game once.
+const AUTOLOAD_KEY = 'lumina_autoload_v1';
+function loadAutoLoadSetting() {
+  try { return localStorage.getItem(AUTOLOAD_KEY) === 'true'; } catch (e) { return false; }
+}
+function saveAutoLoadSetting(enabled) {
+  try { localStorage.setItem(AUTOLOAD_KEY, enabled ? 'true' : 'false'); } catch (e) { /* best-effort only */ }
+}
+
 // Every-10th-wave milestone tiers, each fancier than the last. Cycles
 // through an escalating shimmer beyond the last named tier (wave 60+)
 // rather than capping out, so the milestone keeps feeling special forever.
@@ -732,13 +745,26 @@ const FACT_BOX_CONFIG = {
   // problem as the maze legs above, worse: attempts here scaled the
   // dimension, not the clearance too). Both now scale with the world's
   // smaller dimension, clamped to a sane absolute range.
-  SIZE_FRACTION: 0.16,
-  SIZE_ABS_MIN: 80,
-  SIZE_ABS_MAX: 130,
-  DOT_CLEARANCE_FRACTION: 0.09,
-  DOT_CLEARANCE_ABS_MIN: 45,
-  DOT_CLEARANCE_ABS_MAX: 70,
-  SCREEN_CLEARANCE: 16,
+  //
+  // The floor/fraction were raised again after real play on a phone
+  // showed most facts truncating even with fitFactText's shrink-to-fit —
+  // a phone-portrait world's own smaller dimension left the box pinned
+  // at the old 80px floor almost every time, too little room for a whole
+  // sentence at any legible font size. A bigger box places less often on
+  // a crowded board (see generateFactBoxBarrier's own attempt loop), but
+  // that only ever means skipping the box for that wave, never a
+  // half-readable one, so the trade is worth it.
+  SIZE_FRACTION: 0.3,
+  SIZE_ABS_MIN: 150,
+  SIZE_ABS_MAX: 220,
+  // Eased down from before (0.09/45/70) now that the box itself is
+  // bigger — the box's own size is what has to earn its keep on
+  // legibility, not the clearance around it, and a smaller clearance
+  // buys back some of the placement-success rate a bigger box costs.
+  DOT_CLEARANCE_FRACTION: 0.05,
+  DOT_CLEARANCE_ABS_MIN: 24,
+  DOT_CLEARANCE_ABS_MAX: 50,
+  SCREEN_CLEARANCE: 12,
 };
 
 // Real player feedback: the ramp that was tuned to feel "deceptively
@@ -823,6 +849,34 @@ function refreshDifficultyButtons() {
   for (const btn of buttons) {
     btn.classList.toggle('active', btn.dataset.difficulty === STATE.difficulty);
   }
+}
+
+// "Load Game" only appears once there's actually a save to load; the
+// checkbox is a standing preference and stays visible either way.
+function refreshTitleLoadRow() {
+  document.getElementById('title-load-button').classList.toggle('visible', !!STATE.pendingResume);
+  document.getElementById('autoload-checkbox').checked = STATE.autoLoadEnabled;
+}
+
+// The title screen's own equivalent of the pause menu's Load Game: no
+// active wave to fade from, so this just jumps straight there, the same
+// way the original silent-resume tap always did.
+function handleLoadGameFromTitle() {
+  if (!STATE.pendingResume) return;
+  initAudio();
+  hideMessage();
+  const resume = STATE.pendingResume;
+  STATE.pendingResume = null;
+  STATE.score = resume.score;
+  startWave(resume.wave);
+}
+
+function setupTitleLoadListeners() {
+  document.getElementById('title-load-button').addEventListener('click', handleLoadGameFromTitle);
+  document.getElementById('autoload-checkbox').addEventListener('change', (e) => {
+    STATE.autoLoadEnabled = e.target.checked;
+    saveAutoLoadSetting(STATE.autoLoadEnabled);
+  });
 }
 
 function setupDifficultySelectorListeners() {
@@ -919,6 +973,8 @@ const STATE = {
   pauseFactTimer: null,    // setInterval id for the 13s rotation, running only while paused
   onlineFacts: [],         // bonus facts fetched live this session (see fetchOnlineFacts) — empty if offline/failed
   pendingResume: null,     // { wave, score } loaded from a save, offered on the title screen (see init/onInputStart)
+  autoLoadEnabled: false,  // persisted (see AUTOLOAD_KEY) -- whether a plain tap on the title screen should
+                           // silently resume pendingResume instead of always starting wave 1
 };
 
 // ============================================================
@@ -2530,12 +2586,18 @@ function onInputStart(e) {
 
   if (STATE.phase === 'TITLE') {
     hideMessage();
-    if (STATE.pendingResume) {
+    // A plain tap only resumes automatically when the player has opted
+    // into that via the Auto Load Last Save checkbox — otherwise it
+    // always starts wave 1, same as if there were no save at all. An
+    // existing save is still reachable through the explicit Load Game
+    // button (see handleLoadGameFromTitle), just never picked up silently.
+    if (STATE.autoLoadEnabled && STATE.pendingResume) {
       const resume = STATE.pendingResume;
       STATE.pendingResume = null;
       STATE.score = resume.score;
       startWave(resume.wave);
     } else {
+      STATE.pendingResume = null;
       startWave(1);
     }
     return;
@@ -3476,7 +3538,7 @@ function generateFactBoxBarrier(dots) {
   const spanY = STATE.world.h - 2 * (c + half);
   if (spanX <= 0 || spanY <= 0) return null; // world too small for the box to fit at all
 
-  for (let attempts = 0; attempts < 80; attempts++) {
+  for (let attempts = 0; attempts < 150; attempts++) {
     const cx = c + half + Math.random() * spanX;
     const cy = c + half + Math.random() * spanY;
     const tooClose = dots.some(d =>
@@ -4585,6 +4647,18 @@ function handleExitGame() {
 
 // Returns to the same pristine state the game boots into — dots, lines,
 // barriers, and the starfield all cleared, any in-flight audio hard-stopped.
+// A plain tap only silently resumes when Auto Load Last Save is checked
+// (see onInputStart) -- the subtitle should promise exactly that, not
+// more, or a save sitting there unloaded (the normal case, since it's
+// off by default) would read as a broken promise the moment tapping
+// starts wave 1 instead.
+function titleSubtitleText() {
+  if (STATE.autoLoadEnabled && STATE.pendingResume) {
+    return `tap or click to resume — wave ${STATE.pendingResume.wave}`;
+  }
+  return 'connect the dots. make the music.';
+}
+
 function exitToTitle() {
   STATE.phase = 'TITLE';
   STATE.wave = 0;
@@ -4608,11 +4682,7 @@ function exitToTitle() {
   // session) so the title screen accurately offers to continue from it.
   STATE.pendingResume = loadSave();
   updateWaveDisplay();
-  showMessage(
-    'LUMINA',
-    STATE.pendingResume ? `tap or click to resume — wave ${STATE.pendingResume.wave}` : 'connect the dots. make the music.',
-    { isTitleScreen: true }
-  );
+  showMessage('LUMINA', titleSubtitleText(), { isTitleScreen: true });
 }
 
 // Rotating pause-menu content: 50 curated facts + 20 game tips, plus any
@@ -4716,16 +4786,22 @@ function showMessage(title, subtitle, opts) {
   const isTitleScreen = !!(opts && opts.isTitleScreen);
   document.getElementById('sound-hint').classList.toggle('visible', isTitleScreen);
   document.getElementById('difficulty-selector').classList.toggle('visible', isTitleScreen);
-  if (isTitleScreen) refreshDifficultyButtons();
+  document.getElementById('title-load-row').classList.toggle('visible', isTitleScreen);
+  if (isTitleScreen) {
+    refreshDifficultyButtons();
+    refreshTitleLoadRow();
+  }
 }
 
 function hideMessage() {
   document.getElementById('message-overlay').style.opacity = '0';
-  // The difficulty selector is the one element in here with real
-  // pointer-events — without explicitly clearing it too, its buttons stay
-  // clickable (invisibly, opacity alone doesn't disable pointer-events)
-  // over whatever dots happen to render underneath once play starts.
+  // The difficulty selector and load row are the elements in here with
+  // real pointer-events — without explicitly clearing them too, they'd
+  // stay clickable (invisibly, opacity alone doesn't disable
+  // pointer-events) over whatever dots happen to render underneath once
+  // play starts.
   document.getElementById('difficulty-selector').classList.remove('visible');
+  document.getElementById('title-load-row').classList.remove('visible');
 }
 
 function showTutorialHint(waveNumber) {
@@ -5060,13 +5136,11 @@ function init() {
   STATE.phase = 'TITLE';
   STATE.pendingResume = loadSave();
   STATE.difficulty = loadDifficulty();
+  STATE.autoLoadEnabled = loadAutoLoadSetting();
   applyDifficulty(STATE.difficulty);
   setupDifficultySelectorListeners();
-  showMessage(
-    'LUMINA',
-    STATE.pendingResume ? `tap or click to resume — wave ${STATE.pendingResume.wave}` : 'connect the dots. make the music.',
-    { isTitleScreen: true }
-  );
+  setupTitleLoadListeners();
+  showMessage('LUMINA', titleSubtitleText(), { isTitleScreen: true });
   updateWaveDisplay();
 
   gameLoop();

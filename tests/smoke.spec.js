@@ -673,6 +673,13 @@ test('dragging empty board space pans the camera when zoomed in, but is a total 
   await page.waitForFunction(() => window.__lumina);
 
   const setup = () => page.evaluate(() => {
+    // The title screen's own overlay (difficulty selector, load row) has
+    // real pointer-events and sits on top of the canvas until explicitly
+    // hidden -- without this, a drag that happens to cross its on-screen
+    // area gets silently swallowed by it instead of reaching the canvas's
+    // own mouse handlers, exactly like a real "still on the title screen"
+    // state would.
+    hideMessage();
     STATE.phase = 'PLAYING';
     STATE.paused = false;
     STATE.isDrawing = false;
@@ -723,5 +730,71 @@ test('dragging empty board space pans the camera when zoomed in, but is a total 
   expect(zoomedIn.centerY).toBeCloseTo(before.centerY - 60 / before.scale, 5);
   expect(zoomedIn.panDrag).toBeNull(); // cleared on release
   expect(zoomedIn.isDrawing).toBe(false); // never mistaken for a connection drag
+  expect(errors).toEqual([]);
+});
+
+test('a plain tap on the title screen always starts wave 1 unless Auto Load Last Save is checked, and Load Game always resumes explicitly regardless', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+
+  // No save yet: Load Game hidden, checkbox unchecked, generic subtitle.
+  const fresh = await page.evaluate(() => ({
+    loadBtnVisible: document.getElementById('title-load-button').classList.contains('visible'),
+    checkboxChecked: document.getElementById('autoload-checkbox').checked,
+  }));
+  expect(fresh.loadBtnVisible).toBe(false);
+  expect(fresh.checkboxChecked).toBe(false);
+
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+  expect(await page.evaluate(() => window.__lumina.getState().wave)).toBe(1);
+
+  // Save at wave 5, return to title -- autoload is off by default, so a
+  // plain tap must NOT silently resume it.
+  await page.evaluate(() => {
+    STATE.wave = 5; STATE.score = 500;
+    saveGame();
+    exitToTitle();
+  });
+  await page.waitForTimeout(300);
+  const withSave = await page.evaluate(() => ({
+    loadBtnVisible: document.getElementById('title-load-button').classList.contains('visible'),
+    subtitle: document.getElementById('message-subtitle').textContent,
+  }));
+  expect(withSave.loadBtnVisible).toBe(true);
+  expect(withSave.subtitle).not.toMatch(/resume/);
+
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+  expect(await page.evaluate(() => window.__lumina.getState().wave)).toBe(1); // NOT 5 -- autoload was off
+
+  // Explicit Load Game click, from a fresh title screen, does resume it.
+  await page.evaluate(() => exitToTitle());
+  await page.waitForTimeout(300);
+  await page.click('#title-load-button');
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => window.__lumina.getState().wave)).toBe(5);
+
+  // Checking the box persists across a reload, and a plain tap resumes
+  // from then on.
+  await page.evaluate(() => { STATE.wave = 7; STATE.score = 700; saveGame(); exitToTitle(); });
+  await page.waitForTimeout(300);
+  await page.click('#autoload-checkbox');
+  expect(await page.evaluate(() => localStorage.getItem('lumina_autoload_v1'))).toBe('true');
+
+  await page.reload();
+  await page.waitForTimeout(400);
+  const afterReload = await page.evaluate(() => ({
+    checkboxChecked: document.getElementById('autoload-checkbox').checked,
+    subtitle: document.getElementById('message-subtitle').textContent,
+  }));
+  expect(afterReload.checkboxChecked).toBe(true);
+  expect(afterReload.subtitle).toMatch(/resume — wave 7/);
+
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+  expect(await page.evaluate(() => window.__lumina.getState().wave)).toBe(7);
   expect(errors).toEqual([]);
 });
