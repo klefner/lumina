@@ -871,3 +871,37 @@ test('rotating the device mid-wave grows the world to fill the new aspect ratio 
   expect(afterCycles.h).toBe(portrait.h);
   expect(errors).toEqual([]);
 });
+
+test('growing the world on rotation re-centers everything already placed instead of leaving it crammed in a corner, and rotating back restores exact original positions', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+
+  const before = await page.evaluate(() => ({
+    dotX: STATE.dots[0].x, dotY: STATE.dots[0].y,
+    worldW: STATE.world.w, worldH: STATE.world.h,
+    canvasW: canvas.width, canvasH: canvas.height,
+  }));
+
+  await page.setViewportSize({ width: before.canvasH, height: before.canvasW }); // rotate
+  await page.waitForTimeout(300);
+  const landscape = await page.evaluate(() => ({ dotX: STATE.dots[0].x, dotY: STATE.dots[0].y, worldW: STATE.world.w }));
+
+  // The dot moved by exactly half of whatever width got added -- i.e. the
+  // content that used to fill [0, oldW] is now centered inside [0, newW],
+  // not still sitting at the same absolute coordinates (which would leave
+  // it crammed against the left edge of the newly wider world).
+  const expectedShift = (landscape.worldW - before.worldW) / 2;
+  expect(landscape.dotX - before.dotX).toBeCloseTo(expectedShift, 5);
+  expect(landscape.dotY).toBe(before.dotY); // height untouched, so no y-shift
+
+  await page.setViewportSize({ width: before.canvasW, height: before.canvasH }); // rotate back
+  await page.waitForTimeout(300);
+  const backToPortrait = await page.evaluate(() => ({ dotX: STATE.dots[0].x, dotY: STATE.dots[0].y }));
+  expect(backToPortrait.dotX).toBeCloseTo(before.dotX, 5);
+  expect(backToPortrait.dotY).toBeCloseTo(before.dotY, 5);
+  expect(errors).toEqual([]);
+});

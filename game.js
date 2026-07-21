@@ -1967,6 +1967,39 @@ const ctx = canvas.getContext('2d');
 // grown to, so rotating back and forth repeatedly can't compound into an
 // ever-larger world — a screen back at the original aspect ratio always
 // lands exactly back at the original size.
+// Every world-space coordinate the current wave might have live across
+// several different STATE arrays with different field shapes (x/y,
+// x1/y1/x2/y2, cx/cy, pivotX/pivotY). growWorldToMatchAspect only ever
+// appends space on one side of the world by default (x/y stay [0, oldW]
+// inside a newly bigger [0, newW]) — without re-centering everything
+// already placed, the whole board would end up crammed into a corner of
+// the bigger world instead of staying where the player left it (caught in
+// review). Screen-space-only decorations (spaceObjects, celestialBodies —
+// see their own comments) are deliberately NOT included here, since
+// they're not part of the world coordinate system at all.
+function shiftWorldEntities(dx, dy) {
+  if (dx === 0 && dy === 0) return;
+  for (const d of STATE.dots) { d.x += dx; d.y += dy; }
+  for (const c of STATE.connections) {
+    for (const seg of c.segments) { seg.x1 += dx; seg.y1 += dy; seg.x2 += dx; seg.y2 += dy; }
+  }
+  for (const l of STATE.lines) {
+    for (const p of l.points) { p.x += dx; p.y += dy; }
+  }
+  for (const b of STATE.barriers) {
+    b.x1 += dx; b.y1 += dy; b.x2 += dx; b.y2 += dy;
+    if (b.pivotX !== undefined) { b.pivotX += dx; b.pivotY += dy; }
+    if (b.cx !== undefined) { b.cx += dx; b.cy += dy; }
+    if (b.segments) {
+      for (const seg of b.segments) { seg.x1 += dx; seg.y1 += dy; seg.x2 += dx; seg.y2 += dy; }
+    }
+  }
+  for (const s of STATE.stars) { s.x += dx; s.y += dy; }
+  for (const spark of STATE.breakSparks) { spark.x += dx; spark.y += dy; }
+  for (const p of STATE.currentPath) { p.x += dx; p.y += dy; }
+  STATE.smoothedCursor.x += dx; STATE.smoothedCursor.y += dy;
+}
+
 function growWorldToMatchAspect() {
   if (!STATE.world.baseW || !STATE.world.baseH) return; // no wave in progress yet
   const screenAspect = canvas.width / canvas.height;
@@ -1977,8 +2010,17 @@ function growWorldToMatchAspect() {
   } else if (screenAspect < baseAspect) {
     targetH = Math.min(STATE.world.baseH * CAMERA_CONFIG.MAX_ORIENTATION_GROWTH, STATE.world.baseW / screenAspect);
   }
-  STATE.world.w = Math.max(STATE.world.baseW, targetW);
-  STATE.world.h = Math.max(STATE.world.baseH, targetH);
+  const newW = Math.max(STATE.world.baseW, targetW);
+  const newH = Math.max(STATE.world.baseH, targetH);
+
+  // Re-center: shift everything by half of whatever just got added (or
+  // removed, rotating back) on each axis, always computed fresh against
+  // the current world.w/h so this stays correct and reversible on every
+  // call, not just the first.
+  shiftWorldEntities((newW - STATE.world.w) / 2, (newH - STATE.world.h) / 2);
+
+  STATE.world.w = newW;
+  STATE.world.h = newH;
 }
 
 function resizeCanvas() {
