@@ -47,10 +47,15 @@ html, body {
   gap: 6px;
 }
 
+#top-buttons-row {
+  display: flex;
+  gap: 8px;
+}
+
 /* Hidden until a game is actually in progress (see updateWaveDisplay) —
    togglePause() is a deliberate no-op on the title screen, and a visible
    button that does nothing on tap reads as broken rather than absent. */
-#pause-button {
+#pause-button, #hint-button {
   display: none;
   pointer-events: auto;
   background: rgba(255, 255, 255, 0.08);
@@ -66,10 +71,11 @@ html, body {
   cursor: pointer;
   transition: background 0.2s ease, color 0.2s ease;
 }
-#pause-button.visible {
+#pause-button.visible, #hint-button.visible {
   display: block;
 }
-#pause-button:hover, #pause-button:active {
+#pause-button:hover, #pause-button:active,
+#hint-button:hover, #hint-button:active {
   background: rgba(255, 255, 255, 0.18);
   color: rgba(255, 255, 255, 0.95);
 }

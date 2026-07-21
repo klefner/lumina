@@ -571,3 +571,46 @@ test('unconnected dots render visibly dimmer than fully-connected dots', async (
   expect(result.idleAlpha).toBeCloseTo(0.55, 5);
   expect(errors).toEqual([]);
 });
+
+test('the hint button appears once playing, flashes unconnected dots bright at their peak, and returns to the dimmed idle state once it ends', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+
+  await expect(page.locator('#hint-button')).toBeHidden();
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+  await expect(page.locator('#hint-button')).toBeVisible();
+
+  const config = await page.evaluate(() => {
+    for (const d of STATE.dots) d.connected = false; // clean signal, regardless of what this wave generated
+    triggerHintPulse();
+    return HINT_PULSE_CONFIG;
+  });
+
+  // First peak (brightness == 1) lands at DURATION_MS / (2 * CYCLES).
+  await page.waitForTimeout(config.DURATION_MS / (2 * config.CYCLES));
+  const atPeak = await page.evaluate(() => {
+    let alpha = null;
+    const origFill = ctx.fill.bind(ctx);
+    ctx.fill = function (...args) { if (alpha === null) alpha = ctx.globalAlpha; return origFill(...args); };
+    drawDot(STATE.dots[0]);
+    ctx.fill = origFill;
+    return alpha;
+  });
+  expect(atPeak).toBeGreaterThan(0.95); // flashed up to full brightness, not just a stronger idle pulse
+
+  await page.waitForTimeout(config.DURATION_MS); // let the whole pulse finish
+  const afterDone = await page.evaluate(() => {
+    let alpha = null;
+    const origFill = ctx.fill.bind(ctx);
+    ctx.fill = function (...args) { if (alpha === null) alpha = ctx.globalAlpha; return origFill(...args); };
+    drawDot(STATE.dots[0]);
+    ctx.fill = origFill;
+    return { alpha, cleared: STATE.hintPulse === null };
+  });
+  expect(afterDone.alpha).toBeCloseTo(0.55, 2); // back to the normal dimmed idle state
+  expect(afterDone.cleared).toBe(true);
+  expect(errors).toEqual([]);
+});

@@ -862,6 +862,7 @@ const STATE = {
     userZoom: 1,              // manual pull-back, 1 = the guaranteed-fit view, down to MIN_USER_PULLBACK
   },
   pinch: null,          // { startDist, startZoom } while a two-finger touch is in progress
+  hintPulse: null,      // { startTime } while the hint button's "flash every unconnected dot" is playing
 
   activeDot: null,     // The dot currently being dragged from
   currentPath: [],     // Points being drawn right now [{x, y}]
@@ -1994,6 +1995,30 @@ function traceDotShapePath(shape, cx, cy, r) {
   }
 }
 
+// The hint button's whole point: let the player self-check "is everything
+// really connected?" before reporting a defect, rather than guessing from
+// a screenshot the way the dimming fix above was originally motivated by.
+// Three full bright/dim cycles over a couple of seconds reads unmistakably
+// as "these specific dots", distinct from any dot's own ambient pulse.
+const HINT_PULSE_CONFIG = {
+  DURATION_MS: 2100,
+  CYCLES: 3,
+};
+
+function triggerHintPulse() {
+  STATE.hintPulse = { startTime: performance.now() };
+}
+
+// 0 at the very start/end of the pulse, 1 at each cycle's peak — same
+// shape for every unconnected dot, so they all flash in unison.
+function hintPulseBrightness() {
+  if (!STATE.hintPulse) return null;
+  const elapsed = performance.now() - STATE.hintPulse.startTime;
+  if (elapsed >= HINT_PULSE_CONFIG.DURATION_MS) { STATE.hintPulse = null; return null; }
+  const t = elapsed / HINT_PULSE_CONFIG.DURATION_MS;
+  return (1 - Math.cos(t * HINT_PULSE_CONFIG.CYCLES * Math.PI * 2)) / 2;
+}
+
 function drawDot(dot) {
   const instrument = INSTRUMENTS[dot.colorIndex];
   const shape = DOT_SHAPES[dot.colorIndex] || 'circle';
@@ -2018,8 +2043,20 @@ function drawDot(dot) {
   // makes "still needs a link" and "fully connected" impossible to confuse
   // at a glance, independent of where each dot's pulse phase happens to be.
   ctx.save();
-  if (!dot.connected) ctx.globalAlpha *= 0.55;
-  ctx.shadowBlur = dot.connected ? 35 : 18;
+  const hintBrightness = dot.connected ? null : hintPulseBrightness();
+  if (hintBrightness !== null) {
+    // Flashes from the normal dim level up to full brightness/glow and
+    // back, HINT_PULSE_CONFIG.CYCLES times -- deliberately overriding the
+    // dimming above rather than just fighting the ambient pulse, so it
+    // reads as a distinct "look here" signal, not a stronger idle pulse.
+    ctx.globalAlpha *= 0.55 + hintBrightness * 0.45;
+    ctx.shadowBlur = 18 + hintBrightness * 17;
+  } else if (!dot.connected) {
+    ctx.globalAlpha *= 0.55;
+    ctx.shadowBlur = 18;
+  } else {
+    ctx.shadowBlur = 35;
+  }
   ctx.shadowColor = instrument.hex;
   ctx.beginPath();
   traceDotShapePath(shape, dot.x, dot.y, radius);
@@ -4581,6 +4618,7 @@ function maybeFetchOnlineFacts() {
 
 function setupPauseMenuListeners() {
   document.getElementById('pause-button').addEventListener('click', togglePause);
+  document.getElementById('hint-button').addEventListener('click', triggerHintPulse);
   document.getElementById('pause-resume').addEventListener('click', resumeGame);
   document.getElementById('pause-save').addEventListener('click', handleSaveGame);
   document.getElementById('pause-load').addEventListener('click', handleLoadGame);
@@ -4777,6 +4815,7 @@ function updateWaveDisplay() {
   // intentionally absent one. Hidden here instead, at the same place
   // every phase transition already runs through.
   document.getElementById('pause-button').classList.toggle('visible', STATE.phase !== 'TITLE');
+  document.getElementById('hint-button').classList.toggle('visible', STATE.phase !== 'TITLE');
 }
 
 // ============================================================
