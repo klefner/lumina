@@ -421,3 +421,153 @@ test('pause button appears once playing and opens the pause menu', async ({ page
   await expect(page.locator('#pause-overlay')).toHaveClass(/visible/);
   expect(errors).toEqual([]);
 });
+
+test('maze barriers grow one corner/gap per tier starting at wave 40, and generateBarriersSafely never ships an unsolvable wave', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const legCounts = [39, 40, 49, 50, 59, 60].map(w => mazeLegCountForWave(w));
+    const gapCounts = [39, 40, 49, 50, 59, 60].map(w => mazeGapCountForWave(w));
+
+    // Mirrors the Monte Carlo methodology used to verify the original
+    // wave-deadlock fix: generate many real waves (including the 3+-dot
+    // groups GROUP_CONFIG unlocks at higher waves, and the maze/fact-box
+    // barriers layered on top starting at wave 40) and confirm every
+    // color group's dots stay mutually reachable at spawn, before any
+    // connection is ever drawn.
+    let total = 0, unsolvable = 0, mazeSeen = 0, factBoxSeen = 0;
+    for (let wave = 1; wave <= 60; wave += 3) {
+      for (let t = 0; t < 12; t++) {
+        const dots = generateDots(wave);
+        ensureAllDotsInWorldBounds(dots);
+        const barriers = generateBarriersSafely(wave, dots);
+        total++;
+        if (!allDotsReachableGivenBarriers(dots, barriers)) unsolvable++;
+        if (barriers.some(b => b.type === 'maze')) mazeSeen++;
+        if (barriers.some(b => b.type === 'factBox')) factBoxSeen++;
+      }
+    }
+
+    return { legCounts, gapCounts, total, unsolvable, mazeSeen, factBoxSeen };
+  });
+
+  expect(result.legCounts).toEqual([0, 2, 2, 3, 3, 4]); // 0 below wave 40, training case is 1 corner, +1 leg every 10 waves after
+  expect(result.gapCounts).toEqual([0, 1, 1, 2, 2, 3]); // training case is 1 gap, +1 gap every 10 waves after
+  expect(result.unsolvable).toBe(0); // the core guarantee, across every wave and barrier type generated above
+  expect(result.mazeSeen).toBeGreaterThan(0); // maze barriers actually show up once unlocked
+  expect(result.factBoxSeen).toBeGreaterThan(0); // fact boxes actually show up over enough waves
+  expect(errors).toEqual([]);
+});
+
+test('a fact-box barrier is a real solid obstacle and displays one of the curated pause facts', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const crossingResult = await page.evaluate(() => {
+    const box = {
+      type: 'factBox',
+      segments: [
+        { x1: 100, y1: 100, x2: 200, y2: 100 },
+        { x1: 200, y1: 100, x2: 200, y2: 200 },
+        { x1: 200, y1: 200, x2: 100, y2: 200 },
+        { x1: 100, y1: 200, x2: 100, y2: 100 },
+      ],
+      text: 'test fact',
+      colorIndex: 0,
+      rotating: false,
+    };
+    STATE.barriers = [box];
+    // Off the sampled curve's own 8-per-span grid on purpose (see
+    // smoothedCurveSegments) — coordinates that land exactly on a sample
+    // boundary can coincide with the box's edge and get treated as a
+    // touch rather than a crossing by segmentsIntersect's tolerance, which
+    // would test that quirk instead of the barrier check this is after.
+    const pathThroughBox = [{ x: 30, y: 163 }, { x: 160, y: 163 }, { x: 271, y: 163 }];
+    return {
+      crosses: pathCrossesBarriers(pathThroughBox),
+      segCount: segmentsOfBarrier(box).length,
+    };
+  });
+  expect(crossingResult.crosses).toBe(true); // solid: a straight path through it is rejected, same as any other barrier
+  expect(crossingResult.segCount).toBe(4);
+
+  const placementResult = await page.evaluate(() => {
+    STATE.world = { w: 1600, h: 1200 };
+    const dots = [{ id: 0, x: 800, y: 600, pairId: 0 }];
+    let box = null;
+    for (let i = 0; i < 50 && !box; i++) box = generateFactBoxBarrier(dots);
+    if (!box) return { found: false };
+    return {
+      found: true,
+      isKnownFact: PAUSE_FACTS.includes(box.text),
+      // Generous minimum, not the exact configured clearance (which scales
+      // with world size) -- this just confirms the box didn't land
+      // overlapping the dot.
+      clearOfDot: Math.max(Math.abs(dots[0].x - box.cx), Math.abs(dots[0].y - box.cy)) >= box.size / 2 + 30,
+    };
+  });
+  expect(placementResult.found).toBe(true);
+  expect(placementResult.isKnownFact).toBe(true); // the text is one of the curated pause-menu facts, not tips or arbitrary text
+  expect(placementResult.clearOfDot).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('the longest pause facts always fit inside a fact box, at every size the box can be, without silent clipping', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const longest = [...PAUSE_FACTS].sort((a, b) => b.length - a.length).slice(0, 5);
+    const out = [];
+    for (const text of longest) {
+      for (const size of [FACT_BOX_CONFIG.SIZE_ABS_MIN, FACT_BOX_CONFIG.SIZE_ABS_MAX]) {
+        const { lines, lineHeight } = fitFactText(text, size - 24, size - 16);
+        out.push({
+          fitsBox: lines.length * lineHeight <= size - 16 + 0.01,
+          firstWordMatches: text.split(' ')[0] === lines[0].split(' ')[0],
+        });
+      }
+    }
+    return out;
+  });
+
+  for (const r of result) {
+    expect(r.fitsBox).toBe(true); // shrunk to fit, or truncated -- never spills past the box's own clip region
+    expect(r.firstWordMatches).toBe(true); // always starts from the beginning of the fact, never mid-sentence
+  }
+  expect(errors).toEqual([]);
+});
+
+test('unconnected dots render visibly dimmer than fully-connected dots', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const connectedDot = { id: 0, pairId: 0, colorIndex: 0, x: 100, y: 100, connected: true, pulsePhase: 0, pulseOffset: 0 };
+    const idleDot = { id: 1, pairId: 1, colorIndex: 1, x: 200, y: 100, connected: false, pulsePhase: 0, pulseOffset: 0 };
+
+    const alphas = [];
+    const origFill = ctx.fill.bind(ctx);
+    ctx.fill = function (...args) { alphas.push(ctx.globalAlpha); return origFill(...args); };
+
+    drawDot(connectedDot);
+    const connectedAlpha = alphas[0];
+    alphas.length = 0;
+
+    drawDot(idleDot);
+    const idleAlpha = alphas[0];
+
+    ctx.fill = origFill;
+    return { connectedAlpha, idleAlpha };
+  });
+
+  expect(result.connectedAlpha).toBeCloseTo(1, 5);
+  expect(result.idleAlpha).toBeLessThan(result.connectedAlpha);
+  expect(result.idleAlpha).toBeCloseTo(0.55, 5);
+  expect(errors).toEqual([]);
+});
