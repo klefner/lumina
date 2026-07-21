@@ -3684,17 +3684,25 @@ function wrapCanvasText(text, maxWidth) {
 // (caught in review). Shrinks the font to whatever size actually fits
 // first; only truncates, with an ellipsis, if even the smallest legible
 // size still doesn't fit.
+// Upright sans-serif, not the pause menu's italic Georgia — legible at the
+// small sizes a fact box actually renders at is a bigger win here than
+// matching the pause menu's tone, especially once fitFactText has to
+// shrink it toward the small end of the range.
+function factBoxFont(px) {
+  return `600 ${px}px "Segoe UI", Arial, sans-serif`;
+}
+
 function fitFactText(text, maxWidth, maxHeight) {
-  const MAX_FONT_PX = 10, MIN_FONT_PX = 7, LINE_HEIGHT_RATIO = 1.3;
+  const MAX_FONT_PX = 13, MIN_FONT_PX = 9, LINE_HEIGHT_RATIO = 1.25;
   for (let fontPx = MAX_FONT_PX; fontPx >= MIN_FONT_PX; fontPx--) {
-    ctx.font = `italic ${fontPx}px Georgia, "Times New Roman", serif`;
+    ctx.font = factBoxFont(fontPx);
     const lineHeight = fontPx * LINE_HEIGHT_RATIO;
     const lines = wrapCanvasText(text, maxWidth);
     if (lines.length * lineHeight <= maxHeight) return { lines, lineHeight };
   }
 
   const lineHeight = MIN_FONT_PX * LINE_HEIGHT_RATIO;
-  ctx.font = `italic ${MIN_FONT_PX}px Georgia, "Times New Roman", serif`;
+  ctx.font = factBoxFont(MIN_FONT_PX);
   const allLines = wrapCanvasText(text, maxWidth);
   const maxLines = Math.max(1, Math.floor(maxHeight / lineHeight));
   const lines = allLines.slice(0, maxLines);
