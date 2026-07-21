@@ -614,3 +614,114 @@ test('the hint button appears once playing, flashes unconnected dots bright at t
   expect(afterDone.cleared).toBe(true);
   expect(errors).toEqual([]);
 });
+
+test('zooming in stays centered by default, but panning empty space once zoomed in moves the camera and is clamped to the world edge; at baseline zoom nothing pans at all', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const out = {};
+    // Fixed canvas size, not whatever the test runner's own viewport
+    // happens to be -- clampCameraCenter reads canvas.width/height
+    // directly, and this keeps the expected numbers below exact.
+    canvas.width = 500; canvas.height = 500;
+    STATE.world = { w: 2000, h: 2000 };
+    STATE.camera.autoScale = 0.25; // matches canvas.width / world.w at this fixed size
+
+    // Baseline (userZoom == 1): forced to dead center no matter what.
+    setUserZoom(1);
+    STATE.camera.scale = STATE.camera.targetScale;
+    STATE.camera.centerX = 999; STATE.camera.centerY = 999;
+    clampCameraCenter();
+    out.baselineForcesCenter = STATE.camera.centerX === 1000 && STATE.camera.centerY === 1000;
+
+    // setUserZoom now allows in past 1 and still respects both ends of the range.
+    setUserZoom(2.8);
+    out.zoomInAllowed = STATE.camera.userZoom === 2.8;
+    setUserZoom(999);
+    out.zoomInClamped = STATE.camera.userZoom === CAMERA_CONFIG.MAX_USER_ZOOM_IN;
+    setUserZoom(-999);
+    out.zoomOutClamped = STATE.camera.userZoom === CAMERA_CONFIG.MIN_USER_PULLBACK;
+
+    // Zoomed in: an off-center look-at point within bounds is preserved,
+    // but one pushed past the world edge is clamped, not just left alone.
+    setUserZoom(2.5);
+    STATE.camera.scale = STATE.camera.targetScale; // 0.625; halfView = 400
+    STATE.camera.centerX = 700; STATE.camera.centerY = 700;
+    clampCameraCenter();
+    out.offCenterPreservedInBounds = STATE.camera.centerX === 700 && STATE.camera.centerY === 700;
+    STATE.camera.centerX = 10; STATE.camera.centerY = 10;
+    clampCameraCenter();
+    out.clampedToWorldEdge = STATE.camera.centerX === 400 && STATE.camera.centerY === 400;
+
+    return out;
+  });
+
+  expect(result.baselineForcesCenter).toBe(true);
+  expect(result.zoomInAllowed).toBe(true);
+  expect(result.zoomInClamped).toBe(true);
+  expect(result.zoomOutClamped).toBe(true);
+  expect(result.offCenterPreservedInBounds).toBe(true);
+  expect(result.clampedToWorldEdge).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('dragging empty board space pans the camera when zoomed in, but is a total no-op at baseline zoom (same as before panning existed)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const setup = () => page.evaluate(() => {
+    STATE.phase = 'PLAYING';
+    STATE.paused = false;
+    STATE.isDrawing = false;
+    STATE.world = { w: 2000, h: 2000 };
+    // Off in a corner far from both ends of the drag below, so the drag
+    // can never accidentally start (or land) on a real dot.
+    STATE.dots = [{ id: 0, pairId: 0, colorIndex: 0, x: 1900, y: 1900, connected: false, pulsePhase: 0 }];
+    // Real mouse events below are positioned in actual page pixels, so
+    // this has to match resizeCanvas's own formula against the real
+    // canvas size (whatever the test runner's viewport is), not an
+    // assumed value -- a mismatch here would silently break the
+    // correspondence between screen-pixel drags and world-space deltas.
+    STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
+    STATE.camera.centerX = 1000; STATE.camera.centerY = 1000;
+  });
+
+  // At baseline: no pan at all.
+  await setup();
+  await page.evaluate(() => { setUserZoom(1); STATE.camera.scale = STATE.camera.targetScale; clampCameraCenter(); });
+  await page.mouse.move(20, 20);
+  await page.mouse.down();
+  await page.mouse.move(220, 220, { steps: 5 });
+  await page.mouse.up();
+  const atBaseline = await page.evaluate(() => ({ centerX: STATE.camera.centerX, centerY: STATE.camera.centerY, panDrag: STATE.panDrag }));
+  expect(atBaseline.centerX).toBe(1000);
+  expect(atBaseline.centerY).toBe(1000);
+  expect(atBaseline.panDrag).toBeNull();
+
+  // Zoomed in: the same kind of drag now actually pans, by exactly
+  // (screen delta / scale) -- kept small (60px) and starting dead center
+  // so the resulting world-space delta lands well inside clampCameraCenter's
+  // valid range on both axes; the edge-clamping behavior itself already
+  // has its own dedicated coverage above.
+  await setup();
+  const before = await page.evaluate(() => {
+    setUserZoom(2.5);
+    STATE.camera.scale = STATE.camera.targetScale;
+    clampCameraCenter();
+    return { centerX: STATE.camera.centerX, centerY: STATE.camera.centerY, scale: STATE.camera.scale };
+  });
+  await page.mouse.move(200, 400);
+  await page.mouse.down();
+  await page.mouse.move(260, 460, { steps: 5 });
+  await page.mouse.up();
+  const zoomedIn = await page.evaluate(() => ({ centerX: STATE.camera.centerX, centerY: STATE.camera.centerY, panDrag: STATE.panDrag, isDrawing: STATE.isDrawing }));
+
+  expect(zoomedIn.centerX).toBeCloseTo(before.centerX - 60 / before.scale, 5);
+  expect(zoomedIn.centerY).toBeCloseTo(before.centerY - 60 / before.scale, 5);
+  expect(zoomedIn.panDrag).toBeNull(); // cleared on release
+  expect(zoomedIn.isDrawing).toBe(false); // never mistaken for a connection drag
+  expect(errors).toEqual([]);
+});

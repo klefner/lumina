@@ -91,11 +91,7 @@ const TUTORIAL_MESSAGES = [
   { text: 'Connect all the dots to hear the song.', dismissWhen: 'complete' },
   { text: 'The longer the lines you draw, the higher your score.', dismissWhen: 'connect' },
   { text: 'This game is about making relaxing music. Please enjoy.', dismissWhen: 'connect' },
-  // Not "zoom in and out" — userZoom only ever pulls back from the
-  // guaranteed-fit default (see CAMERA_CONFIG.MIN_USER_PULLBACK), it never
-  // zooms in past it, so the hint should describe what actually happens:
-  // pulling back to see more of the board, then returning to normal.
-  { text: 'Pinch out (mobile) or scroll down (PC) to zoom out and see more of the board. Reverse it to zoom back in.', dismissWhen: 'connect' },
+  { text: 'Pinch or scroll to zoom out and see more of the board, or zoom in for precision on close dots — drag empty space to pan around while zoomed in.', dismissWhen: 'connect' },
 ];
 
 // ============================================================
@@ -615,9 +611,12 @@ const TRAVELING_LIGHT_CONFIG = {
 // two connectable dots into an untappable mess. Growing the world instead
 // of shrinking the spacing keeps every dot's tap target fully clear; the
 // camera then zooms out just enough to fit that (possibly larger) world
-// back into the screen, and the player can additionally pull further out
-// (never in tighter than that guaranteed-fit view, which would risk
-// pushing dots off-screen) via scroll wheel or a two-finger pinch.
+// back into the screen. The player can additionally pull further out, or
+// push in past that guaranteed-fit view for precision on close-together
+// dots, via scroll wheel or a two-finger pinch — zooming in shrinks the
+// visible viewport below the world's size, so panning (drag on empty
+// board space once zoomed in — see STATE.camera.centerX/Y) is how the
+// rest of the board stays reachable.
 const CAMERA_CONFIG = {
   // Ideal circle-packing density inflated for headroom: random placement
   // (not a perfect hex pack) needs real slack beyond the geometric minimum
@@ -626,6 +625,7 @@ const CAMERA_CONFIG = {
   MAX_WORLD_GROWTH: 2.2,     // world's linear size never exceeds this many x the screen's
   ZOOM_LERP: 0.08,           // per-frame smoothing toward the target camera scale
   MIN_USER_PULLBACK: 0.65,   // manual zoom-out floor, relative to the auto-fit scale
+  MAX_USER_ZOOM_IN: 3,       // manual zoom-in ceiling, relative to the auto-fit scale
   WHEEL_ZOOM_STEP: 0.0015,   // userZoom change per wheel-delta unit
 };
 
@@ -860,8 +860,14 @@ const STATE = {
     scale: 1,               // actual rendered scale, lerped toward targetScale each frame
     targetScale: 1,          // autoScale * userZoom
     userZoom: 1,              // manual pull-back, 1 = the guaranteed-fit view, down to MIN_USER_PULLBACK
+                               // or in past it up to MAX_USER_ZOOM_IN
+    centerX: 0, centerY: 0,   // world-space point the camera looks at — always the world's own
+                               // center whenever the viewport is at least as big as the world
+                               // (i.e. userZoom <= 1, the whole game before panning existed),
+                               // only free to move once zoomed in past that (see clampCameraCenter)
   },
   pinch: null,          // { startDist, startZoom } while a two-finger touch is in progress
+  panDrag: null,        // { startScreenX, startScreenY, startCenterX, startCenterY } while panning
   hintPulse: null,      // { startTime } while the hint button's "flash every unconnected dot" is playing
 
   activeDot: null,     // The dot currently being dragged from
@@ -1892,6 +1898,7 @@ function resizeCanvas() {
   if (STATE.world.w > 0) {
     STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
     STATE.camera.targetScale = STATE.camera.autoScale * STATE.camera.userZoom;
+    clampCameraCenter(); // the viewport's own size just changed along with the canvas
   }
 }
 window.addEventListener('resize', resizeCanvas);
@@ -1906,28 +1913,47 @@ resizeCanvas();
 function applyCameraTransform() {
   ctx.translate(canvas.width / 2, canvas.height / 2);
   ctx.scale(STATE.camera.scale, STATE.camera.scale);
-  ctx.translate(-STATE.world.w / 2, -STATE.world.h / 2);
+  ctx.translate(-STATE.camera.centerX, -STATE.camera.centerY);
 }
 
 function screenToWorld(sx, sy) {
   const s = STATE.camera.scale || 1;
   return {
-    x: (sx - canvas.width / 2) / s + STATE.world.w / 2,
-    y: (sy - canvas.height / 2) / s + STATE.world.h / 2,
+    x: (sx - canvas.width / 2) / s + STATE.camera.centerX,
+    y: (sy - canvas.height / 2) / s + STATE.camera.centerY,
   };
 }
 
 function worldToScreen(wx, wy) {
   const s = STATE.camera.scale || 1;
   return {
-    x: (wx - STATE.world.w / 2) * s + canvas.width / 2,
-    y: (wy - STATE.world.h / 2) * s + canvas.height / 2,
+    x: (wx - STATE.camera.centerX) * s + canvas.width / 2,
+    y: (wy - STATE.camera.centerY) * s + canvas.height / 2,
   };
 }
 
 function setUserZoom(z) {
-  STATE.camera.userZoom = Math.max(CAMERA_CONFIG.MIN_USER_PULLBACK, Math.min(1, z));
+  STATE.camera.userZoom = Math.max(CAMERA_CONFIG.MIN_USER_PULLBACK, Math.min(CAMERA_CONFIG.MAX_USER_ZOOM_IN, z));
   STATE.camera.targetScale = STATE.camera.autoScale * STATE.camera.userZoom;
+}
+
+// Keeps the camera's look-at point from ever showing past the world's own
+// edge. Whenever the current (possibly still-animating) scale makes the
+// viewport at least as big as the world in a dimension — true for every
+// zoom level at or below the guaranteed-fit view — this forces that axis
+// back to dead center, exactly reproducing the pre-pan behavior; only
+// once zoomed in enough that the viewport is genuinely smaller than the
+// world does panning have any room to move at all.
+function clampCameraCenter() {
+  const s = STATE.camera.scale || 1;
+  const halfViewW = (canvas.width / 2) / s;
+  const halfViewH = (canvas.height / 2) / s;
+  STATE.camera.centerX = halfViewW * 2 >= STATE.world.w
+    ? STATE.world.w / 2
+    : Math.max(halfViewW, Math.min(STATE.world.w - halfViewW, STATE.camera.centerX));
+  STATE.camera.centerY = halfViewH * 2 >= STATE.world.h
+    ? STATE.world.h / 2
+    : Math.max(halfViewH, Math.min(STATE.world.h - halfViewH, STATE.camera.centerY));
 }
 
 function getBeatPulse() {
@@ -2456,6 +2482,17 @@ function getEventPos(e) {
   return screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
 }
 
+// Raw canvas-relative screen coordinates, not run through screenToWorld —
+// panning needs a screen-space delta divided by scale, not a world-space
+// point that would itself shift as centerX/Y move mid-drag.
+function getEventScreenPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  if (e.touches && e.touches.length > 0) {
+    return { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top };
+  }
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
 function pinchDistance(touches) {
   return Math.hypot(touches[1].clientX - touches[0].clientX, touches[1].clientY - touches[0].clientY);
 }
@@ -2465,6 +2502,7 @@ function beginPinch(e) {
   // not finishing the line they were drawing — drop the in-progress line
   // rather than completing/rejecting a connection they didn't intend.
   if (STATE.isDrawing) cancelActiveLine();
+  STATE.panDrag = null; // a second finger landing mid-pan means a pinch is starting, not a continued drag
   STATE.pinch = { startDist: pinchDistance(e.touches), startZoom: STATE.camera.userZoom };
 }
 
@@ -2513,7 +2551,20 @@ function onInputStart(e) {
   const pos = getEventPos(e);
 
   const dot = findDotAt(pos.x, pos.y, false);
-  if (!dot) return;
+  if (!dot) {
+    // Dragging empty board space was always a no-op before panning
+    // existed, and stays one at the guaranteed-fit view or further out —
+    // only once zoomed in past baseline (userZoom > 1) is there actually
+    // anywhere left to pan to.
+    if (STATE.camera.userZoom > 1) {
+      const screenPos = getEventScreenPos(e);
+      STATE.panDrag = {
+        startScreenX: screenPos.x, startScreenY: screenPos.y,
+        startCenterX: STATE.camera.centerX, startCenterY: STATE.camera.centerY,
+      };
+    }
+    return;
+  }
 
   STATE.activeDot = dot;
   STATE.isDrawing = true;
@@ -2527,6 +2578,15 @@ function onInputMove(e) {
 
   if (STATE.phase === 'PLAYING' && e.touches && e.touches.length >= 2) {
     updatePinch(e);
+    return;
+  }
+
+  if (STATE.panDrag) {
+    const screenPos = getEventScreenPos(e);
+    const s = STATE.camera.scale || 1;
+    STATE.camera.centerX = STATE.panDrag.startCenterX - (screenPos.x - STATE.panDrag.startScreenX) / s;
+    STATE.camera.centerY = STATE.panDrag.startCenterY - (screenPos.y - STATE.panDrag.startScreenY) / s;
+    clampCameraCenter();
     return;
   }
 
@@ -2558,6 +2618,7 @@ function onInputEnd(e) {
   // remaining touches, e.g. a three-finger gesture) is left alone.
   if (e.touches && e.touches.length >= 2) return;
   if (STATE.pinch) { STATE.pinch = null; return; }
+  if (STATE.panDrag) { STATE.panDrag = null; return; }
 
   if (!STATE.isDrawing || !STATE.activeDot) return;
 
@@ -3005,7 +3066,14 @@ function startWave(waveNumber) {
   STATE.camera.userZoom = 1;
   STATE.camera.targetScale = STATE.camera.autoScale;
   if (!STATE.camera.scale) STATE.camera.scale = STATE.camera.autoScale; // first wave: nothing to animate from
+  // A new wave's world is a different size (or the same size laid out
+  // completely differently) — last wave's pan position doesn't mean
+  // anything here, so re-center on this wave's own middle rather than
+  // carrying over wherever the camera happened to be looking before.
+  STATE.camera.centerX = STATE.world.w / 2;
+  STATE.camera.centerY = STATE.world.h / 2;
   STATE.pinch = null;
+  STATE.panDrag = null;
 
   STATE.dotUnion = {};
   for (const dot of STATE.dots) STATE.dotUnion[dot.id] = dot.id;
@@ -4862,6 +4930,7 @@ function update() {
   }
 
   STATE.camera.scale += (STATE.camera.targetScale - STATE.camera.scale) * CAMERA_CONFIG.ZOOM_LERP;
+  clampCameraCenter(); // re-clamp every frame, since the viewport's own size keeps changing while scale is still animating toward targetScale
 
   updateStars();
   // Asteroids/satellites/comets only drift through once the whole wave's
