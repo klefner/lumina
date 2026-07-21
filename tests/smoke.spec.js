@@ -210,6 +210,202 @@ test('a line that visually clears a barrier at a sharp turn is not rejected', as
   expect(errors).toEqual([]);
 });
 
+// Regression guard for three compounding defects the user found by actually
+// playing deep into a run: (1) a fresh wave showed a full backdrop of stars
+// despite nothing being connected yet, because STATE.stars was only ever
+// cleared in the wave-complete advance closure -- resume/restart/load all
+// skipped it and inherited whatever was on screen before; (2) a completed
+// connection's line faded all the way to invisible with nothing replacing
+// it (the traveling lights meant to be the ongoing indicator only render
+// once the *entire wave* is complete), so a still-live connection looked
+// identical to a broken one for the rest of the wave; (3) breaking a
+// connection (a rotating barrier sweeping through) left its star halo
+// behind, which kept implying "this is connected" long after it wasn't --
+// exactly the mismatch that made a real break read as an inexplicable bug.
+test('stars reset on a fresh wave, a connection line never fully disappears, and breaking one clears its stars too', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('body');
+  await page.waitForTimeout(300);
+
+  const freshStars = await page.evaluate(() => { startWave(1); return STATE.stars.length; });
+  expect(freshStars).toBe(0);
+
+  const setup = await page.evaluate(() => {
+    const dots = window.__lumina.getDots();
+    const byPair = {};
+    for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+    const [a, b] = Object.values(byPair)[0];
+
+    STATE.activeDot = a;
+    STATE.currentPath = [{ x: a.x, y: a.y }, { x: b.x, y: b.y }];
+    completeConnection(a, b);
+
+    return { duration: CONFIG.LINE_FADE_DURATION_MS, pairId: a.pairId, colorIndex: a.colorIndex, ax: a.x, ay: a.y };
+  });
+
+  // The fade is wall-clock-timed (see LINE_FADE_DURATION_MS), not driven
+  // by calling update() a fixed number of times, so this waits real time
+  // and lets the page's own render loop run naturally in the background.
+  await page.waitForTimeout(setup.duration + 800);
+
+  const fadeResult = await page.evaluate(() => ({
+    lineCount: STATE.lines.length,
+    settledAlpha: STATE.lines[0].points.map(p => p.alpha),
+    floor: CONFIG.LINE_FADE_FLOOR,
+    pairId: STATE.lines[0].pairId,
+    colorIndex: STATE.lines[0].colorIndex,
+  }));
+  fadeResult.ax = setup.ax;
+  fadeResult.ay = setup.ay;
+  expect(fadeResult.lineCount).toBe(1); // never removed
+  for (const alpha of fadeResult.settledAlpha) {
+    expect(alpha).toBeCloseTo(fadeResult.floor, 5); // settles at the floor, not 0
+  }
+
+  const breakResult = await page.evaluate((f) => {
+    breakConnection(f.pairId, f.colorIndex, f.ax, f.ay);
+    return {
+      linesForPair: STATE.lines.filter(l => l.pairId === f.pairId).length,
+      starsForPair: STATE.stars.filter(s => s.pairId === f.pairId).length,
+    };
+  }, fadeResult);
+  expect(breakResult.linesForPair).toBe(0);
+  expect(breakResult.starsForPair).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+// Regression guard for a performance defect introduced by the fix above:
+// making a connection's line settle at a floor instead of disappearing
+// only helps if "settled" is actually reached quickly. The first version
+// of that fix used a per-point cascade where each point only started
+// fading once its predecessor fully finished -- total settle time scaled
+// with point count, so a long, deliberately winding connection (which
+// scoring explicitly rewards, and can carry hundreds of points) could
+// take many minutes to ever reach "settled," paying full per-segment
+// render cost -- one stroke() call per point, every frame -- the entire
+// time. Fixed by making the fade wall-clock-timed instead of point-count-
+// scaled: every line settles within the same fixed LINE_FADE_DURATION_MS
+// regardless of length. Builds a genuinely long (300+ point), winding
+// connection and asserts it settles within that fixed window and then
+// renders as a single stroke() call, not one per point.
+test('a long, winding connection settles within a fixed time regardless of point count, and renders as one draw call once settled', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('body');
+  await page.waitForTimeout(300);
+
+  const setup = await page.evaluate(() => {
+    const dots = window.__lumina.getDots();
+    const byPair = {};
+    for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+    const [a, b] = Object.values(byPair)[0];
+
+    const path = [{ x: a.x, y: a.y }];
+    const steps = 300;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      path.push({
+        x: a.x + (b.x - a.x) * t + Math.sin(t * 30) * 20,
+        y: a.y + (b.y - a.y) * t + Math.cos(t * 17) * 20,
+      });
+    }
+    path.push({ x: b.x, y: b.y });
+
+    STATE.activeDot = a;
+    STATE.currentPath = path;
+    completeConnection(a, b);
+    return { pointCount: STATE.lines[0].points.length, duration: CONFIG.LINE_FADE_DURATION_MS };
+  });
+  expect(setup.pointCount).toBeGreaterThan(200); // a genuinely long path, not a trivial case
+
+  await page.waitForTimeout(setup.duration + 800); // real time, well past the fixed settle window
+
+  const result = await page.evaluate(() => {
+    const alphas = STATE.lines[0].points.map(p => p.alpha);
+    let strokeCalls = 0;
+    const origStroke = ctx.stroke.bind(ctx);
+    ctx.stroke = function (...args) { strokeCalls++; return origStroke(...args); };
+    drawFadingLine(STATE.lines[0]);
+    ctx.stroke = origStroke;
+    return {
+      settled: STATE.lines[0].settled,
+      minAlpha: Math.min(...alphas),
+      maxAlpha: Math.max(...alphas),
+      floor: CONFIG.LINE_FADE_FLOOR,
+      strokeCalls,
+    };
+  });
+
+  expect(result.settled).toBe(true);
+  expect(result.minAlpha).toBeCloseTo(result.floor, 5);
+  expect(result.maxAlpha).toBeCloseTo(result.floor, 5);
+  expect(result.strokeCalls).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+// Regression guard for a defect that made a wave permanently
+// uncompleteable, with no recovery possible by replaying, waiting, or
+// reconnecting anything. wouldStrandAnyDot -- the check that's supposed to
+// guarantee a wave can never become unsolvable through the player's own
+// moves -- built its reachability grid from existing connections only,
+// never from barriers. A static barrier (present from wave 3 on, and
+// unlike a rotating one, never moves) sitting in the one gap of an
+// otherwise-enclosing loop of connections was invisible to this check, so
+// it could approve a connection that sealed another dot in behind that
+// barrier for good: every real attempt to route through the same gap
+// afterward is correctly rejected forever by pathCrossesBarriers, which
+// *does* know about barriers -- the two checks disagreeing is what made
+// the trap permanent. Builds the exact minimal scenario (a boxed-in dot,
+// one gap, a static barrier plugging it) and asserts wouldStrandAnyDot
+// now catches it, with a control run (no barrier) proving the enclosure
+// alone was never the problem.
+test('a static barrier plugging the only gap in an enclosure is correctly treated as sealing a dot in', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // A box of connection segments around P, open only through an 80px
+    // gap (well over the 24px grid cell, ruling out grid-coarseness as
+    // the reason for either result) -- with a static barrier spanning
+    // exactly that gap.
+    const boxSegments = [
+      { x1: 200, y1: 400, x2: 400, y2: 400 }, // bottom
+      { x1: 200, y1: 200, x2: 200, y2: 400 }, // left
+      { x1: 400, y1: 200, x2: 400, y2: 400 }, // right
+      { x1: 200, y1: 200, x2: 260, y2: 200 }, // top, left half
+      { x1: 340, y1: 200, x2: 400, y2: 200 }, // top, right half -- gap is x:[260,340]
+    ];
+    const barrier = { x1: 260, y1: 200, x2: 340, y2: 200, rotating: false };
+
+    const P = { id: 0, pairId: 0, x: 300, y: 300, connected: false };
+    const Q = { id: 1, pairId: 0, x: 300, y: 800, connected: false }; // P's groupmate, outside the box
+    const R = { id: 2, pairId: 1, x: 1000, y: 300, connected: false };
+    const S = { id: 3, pairId: 1, x: 1000, y: 800, connected: false }; // the "active pair" being connected right now
+
+    STATE.dots = [P, Q, R, S];
+    STATE.dotUnion = { 0: 0, 1: 1, 2: 2, 3: 3 };
+    STATE.world = { w: 1400, h: 1000 };
+    STATE.connections = [{ pairId: 2, colorIndex: 0, segments: boxSegments }];
+
+    STATE.barriers = [barrier];
+    const withBarrier = wouldStrandAnyDot([], R, S);
+
+    STATE.barriers = [];
+    const withoutBarrier = wouldStrandAnyDot([], R, S);
+
+    return { withBarrier, withoutBarrier };
+  });
+
+  expect(result.withBarrier).toBe(true); // the barrier plugging the gap really does seal P in
+  expect(result.withoutBarrier).toBe(false); // control: the enclosure alone (open gap) was never the problem
+  expect(errors).toEqual([]);
+});
+
 test('pause button appears once playing and opens the pause menu', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });

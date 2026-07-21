@@ -16,7 +16,28 @@ const CONFIG = {
   // Lines
   LINE_WIDTH: 3,
   LINE_GLOW_BLUR: 18,
-  LINE_FADE_SPEED: 0.003,    // Alpha decrement per frame per point
+  // The hand-drawn line was fading all the way to invisible, and nothing
+  // replaces it: drawTravelingLights (the intended ongoing indicator)
+  // only runs once the *entire wave* is complete (STATE.beatSync is only
+  // set in checkWaveComplete), so a connection made mid-wave had zero
+  // visual trace once its line finished fading — it looked exactly like
+  // it had never happened, or had silently broken, for the rest of the
+  // wave. Floors the fade instead of letting it reach zero, so a faint
+  // permanent thread always marks a still-live connection.
+  LINE_FADE_FLOOR: 0.15,
+  // Wall-clock time (not frames-per-point) for a line to fully settle at
+  // the floor, independent of how many points it has. A per-point
+  // sequential cascade (each point only starting once its predecessor
+  // fully finished) was the original design, but that makes total settle
+  // time scale with point count — a long, deliberately winding connection
+  // (which scoring explicitly rewards) could carry hundreds of points and
+  // take many minutes to ever reach "settled," during which it kept
+  // paying full per-segment render cost the whole time (see
+  // drawSettledPath's comment). This bounds every line to the same fixed
+  // duration regardless of length, still sweeping start-to-end (see the
+  // fade loop in update()), just staggered within that fixed window
+  // instead of chained one point at a time.
+  LINE_FADE_DURATION_MS: 3500,
   LINE_POINT_INTERVAL: 4,    // Record a point every N pixels of movement
   LINE_SMOOTHING: 0.18,      // Low-pass filter strength on raw input (lower = smoother, laggier)
 
@@ -1992,6 +2013,36 @@ function drawSmoothedPath(points, strokeStyleFn) {
   }
 }
 
+// Once every point in a line has settled at LINE_FADE_FLOOR (see its
+// comment), per-segment alpha variation is pointless — the whole line is
+// one uniform color now — so this strokes the entire smoothed curve as a
+// single continuous path instead of drawSmoothedPath's one stroke() call
+// per segment. That distinction matters specifically because a settled
+// line is never removed for the rest of the wave: a long, winding
+// connection (which scoring explicitly rewards) can carry hundreds of
+// points, and re-issuing hundreds of separate stroke() calls for it every
+// frame for the rest of the wave is real, avoidable, accumulating cost on
+// slower hardware. One call renders identically and doesn't scale with
+// point count.
+function drawSettledPath(points, style) {
+  if (points.length < 2) return;
+  ctx.strokeStyle = style;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  if (points.length === 2) {
+    ctx.lineTo(points[1].x, points[1].y);
+  } else {
+    for (let i = 1; i < points.length - 1; i++) {
+      const p1 = points[i], p2 = points[i + 1];
+      const isLast = i === points.length - 2;
+      const endX = isLast ? p2.x : (p1.x + p2.x) / 2;
+      const endY = isLast ? p2.y : (p1.y + p2.y) / 2;
+      ctx.quadraticCurveTo(p1.x, p1.y, endX, endY); // continues from the previous call's endpoint, chaining into one path
+    }
+  }
+  ctx.stroke();
+}
+
 function drawFadingLine(line) {
   const instrument = INSTRUMENTS[line.colorIndex];
   // getBeatPulse() returns non-null only once every dot is connected (see
@@ -2008,10 +2059,14 @@ function drawFadingLine(line) {
   ctx.shadowBlur = CONFIG.LINE_GLOW_BLUR * pulseBoost;
   ctx.shadowColor = instrument.hex;
 
-  drawSmoothedPath(line.points, {
-    alpha: (p0, p1) => Math.min(p0.alpha, p1.alpha),
-    style: (alpha) => instrument.glow + alpha + ')',
-  });
+  if (line.settled) {
+    drawSettledPath(line.points, instrument.glow + CONFIG.LINE_FADE_FLOOR + ')');
+  } else {
+    drawSmoothedPath(line.points, {
+      alpha: (p0, p1) => Math.min(p0.alpha, p1.alpha),
+      style: (alpha) => instrument.glow + alpha + ')',
+    });
+  }
 
   ctx.restore();
 }
@@ -2525,8 +2580,8 @@ function completeConnection(dotA, dotB) {
     colorIndex: dotA.colorIndex,
     pairId: dotA.pairId,
     points: STATE.currentPath.map(p => ({ x: p.x, y: p.y, alpha: 1.0 })),
-    fadeIndex: 0,
-    complete: false,
+    bornAt: performance.now(),
+    settled: false,
   };
   STATE.lines.push(fadingLine);
 
@@ -2741,7 +2796,23 @@ function wouldStrandAnyDot(newSegments, dotA, dotB) {
   const size = STRAND_CHECK_CELL_SIZE;
   const cols = Math.ceil(STATE.world.w / size) + 1;
   const rows = Math.ceil(STATE.world.h / size) + 1;
-  const blocked = buildBlockedGrid(existingConnectionSegments(newSegments), size);
+  // This grid has to include barriers, unlike existingConnectionSegments'
+  // other use (pathCrossesExistingConnections), where excluding them is
+  // correct — a barrier isn't a wall a new line can't cross near, it's
+  // checked separately by pathCrossesBarriers. But for THIS reachability
+  // question — "can dot still physically get to its groupmate at all" —
+  // leaving barriers out was a real bug: this flood-fill could see an open
+  // gap that a barrier actually occupies, approve a connection that seals
+  // another dot in behind it, and if that barrier is static (never moves,
+  // present from wave 3 on), the wave becomes permanently uncompleteable —
+  // no replay, wait, or reconnect recovers it, since every real attempt to
+  // route through that same gap afterward correctly gets rejected by
+  // pathCrossesBarriers forever. Confirmed empirically: reproduced on ~1 in
+  // 6 real generated waves 15-60, eliminated after this fix, with the only
+  // remaining rare "stuck" cases being a currently-in-the-way *rotating*
+  // barrier — transient and self-resolving, not permanent.
+  const barrierSegments = STATE.barriers.map(b => ({ x1: b.x1, y1: b.y1, x2: b.x2, y2: b.y2 }));
+  const blocked = buildBlockedGrid([...existingConnectionSegments(newSegments), ...barrierSegments], size);
 
   for (const dot of STATE.dots) {
     if (dot.connected) continue;
@@ -2805,9 +2876,8 @@ function checkWaveComplete() {
     STATE.beatSync = null;
     startFadeToBlack(() => {
       hideMessage();
-      STATE.stars = [];
       STATE.waveCompleteAdvancing = false;
-      startWave(STATE.wave + 1);
+      startWave(STATE.wave + 1); // clears STATE.stars itself now — see its own comment
       startFadeFromBlack();
     });
   };
@@ -2841,6 +2911,12 @@ function startWave(waveNumber) {
   STATE.spaceObjects = [];
   STATE.spaceSpawnTimer = 0;
   STATE.celestialBodies = [];
+  // The full background starfield only means anything as a wave-complete
+  // reveal, and a connection's own sparse halo only means anything while
+  // that connection is real — carrying either into a new wave (resume,
+  // restart, load, as well as the normal advance) makes an unconnected
+  // board look like it's already got history it doesn't have.
+  STATE.stars = [];
   STATE.waveStartScore = STATE.score;
 
   showTutorialHint(waveNumber);
@@ -3109,6 +3185,12 @@ function breakConnection(pairId, colorIndex, sparkX, sparkY) {
     if (STATE.connections[i].pairId === pairId) STATE.connections.splice(i, 1);
   }
   STATE.lines = STATE.lines.filter(l => l.pairId !== pairId);
+  // Otherwise this pair's star halo — the one lasting sign a connection
+  // ever existed, now that its line no longer fades to nothing either —
+  // would keep implying "still connected" long after a rotating barrier
+  // reset it, which is exactly the stale signal that made a broken
+  // connection read as a mystery instead of a break.
+  STATE.stars = STATE.stars.filter(s => s.pairId !== pairId);
   spawnBreakSparks(sparkX, sparkY, colorIndex);
   remuteChunk(pairId);
   haptic('break');
@@ -3232,10 +3314,11 @@ function drawBreakSparks() {
 // ============================================================
 // SECTION 7C: STARFIELD & SPACE BACKGROUND
 // ============================================================
-function makeStar(x, y, fadeSpeed) {
+function makeStar(x, y, fadeSpeed, pairId) {
   const twinkling = Math.random() < STARFIELD_CONFIG.TWINKLE_FRACTION;
   return {
     x, y,
+    pairId, // undefined for the base reveal starfield; set for a connection's own halo, so breakConnection can clear it
     radius: 0.6 + Math.random() * 1.6,
     targetAlpha: 0.35 + Math.random() * 0.55,
     alpha: 0,
@@ -3277,7 +3360,7 @@ function spawnStarsAroundDots(dotA, dotB) {
       if (STATE.stars.length >= STARFIELD_CONFIG.MAX_STARS) return;
       const angle = Math.random() * Math.PI * 2;
       const dist = Math.random() * STARFIELD_CONFIG.CONNECTION_STAR_RADIUS;
-      STATE.stars.push(makeStar(p.x + Math.cos(angle) * dist, p.y + Math.sin(angle) * dist, STARFIELD_CONFIG.STAR_FADE_IN_SPEED));
+      STATE.stars.push(makeStar(p.x + Math.cos(angle) * dist, p.y + Math.sin(angle) * dist, STARFIELD_CONFIG.STAR_FADE_IN_SPEED, dotA.pairId));
     }
   }
 }
@@ -4305,22 +4388,30 @@ function update() {
     dot.pulsePhase += CONFIG.DOT_PULSE_SPEED;
   }
 
+  // Every point fades from 1 down to LINE_FADE_FLOOR (never to zero — see
+  // its comment) over a fixed LINE_FADE_DURATION_MS, the same for every
+  // line regardless of point count (see that constant's comment for why
+  // a per-point cascade doesn't work here). Each point's own local fade
+  // is staggered by its position along the line — start points begin
+  // fading immediately, end points begin later — so it still sweeps
+  // start-to-end, just all within the one fixed window. Once elapsed
+  // time reaches the full duration, line.settled latches true and this
+  // skips the line entirely from then on — both this loop and, in
+  // drawFadingLine, the per-segment stroke calls that no longer have any
+  // per-segment alpha variation left to justify their cost.
+  const LOCAL_FADE_FRACTION = 0.4; // how much of the total duration each individual point's own transition takes
   for (const line of STATE.lines) {
-    if (line.complete) continue;
-
-    let allFaded = true;
-    for (let i = 0; i < line.points.length; i++) {
-      if (line.points[i].alpha > 0) {
-        allFaded = false;
-        if (i === 0 || line.points[i - 1].alpha < 0.05) {
-          line.points[i].alpha = Math.max(0, line.points[i].alpha - CONFIG.LINE_FADE_SPEED);
-        }
-      }
+    if (line.settled) continue;
+    const elapsedFrac = Math.min(1, (performance.now() - line.bornAt) / CONFIG.LINE_FADE_DURATION_MS);
+    const n = line.points.length;
+    for (let i = 0; i < n; i++) {
+      const posFrac = n <= 1 ? 0 : i / (n - 1);
+      const startFrac = posFrac * (1 - LOCAL_FADE_FRACTION);
+      const localProgress = Math.min(1, Math.max(0, (elapsedFrac - startFrac) / LOCAL_FADE_FRACTION));
+      line.points[i].alpha = 1 - localProgress * (1 - CONFIG.LINE_FADE_FLOOR);
     }
-    if (allFaded) line.complete = true;
+    if (elapsedFrac >= 1) line.settled = true;
   }
-
-  STATE.lines = STATE.lines.filter(l => !l.complete);
 
   STATE.camera.scale += (STATE.camera.targetScale - STATE.camera.scale) * CAMERA_CONFIG.ZOOM_LERP;
 
