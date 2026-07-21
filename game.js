@@ -255,7 +255,7 @@ function checkAchievements(waveScore) {
       glyph: '🏆', // 🏆
       bg: 'radial-gradient(circle at 35% 30%, #ffe9a8, #d4a017)',
       glow: 'rgba(255,215,0,0.65)',
-      label: 'New Best Wave',
+      label: 'New Highest Wave',
     });
   }
   if (waveScore > STATE.stats.bestWaveScore) {
