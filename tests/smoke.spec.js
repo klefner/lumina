@@ -823,3 +823,85 @@ test('the title subtitle updates immediately when Auto Load Last Save is toggled
     .not.toMatch(/resume/);
   expect(errors).toEqual([]);
 });
+
+test('rotating the device mid-wave grows the world to fill the new aspect ratio instead of leaving it letterboxed, and rotating back never compounds the growth', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+
+  const portrait = await page.evaluate(() => ({ w: STATE.world.w, h: STATE.world.h, canvasW: canvas.width, canvasH: canvas.height }));
+
+  // Rotate to landscape (swap dimensions, same as a real device).
+  await page.setViewportSize({ width: portrait.canvasH, height: portrait.canvasW });
+  await page.waitForTimeout(300);
+  const landscape = await page.evaluate(() => ({
+    w: STATE.world.w, h: STATE.world.h, autoScale: STATE.camera.autoScale,
+    canvasW: canvas.width, canvasH: canvas.height,
+  }));
+
+  expect(landscape.w).toBeGreaterThan(portrait.w); // grew wider to match the new screen shape
+  expect(landscape.h).toBe(portrait.h); // height untouched -- existing dots' y-positions stay valid
+  // Both axes now land on the same scale factor -- the world fills the
+  // screen edge to edge instead of being shrunk to whichever axis is more
+  // constrained (the actual "terribly compressed" symptom reported).
+  expect(landscape.w * landscape.autoScale).toBeCloseTo(landscape.canvasW, 1);
+  expect(landscape.h * landscape.autoScale).toBeCloseTo(landscape.canvasH, 1);
+
+  // Rotate back to the original portrait shape.
+  await page.setViewportSize({ width: portrait.canvasW, height: portrait.canvasH });
+  await page.waitForTimeout(300);
+  const backToPortrait = await page.evaluate(() => ({ w: STATE.world.w, h: STATE.world.h }));
+  expect(backToPortrait.w).toBe(portrait.w);
+  expect(backToPortrait.h).toBe(portrait.h);
+
+  // Several more rotation cycles must never compound past the
+  // landscape-adjusted size -- each recomputes from the wave's fixed
+  // baseW/baseH, not from whatever the world had already grown to.
+  for (let i = 0; i < 4; i++) {
+    await page.setViewportSize({ width: portrait.canvasH, height: portrait.canvasW });
+    await page.waitForTimeout(100);
+    await page.setViewportSize({ width: portrait.canvasW, height: portrait.canvasH });
+    await page.waitForTimeout(100);
+  }
+  const afterCycles = await page.evaluate(() => ({ w: STATE.world.w, h: STATE.world.h }));
+  expect(afterCycles.w).toBe(portrait.w);
+  expect(afterCycles.h).toBe(portrait.h);
+  expect(errors).toEqual([]);
+});
+
+test('growing the world on rotation re-centers everything already placed instead of leaving it crammed in a corner, and rotating back restores exact original positions', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+
+  const before = await page.evaluate(() => ({
+    dotX: STATE.dots[0].x, dotY: STATE.dots[0].y,
+    worldW: STATE.world.w, worldH: STATE.world.h,
+    canvasW: canvas.width, canvasH: canvas.height,
+  }));
+
+  await page.setViewportSize({ width: before.canvasH, height: before.canvasW }); // rotate
+  await page.waitForTimeout(300);
+  const landscape = await page.evaluate(() => ({ dotX: STATE.dots[0].x, dotY: STATE.dots[0].y, worldW: STATE.world.w }));
+
+  // The dot moved by exactly half of whatever width got added -- i.e. the
+  // content that used to fill [0, oldW] is now centered inside [0, newW],
+  // not still sitting at the same absolute coordinates (which would leave
+  // it crammed against the left edge of the newly wider world).
+  const expectedShift = (landscape.worldW - before.worldW) / 2;
+  expect(landscape.dotX - before.dotX).toBeCloseTo(expectedShift, 5);
+  expect(landscape.dotY).toBe(before.dotY); // height untouched, so no y-shift
+
+  await page.setViewportSize({ width: before.canvasW, height: before.canvasH }); // rotate back
+  await page.waitForTimeout(300);
+  const backToPortrait = await page.evaluate(() => ({ dotX: STATE.dots[0].x, dotY: STATE.dots[0].y }));
+  expect(backToPortrait.dotX).toBeCloseTo(before.dotX, 5);
+  expect(backToPortrait.dotY).toBeCloseTo(before.dotY, 5);
+  expect(errors).toEqual([]);
+});

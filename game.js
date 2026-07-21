@@ -640,6 +640,13 @@ const CAMERA_CONFIG = {
   MIN_USER_PULLBACK: 0.65,   // manual zoom-out floor, relative to the auto-fit scale
   MAX_USER_ZOOM_IN: 3,       // manual zoom-in ceiling, relative to the auto-fit scale
   WHEEL_ZOOM_STEP: 0.0015,   // userZoom change per wheel-delta unit
+  // Separate from MAX_WORLD_GROWTH (that one's about dot-packing density,
+  // not aspect ratio) -- a typical phone's portrait/landscape swap is
+  // already close to 2.2:1 on its own, so reusing that cap here left
+  // growWorldToMatchAspect barely able to compensate at all. This one's
+  // purely a backstop against a pathologically-shaped viewport, not a
+  // normal-use limit.
+  MAX_ORIENTATION_GROWTH: 5,
 };
 
 // Sizes the world for a wave with `dotCount` dots: big enough that random
@@ -1949,6 +1956,73 @@ function startBeat() {
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
+// A wave's world is sized once, for whatever orientation the screen was in
+// at wave start (see generateDots/computeWorldSize) — rotating the device
+// mid-wave left that shape stuck, so a portrait-shaped world viewed on a
+// newly-landscape screen could only be shown letterboxed down to fit its
+// own (now the more constrained) height, wasting most of the screen's
+// width. Grows w or h (never both, never shrinks) so the world's aspect
+// ratio can cover the new screen shape too. Recomputed from the wave's
+// fixed baseW/baseH every call, not from whatever the world had already
+// grown to, so rotating back and forth repeatedly can't compound into an
+// ever-larger world — a screen back at the original aspect ratio always
+// lands exactly back at the original size.
+// Every world-space coordinate the current wave might have live across
+// several different STATE arrays with different field shapes (x/y,
+// x1/y1/x2/y2, cx/cy, pivotX/pivotY). growWorldToMatchAspect only ever
+// appends space on one side of the world by default (x/y stay [0, oldW]
+// inside a newly bigger [0, newW]) — without re-centering everything
+// already placed, the whole board would end up crammed into a corner of
+// the bigger world instead of staying where the player left it (caught in
+// review). Screen-space-only decorations (spaceObjects, celestialBodies —
+// see their own comments) are deliberately NOT included here, since
+// they're not part of the world coordinate system at all.
+function shiftWorldEntities(dx, dy) {
+  if (dx === 0 && dy === 0) return;
+  for (const d of STATE.dots) { d.x += dx; d.y += dy; }
+  for (const c of STATE.connections) {
+    for (const seg of c.segments) { seg.x1 += dx; seg.y1 += dy; seg.x2 += dx; seg.y2 += dy; }
+  }
+  for (const l of STATE.lines) {
+    for (const p of l.points) { p.x += dx; p.y += dy; }
+  }
+  for (const b of STATE.barriers) {
+    b.x1 += dx; b.y1 += dy; b.x2 += dx; b.y2 += dy;
+    if (b.pivotX !== undefined) { b.pivotX += dx; b.pivotY += dy; }
+    if (b.cx !== undefined) { b.cx += dx; b.cy += dy; }
+    if (b.segments) {
+      for (const seg of b.segments) { seg.x1 += dx; seg.y1 += dy; seg.x2 += dx; seg.y2 += dy; }
+    }
+  }
+  for (const s of STATE.stars) { s.x += dx; s.y += dy; }
+  for (const spark of STATE.breakSparks) { spark.x += dx; spark.y += dy; }
+  for (const p of STATE.currentPath) { p.x += dx; p.y += dy; }
+  STATE.smoothedCursor.x += dx; STATE.smoothedCursor.y += dy;
+}
+
+function growWorldToMatchAspect() {
+  if (!STATE.world.baseW || !STATE.world.baseH) return; // no wave in progress yet
+  const screenAspect = canvas.width / canvas.height;
+  const baseAspect = STATE.world.baseW / STATE.world.baseH;
+  let targetW = STATE.world.baseW, targetH = STATE.world.baseH;
+  if (screenAspect > baseAspect) {
+    targetW = Math.min(STATE.world.baseW * CAMERA_CONFIG.MAX_ORIENTATION_GROWTH, STATE.world.baseH * screenAspect);
+  } else if (screenAspect < baseAspect) {
+    targetH = Math.min(STATE.world.baseH * CAMERA_CONFIG.MAX_ORIENTATION_GROWTH, STATE.world.baseW / screenAspect);
+  }
+  const newW = Math.max(STATE.world.baseW, targetW);
+  const newH = Math.max(STATE.world.baseH, targetH);
+
+  // Re-center: shift everything by half of whatever just got added (or
+  // removed, rotating back) on each axis, always computed fresh against
+  // the current world.w/h so this stays correct and reversible on every
+  // call, not just the first.
+  shiftWorldEntities((newW - STATE.world.w) / 2, (newH - STATE.world.h) / 2);
+
+  STATE.world.w = newW;
+  STATE.world.h = newH;
+}
+
 function resizeCanvas() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
@@ -1956,12 +2030,23 @@ function resizeCanvas() {
   // (orientation change, desktop window resize). world.w is 0 until the
   // first wave starts, so this is a no-op at the initial page-load call.
   if (STATE.world.w > 0) {
+    growWorldToMatchAspect();
     STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
     STATE.camera.targetScale = STATE.camera.autoScale * STATE.camera.userZoom;
     clampCameraCenter(); // the viewport's own size just changed along with the canvas
   }
 }
 window.addEventListener('resize', resizeCanvas);
+// iOS Safari can report transitional/stale window.innerWidth/innerHeight
+// immediately on 'resize' right after a physical rotation — a real device
+// issue no headless test can reproduce, since synthetic viewport changes
+// don't have that transitional window. A second, delayed re-check is the
+// standard mitigation: harmless if the first read was already correct,
+// corrects it if it wasn't.
+window.addEventListener('orientationchange', () => {
+  resizeCanvas();
+  setTimeout(resizeCanvas, 150);
+});
 resizeCanvas();
 
 // ------------------------------------------------------------
@@ -2421,6 +2506,13 @@ function generateDots(wave) {
   }
 
   STATE.world = computeWorldSize(totalDots);
+  // The wave's own dot-count-driven size, kept alongside the (possibly
+  // since-grown, see growWorldToMatchAspect) w/h -- an orientation change
+  // recomputes growth from this fixed baseline every time, rather than
+  // compounding onto whatever the world had already grown to, so rotating
+  // back and forth repeatedly can't balloon the world without bound.
+  STATE.world.baseW = STATE.world.w;
+  STATE.world.baseH = STATE.world.h;
 
   const dots = [];
   let idCounter = 0;
