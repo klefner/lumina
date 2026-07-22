@@ -1047,3 +1047,183 @@ test('a connection line renders at the exact same width while being drawn, while
   expect(widths.settled).toBe(widths.configWidth);
   expect(errors).toEqual([]);
 });
+
+test('the tutorial hint searches the whole screen for clear space, not just a band around the center', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.phase = 'PLAYING';
+    STATE.barriers = [];
+    STATE.world = { w: 400, h: 800 };
+    STATE.camera.autoScale = 1; STATE.camera.userZoom = 1;
+    STATE.camera.targetScale = 1; STATE.camera.scale = 1; // no lerp drift
+    STATE.camera.centerX = 200; STATE.camera.centerY = 400;
+
+    // Densely tile a band roughly 200px above/below center -- exactly the
+    // region the search used to be capped to -- leaving the top and bottom
+    // of the screen (well outside that old radius) completely clear.
+    const dots = [];
+    let id = 0;
+    for (let x = 20; x <= 380; x += 70) {
+      for (let y = 210; y <= 590; y += 70) {
+        dots.push({ id: id++, pairId: id, colorIndex: 0, x, y, connected: false, pulsePhase: 0 });
+      }
+    }
+    STATE.dots = dots;
+
+    layoutTutorialHint('Tap/Click hold to draw a line from one colored dot to its pair.');
+    const rect = document.getElementById('tutorial-hint').getBoundingClientRect();
+    return {
+      overlapCount: dotOverlapCount(rect) + barrierOverlapCount(rect),
+      top: rect.top, bottom: rect.bottom,
+    };
+  });
+
+  // A layout entirely inside the old 200px-radius band (y 200-600) would
+  // necessarily overlap this grid; finding a clear spot means it landed
+  // outside that band, in the region only reachable by the wider search.
+  expect(result.overlapCount).toBe(0);
+  const landedOutsideOldBand = result.bottom < 210 || result.top > 590;
+  expect(landedOutsideOldBand).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('the tutorial hint keeps a real buffer around dots, not just the bare exclusion radius', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.camera.scale = 1;
+    STATE.camera.centerX = canvas.width / 2;
+    STATE.camera.centerY = canvas.height / 2; // identity worldToScreen, so world coords == screen coords below
+    const rect = { left: 100, top: 100, right: 300, bottom: 150 };
+    const bareExclusion = CONFIG.DOT_RADIUS_CONNECTED_MAX; // no buffer at all
+    const bufferedExclusion = CONFIG.DOT_RADIUS_CONNECTED_MAX + TUTORIAL_HINT_BUFFER;
+
+    // A dot just past the bare dot radius, but still inside the buffered
+    // radius, should still count as crowding the box.
+    STATE.dots = [{ id: 0, pairId: 0, colorIndex: 0, x: 200, y: 150 + bareExclusion + 5, connected: false, pulsePhase: 0 }];
+    const withinBuffer = dotOverlapCount(rect);
+
+    // A dot safely past the buffered radius should not count at all.
+    STATE.dots = [{ id: 0, pairId: 0, colorIndex: 0, x: 200, y: 150 + bufferedExclusion + 5, connected: false, pulsePhase: 0 }];
+    const beyondBuffer = dotOverlapCount(rect);
+
+    return { withinBuffer, beyondBuffer, bareExclusion, bufferedExclusion };
+  });
+
+  expect(result.bufferedExclusion).toBeGreaterThan(result.bareExclusion);
+  expect(result.withinBuffer).toBe(1);
+  expect(result.beyondBuffer).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test('the zoom/pan tutorial hint is short enough to read as one glance, not a paragraph', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const wordCount = await page.evaluate(() => {
+    const zoomEntry = TUTORIAL_MESSAGES.find(m => /zoom/i.test(m.text));
+    return zoomEntry.text.split(/\s+/).length;
+  });
+
+  expect(wordCount).toBeLessThanOrEqual(10);
+  expect(errors).toEqual([]);
+});
+
+test('a real tutorial-wave dot/barrier/fact-box layout never leaves the hint text obscured, across many random waves', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // Mirrors the Monte Carlo methodology used for the maze-barrier
+    // solvability stress test: generate many real waves 1-7 (the only
+    // waves that show a tutorial hint) with their actual dots and
+    // generateBarriersSafely output, and confirm the hint always finds a
+    // spot clear of every dot, barrier, fact box, and the wave/score/button
+    // HUD -- not just in a hand-picked scenario.
+    let total = 0, obscured = 0;
+    for (let trial = 0; trial < 30; trial++) {
+      for (let wave = 1; wave <= 7; wave++) {
+        const dots = generateDots(wave);
+        ensureAllDotsInWorldBounds(dots);
+        STATE.phase = 'PLAYING';
+        STATE.dots = dots;
+        STATE.barriers = generateBarriersSafely(wave, dots);
+        STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
+        STATE.camera.userZoom = 1;
+        STATE.camera.targetScale = STATE.camera.autoScale;
+        STATE.camera.scale = STATE.camera.autoScale;
+        STATE.camera.centerX = STATE.world.w / 2;
+        STATE.camera.centerY = STATE.world.h / 2;
+        showTutorialHint(wave);
+        const rect = document.getElementById('tutorial-hint').getBoundingClientRect();
+        total++;
+        if (dotOverlapCount(rect) + barrierOverlapCount(rect) > 0 || rectOverlapsHud(rect)) obscured++;
+      }
+    }
+    return { total, obscured };
+  });
+
+  expect(result.total).toBe(210); // 30 trials x waves 1-7
+  expect(result.obscured).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test('a rotating barrier is kept clear of the tutorial hint across its full rotation, not just its starting pose', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // Rotating barriers unlock at BARRIER_CONFIG.ROTATION_START_WAVE (6),
+    // so waves 6-7 are the only tutorial waves where one can appear.
+    // generateBarriersSafely only rejects a rotating barrier whose current
+    // (generation-time) line crosses the reserved hint zone -- but
+    // updateBarriers spins it continuously afterward, so what actually
+    // matters is whether the full disk it sweeps out ever does.
+    let trialsWithRotating = 0, failures = 0;
+    for (let trial = 0; trial < 60; trial++) {
+      for (const wave of [6, 7]) {
+        const dots = generateDots(wave);
+        ensureAllDotsInWorldBounds(dots);
+        STATE.phase = 'PLAYING';
+        STATE.dots = dots;
+        STATE.barriers = generateBarriersSafely(wave, dots);
+        STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
+        STATE.camera.userZoom = 1;
+        STATE.camera.targetScale = STATE.camera.autoScale;
+        STATE.camera.scale = STATE.camera.autoScale;
+        STATE.camera.centerX = STATE.world.w / 2;
+        STATE.camera.centerY = STATE.world.h / 2;
+        showTutorialHint(wave);
+        const rect = document.getElementById('tutorial-hint').getBoundingClientRect();
+
+        const rotators = STATE.barriers.filter(b => b.rotating);
+        if (!rotators.length) continue;
+        trialsWithRotating++;
+
+        for (const b of rotators) {
+          const originalAngle = b.angle;
+          for (let step = 0; step < 24; step++) {
+            b.angle = originalAngle + (step / 24) * Math.PI * 2;
+            const ep = barrierEndpoints(b.pivotX, b.pivotY, b.angle, b.length);
+            b.x1 = ep.x1; b.y1 = ep.y1; b.x2 = ep.x2; b.y2 = ep.y2;
+            if (barrierOverlapCount(rect) > 0) failures++;
+          }
+          b.angle = originalAngle;
+        }
+      }
+    }
+    return { trialsWithRotating, failures };
+  });
+
+  expect(result.trialsWithRotating).toBeGreaterThan(0); // confirms the scenario actually got exercised
+  expect(result.failures).toBe(0);
+  expect(errors).toEqual([]);
+});
