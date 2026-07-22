@@ -1227,3 +1227,14 @@ test('a rotating barrier is kept clear of the tutorial hint across its full rota
   expect(result.failures).toBe(0);
   expect(errors).toEqual([]);
 });
+
+test('the "relax and enjoy" tutorial message is always the last one shown', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const lastText = await page.evaluate(() => TUTORIAL_MESSAGES[TUTORIAL_MESSAGES.length - 1].text);
+
+  expect(lastText).toBe('Connect the dots, make music. Relax and Enjoy!');
+  expect(errors).toEqual([]);
+});
