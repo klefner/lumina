@@ -5231,12 +5231,13 @@ function gameLoop() {
   requestAnimationFrame(gameLoop);
 }
 
-// Runs once per page load only (never mid-session, and never again after
-// this same reload) — compares this page's build to whatever's actually
-// live on the server right now, and if a newer one has shipped since this
-// page was fetched (a stale service worker/HTTP cache, a tab left open
-// across a deploy, etc.), does a single cache-busted reload so the player
-// lands on the latest version without ever having to manually refresh.
+// Compares this page's build to whatever's actually live on the server
+// right now, and if a newer one has shipped since this page was fetched
+// (a stale service worker/HTTP cache, a tab left open across a deploy,
+// etc.), does a single cache-busted reload so the player lands on the
+// latest version without ever having to manually refresh. Called from
+// several triggers below (not just initial load), but the sessionStorage
+// guard means at most one reload attempt happens per target build.
 // Any failure (offline, blocked fetch, no version.json yet) just leaves
 // the current version running — this is a nice-to-have, never a blocker.
 async function checkForNewVersionAndReload() {
@@ -5267,6 +5268,25 @@ async function checkForNewVersionAndReload() {
     // No network, fetch blocked, etc. — keep playing on the current version.
   }
 }
+
+// init() only runs once, at the true initial page load — but mobile
+// Safari (and other browsers) can restore a backgrounded tab straight
+// from bfcache after switching apps and back, which resumes the exact
+// same running JS without ever re-running init() at all. A long-lived
+// tab left open across several deploys could silently sit on a version
+// old enough that "nothing changed" for a player who's actually looking
+// at a stale page, not the current one. `pageshow` fires on every one of
+// those restores (in addition to a normal load), 'visibilitychange'
+// covers the same "came back to this tab" moment on desktop, and the
+// periodic timer is a fallback for a tab that's simply been left open
+// and foregrounded the whole time. All three funnel into the same
+// function, which already no-ops safely unless there's actually a newer
+// build AND the player is back on the title screen.
+window.addEventListener('pageshow', checkForNewVersionAndReload);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') checkForNewVersionAndReload();
+});
+setInterval(checkForNewVersionAndReload, 5 * 60 * 1000);
 
 // ============================================================
 // SECTION 11: INITIALIZATION

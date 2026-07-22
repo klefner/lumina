@@ -939,3 +939,63 @@ test('the tutorial hint avoids a fact box sitting where it would otherwise land,
   expect(result.overlaps).toBe(false);
   expect(errors).toEqual([]);
 });
+
+test('a stale tab picks up a new deploy on tab resume, not just initial load, but never mid-wave', async ({ page }) => {
+  const errors = trackErrors(page);
+
+  // location.replace() is a WebIDL "Unforgeable" own property -- it can't
+  // be spied on directly even via Location.prototype. Detect the reload
+  // the same way Playwright itself would: a real navigation to a URL
+  // carrying the cache-busting "_r=" param checkForNewVersionAndReload()
+  // appends.
+  async function firesReload(trigger) {
+    await page.evaluate(() => sessionStorage.removeItem('lumina_reload_attempted_for'));
+    let navigatedTo = null;
+    const onNav = (frame) => { if (frame === page.mainFrame()) navigatedTo = frame.url(); };
+    page.on('framenavigated', onNav);
+    await trigger();
+    await page.waitForTimeout(600);
+    page.off('framenavigated', onNav);
+    return navigatedTo !== null && navigatedTo.includes('_r=');
+  }
+
+  let servedBuild = 'newbuild123';
+  await page.route('**/version.json*', (route) => {
+    route.fulfill({ contentType: 'application/json', body: JSON.stringify({ build: servedBuild }) });
+  });
+
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  // init() itself just consumed the 'newbuild123' guard via a real reload
+  // on the initial load -- expected, not what this test is checking.
+
+  await page.evaluate(() => { STATE.phase = 'TITLE'; });
+  expect(await firesReload(() => page.evaluate(() => window.dispatchEvent(new Event('pageshow'))))).toBe(true);
+
+  await page.evaluate(() => { STATE.phase = 'TITLE'; });
+  expect(await firesReload(() => page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }))).toBe(true);
+
+  await page.evaluate(() => { STATE.phase = 'TITLE'; });
+  expect(await firesReload(() => page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }))).toBe(false);
+
+  // A tab that already started playing must never get yanked out from
+  // under the player, even if a newer build is available.
+  await page.evaluate(() => { STATE.phase = 'PLAYING'; });
+  expect(await firesReload(() => page.evaluate(() => window.dispatchEvent(new Event('pageshow'))))).toBe(false);
+
+  // Once the tab's own build matches what's live, no further reload fires.
+  await page.evaluate(() => { STATE.phase = 'TITLE'; });
+  servedBuild = await page.evaluate(() => {
+    const el = document.querySelector('script[src*="game.js"]');
+    return new URL(el.src, location.href).searchParams.get('v');
+  });
+  expect(await firesReload(() => page.evaluate(() => window.dispatchEvent(new Event('pageshow'))))).toBe(false);
+
+  expect(errors).toEqual([]);
+});
