@@ -2200,25 +2200,31 @@ function traceDotShapePath(shape, cx, cy, r) {
 // The hint button's whole point: let the player self-check "is everything
 // really connected?" before reporting a defect, rather than guessing from
 // a screenshot the way the dimming fix above was originally motivated by.
-// Three full bright/dim cycles over a couple of seconds reads unmistakably
-// as "these specific dots", distinct from any dot's own ambient pulse.
+// Five white flashes over a few seconds reads unmistakably as "these
+// specific dots" -- a smooth same-hue brightness pulse (the original
+// version of this) was too easily mistaken for a dot's own ambient
+// pulse, since neither one ever changes color, just brightness/size.
 const HINT_PULSE_CONFIG = {
-  DURATION_MS: 2100,
-  CYCLES: 3,
+  DURATION_MS: 3500,
+  CYCLES: 5,
 };
 
 function triggerHintPulse() {
   STATE.hintPulse = { startTime: performance.now() };
 }
 
-// 0 at the very start/end of the pulse, 1 at each cycle's peak — same
-// shape for every unconnected dot, so they all flash in unison.
+// 0 at the very start/end/between flashes, 1 at each flash's peak -- same
+// shape for every unconnected dot, so they all flash in unison. Raising
+// the underlying cosine wave to a power sharpens each cycle into a brief
+// flash with a longer dark valley in between, so it reads as a strobe
+// (five distinct flashes) rather than a smooth pulse.
 function hintPulseBrightness() {
   if (!STATE.hintPulse) return null;
   const elapsed = performance.now() - STATE.hintPulse.startTime;
   if (elapsed >= HINT_PULSE_CONFIG.DURATION_MS) { STATE.hintPulse = null; return null; }
   const t = elapsed / HINT_PULSE_CONFIG.DURATION_MS;
-  return (1 - Math.cos(t * HINT_PULSE_CONFIG.CYCLES * Math.PI * 2)) / 2;
+  const raw = (1 - Math.cos(t * HINT_PULSE_CONFIG.CYCLES * Math.PI * 2)) / 2;
+  return Math.pow(raw, 3);
 }
 
 function drawDot(dot) {
@@ -2247,12 +2253,17 @@ function drawDot(dot) {
   ctx.save();
   const hintBrightness = dot.connected ? null : hintPulseBrightness();
   if (hintBrightness !== null) {
-    // Flashes from the normal dim level up to full brightness/glow and
-    // back, HINT_PULSE_CONFIG.CYCLES times -- deliberately overriding the
-    // dimming above rather than just fighting the ambient pulse, so it
-    // reads as a distinct "look here" signal, not a stronger idle pulse.
+    // Dim between flashes (same idle baseline as the plain unconnected
+    // case below), full brightness right at each flash's peak -- so each
+    // flash has an actual dark valley on either side of it and reads as
+    // 5 distinct pops, not one dot that's simply brighter the whole time.
+    // The glow stays at the idle size here rather than also growing --
+    // the white pass below is what grows, and a same-size or smaller
+    // colored halo underneath it is fully covered instead of peeking out
+    // past the edge of a bigger white one (very light colors like gold
+    // otherwise left a faint tinted ring around an otherwise-white dot).
     ctx.globalAlpha *= 0.55 + hintBrightness * 0.45;
-    ctx.shadowBlur = 18 + hintBrightness * 17;
+    ctx.shadowBlur = 18;
   } else if (!dot.connected) {
     ctx.globalAlpha *= 0.55;
     ctx.shadowBlur = 18;
@@ -2264,6 +2275,26 @@ function drawDot(dot) {
   traceDotShapePath(shape, dot.x, dot.y, radius);
   ctx.fillStyle = instrument.hex;
   ctx.fill();
+  if (hintBrightness !== null && hintBrightness > 0.02) {
+    // A same-hue brightness pulse (the original version of this) read as
+    // just a stronger idle pulse -- a dot's ambient/connected pulse never
+    // changes color either, only size/glow. Crossfading a solid white
+    // fill on top, keyed to the same flash curve, changes the dot's
+    // actual color at each peak instead, which is what actually makes it
+    // read as a distinct "look here" signal. The glow has to switch to
+    // white here too, not just the fill -- otherwise the halo stays
+    // tinted the dot's own color even while the shape itself goes white,
+    // and the flash reads as "colored glow, white middle" instead of
+    // "this whole dot is now white".
+    ctx.globalAlpha = hintBrightness;
+    ctx.shadowColor = '#ffffff';
+    ctx.shadowBlur = 18 + hintBrightness * 25;
+    ctx.beginPath();
+    traceDotShapePath(shape, dot.x, dot.y, radius);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
 
   ctx.shadowBlur = 12;
   ctx.beginPath();
@@ -4799,6 +4830,21 @@ function togglePause() {
   if (STATE.paused) resumeGame(); else pauseGame();
 }
 
+// ============================================================
+// HOW-TO-PLAY OVERLAY
+// ============================================================
+// Reachable from the title screen and mid-game alike (see #help-button's
+// CSS). A plain reference, not a second pause mechanism -- its own opaque
+// backdrop already blocks every pointer event from reaching the board
+// underneath while it's open, so there's nothing else to freeze.
+function openHelp() {
+  document.getElementById('help-overlay').classList.add('visible');
+}
+
+function closeHelp() {
+  document.getElementById('help-overlay').classList.remove('visible');
+}
+
 function handleSaveGame() {
   const ok = saveGame();
   const toast = document.getElementById('pause-save-toast');
@@ -4983,6 +5029,11 @@ function maybeFetchOnlineFacts() {
 function setupPauseMenuListeners() {
   document.getElementById('pause-button').addEventListener('click', togglePause);
   document.getElementById('hint-button').addEventListener('click', triggerHintPulse);
+  document.getElementById('help-button').addEventListener('click', openHelp);
+  document.getElementById('help-close').addEventListener('click', closeHelp);
+  document.getElementById('help-overlay').addEventListener('click', (e) => {
+    if (e.target.id === 'help-overlay') closeHelp(); // tapping the backdrop itself, not the panel
+  });
   document.getElementById('pause-resume').addEventListener('click', resumeGame);
   document.getElementById('pause-save').addEventListener('click', handleSaveGame);
   document.getElementById('pause-load').addEventListener('click', handleLoadGame);

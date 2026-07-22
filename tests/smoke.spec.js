@@ -572,13 +572,14 @@ test('unconnected dots render visibly dimmer than fully-connected dots', async (
   expect(errors).toEqual([]);
 });
 
-test('the hint button appears once playing, flashes unconnected dots bright at their peak, and returns to the dimmed idle state once it ends', async ({ page }) => {
+test('the HINT button appears once playing, flashes unconnected dots white at their peak, and returns to the dimmed idle state once it ends', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
 
   await expect(page.locator('#hint-button')).toBeHidden();
+  await expect(page.locator('#hint-button')).toHaveText('HINT');
   await page.mouse.click(200, 700);
   await page.waitForTimeout(1000);
   await expect(page.locator('#hint-button')).toBeVisible();
@@ -592,26 +593,63 @@ test('the hint button appears once playing, flashes unconnected dots bright at t
   // First peak (brightness == 1) lands at DURATION_MS / (2 * CYCLES).
   await page.waitForTimeout(config.DURATION_MS / (2 * config.CYCLES));
   const atPeak = await page.evaluate(() => {
-    let alpha = null;
+    const fills = []; // { alpha, style } for every fill() call this drawDot makes
     const origFill = ctx.fill.bind(ctx);
-    ctx.fill = function (...args) { if (alpha === null) alpha = ctx.globalAlpha; return origFill(...args); };
+    ctx.fill = function (...args) { fills.push({ alpha: ctx.globalAlpha, style: ctx.fillStyle }); return origFill(...args); };
     drawDot(STATE.dots[0]);
     ctx.fill = origFill;
-    return alpha;
+    return fills;
   });
-  expect(atPeak).toBeGreaterThan(0.95); // flashed up to full brightness, not just a stronger idle pulse
+  expect(atPeak[0].alpha).toBeGreaterThan(0.95); // base color fill flashed up to full brightness
+  // A same-hue brightness pulse isn't enough -- the flash must actually turn
+  // the dot white, distinct from a dot's own ambient/connected pulse (which
+  // never changes color). drawDot always draws a small white "core" circle
+  // last regardless of hint state, so a plain "is any fill white" check
+  // can't tell a real flash apart from that -- the flash is specifically
+  // the *middle* fill call (base color, then the flash, then the core),
+  // only present at all while a flash is actually happening.
+  expect(atPeak).toHaveLength(3);
+  expect(atPeak[1].style).toBe('#ffffff');
+  expect(atPeak[1].alpha).toBeGreaterThan(0.95);
 
   await page.waitForTimeout(config.DURATION_MS); // let the whole pulse finish
   const afterDone = await page.evaluate(() => {
-    let alpha = null;
+    const fills = [];
     const origFill = ctx.fill.bind(ctx);
-    ctx.fill = function (...args) { if (alpha === null) alpha = ctx.globalAlpha; return origFill(...args); };
+    ctx.fill = function (...args) { fills.push({ alpha: ctx.globalAlpha, style: ctx.fillStyle }); return origFill(...args); };
     drawDot(STATE.dots[0]);
     ctx.fill = origFill;
-    return { alpha, cleared: STATE.hintPulse === null };
+    return { fills, cleared: STATE.hintPulse === null };
   });
-  expect(afterDone.alpha).toBeCloseTo(0.55, 2); // back to the normal dimmed idle state
+  expect(afterDone.fills[0].alpha).toBeCloseTo(0.55, 2); // back to the normal dimmed idle state
+  expect(afterDone.fills).toHaveLength(2); // just the base color + the permanent core dot -- no flash fill once the pulse is over
   expect(afterDone.cleared).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('the help button opens a how-to-play overlay on both the title screen and mid-game, closable via the X or the backdrop', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+
+  // Visible (and functional) before the player has even started a game.
+  await expect(page.locator('#help-button')).toBeVisible();
+  await page.click('#help-button');
+  await expect(page.locator('#help-overlay')).toHaveClass(/visible/);
+  await expect(page.locator('#help-list li').first()).not.toBeEmpty();
+  await page.click('#help-close');
+  await expect(page.locator('#help-overlay')).not.toHaveClass(/visible/);
+
+  // Still reachable once a wave is actually in progress.
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(500);
+  await expect(page.locator('#help-button')).toBeVisible();
+  await page.click('#help-button');
+  await expect(page.locator('#help-overlay')).toHaveClass(/visible/);
+
+  // Clicking the backdrop itself (not the panel) also closes it.
+  await page.click('#help-overlay', { position: { x: 5, y: 5 } });
+  await expect(page.locator('#help-overlay')).not.toHaveClass(/visible/);
   expect(errors).toEqual([]);
 });
 

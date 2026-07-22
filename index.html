@@ -19,7 +19,8 @@
     <div id="wave-display"></div>
     <div id="right-col">
       <div id="top-buttons-row">
-        <button id="hint-button" aria-label="Show unconnected dots">?</button>
+        <button id="help-button" aria-label="How to play">?</button>
+        <button id="hint-button" aria-label="Flash unconnected dots">HINT</button>
         <button id="pause-button" aria-label="Pause">&#10074;&#10074;</button>
       </div>
       <div id="draw-score-display"></div>
@@ -38,6 +39,21 @@
       <button class="pause-menu-item" id="pause-exit">Exit Game</button>
       <div id="pause-fact"></div>
       <div id="pause-save-toast"></div>
+    </div>
+  </div>
+  <div id="help-overlay">
+    <div id="help-panel">
+      <button id="help-close" aria-label="Close">&times;</button>
+      <div id="help-title">HOW TO PLAY</div>
+      <ul id="help-list">
+        <li>Tap and hold a colored dot, then drag to its matching pair (or any dot sharing its color) to draw a connecting line.</li>
+        <li>Connect every dot to finish the wave and hear the full song play.</li>
+        <li>Longer, more winding lines score more than short direct ones — the scenic route pays better.</li>
+        <li>A line can't cross a barrier (dashed) or another line. Some barriers rotate, and can snap a connection they sweep through even after it's finished.</li>
+        <li>Pinch or scroll to zoom, and drag empty space to pan around once you're zoomed in.</li>
+        <li>Tap HINT if you're not sure what's still unconnected — every unconnected dot flashes white.</li>
+        <li>Tap the pause button any time to save your progress or adjust settings.</li>
+      </ul>
     </div>
   </div>
   <div id="achievement-toast">
