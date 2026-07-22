@@ -3272,23 +3272,35 @@ function wouldStrandAnyDot(newSegments, dotA, dotB) {
   const barrierSegs = STATE.barriers.flatMap(segmentsOfBarrier);
   const blocked = buildBlockedGrid([...existingConnectionSegments(newSegments), ...barrierSegs], size);
 
+  // Simulate the pending union before checking anyone's reachability. A
+  // 3+-dot group (see GROUP_CONFIG) can already have some dots unioned
+  // together through an earlier connection — e.g. B and C already linked,
+  // with the player now connecting A to B. Without this, dot C's
+  // groupmate filter still lists A as "not yet connected" (true right
+  // now, before this move), so the loop below went on to demand that C
+  // *itself* have a real physical route straight to A — even though C
+  // plainly reaches A transitively through B the instant A-B connects,
+  // exactly like markGroupIfFullySolved already understands. Any barrier
+  // that merely blocked C's own direct line to A (irrelevant to the move
+  // actually being made) was enough to reject a perfectly valid
+  // connection, with nothing about it looking wrong to the player. Undone
+  // afterward either way — this is a hypothetical check, not the real
+  // move; completeConnection() does the real union only if this is
+  // accepted.
+  const savedUnion = { ...STATE.dotUnion };
+  ufUnion(dotA.id, dotB.id);
+
+  let stranded = false;
   for (const dot of STATE.dots) {
     if (dot.connected) continue;
     const groupmates = STATE.dots.filter(d => d.pairId === dot.pairId && d.id !== dot.id && !ufConnected(d.id, dot.id));
     if (groupmates.length === 0) continue;
-    const hasRoute = groupmates.some(g => {
-      // The pair actually being connected right now is trivially reachable
-      // via the very line about to be drawn between them — that new
-      // segment is already baked into `blocked`, so testing it against
-      // the grid would treat their own about-to-exist connection as a
-      // wall between them.
-      const isActivePair = (dot.id === dotA.id && g.id === dotB.id) || (dot.id === dotB.id && g.id === dotA.id);
-      if (isActivePair) return true;
-      return isReachableAround(dot.x, dot.y, g.x, g.y, blocked, size, cols, rows);
-    });
-    if (!hasRoute) return true;
+    const hasRoute = groupmates.some(g => isReachableAround(dot.x, dot.y, g.x, g.y, blocked, size, cols, rows));
+    if (!hasRoute) { stranded = true; break; }
   }
-  return false;
+
+  STATE.dotUnion = savedUnion;
+  return stranded;
 }
 
 function checkWaveComplete() {

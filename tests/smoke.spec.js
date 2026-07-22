@@ -1276,3 +1276,58 @@ test('the "relax and enjoy" tutorial message is always the last one shown', asyn
   expect(lastText).toBe('Connect the dots, make music. Relax and Enjoy!');
   expect(errors).toEqual([]);
 });
+
+test('in a 3+-dot color group, connecting the last unlinked dot to an already-linked groupmate is never falsely rejected as stranding a bystander', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // A 3-dot group: A is alone, B and C are already connected to each
+    // other via a real settled line. The player is now connecting A to B.
+    // C is sealed in a barrier box with no direct route to A at all --
+    // that must not matter, since C reaches A transitively through B the
+    // instant A-B connects (exactly like markGroupIfFullySolved already
+    // understands). wouldStrandAnyDot used to check the *current*
+    // (pre-move) union-find state, so it still demanded C have its own
+    // direct physical route to A, rejecting a perfectly valid connection
+    // for a reason invisible to the player -- nothing about A-B's own
+    // path was ever blocked.
+    const A = { id: 0, pairId: 0, colorIndex: 0, x: 50, y: 400, connected: false, pulsePhase: 0 };
+    const B = { id: 1, pairId: 0, colorIndex: 0, x: 350, y: 400, connected: false, pulsePhase: 0 };
+    const C = { id: 2, pairId: 0, colorIndex: 0, x: 330, y: 700, connected: false, pulsePhase: 0 };
+    STATE.dots = [A, B, C];
+    STATE.world = { w: 400, h: 800 };
+    STATE.dotUnion = { 0: 0, 1: 1, 2: 2 };
+    STATE.connections = [{ pairId: 0, segments: [{ x1: B.x, y1: B.y, x2: C.x, y2: C.y }] }];
+    ufUnion(B.id, C.id);
+    STATE.barriers = [
+      { x1: 280, y1: 650, x2: 380, y2: 650 },
+      { x1: 280, y1: 650, x2: 280, y2: 750 },
+      { x1: 280, y1: 750, x2: 380, y2: 750 },
+      { x1: 380, y1: 650, x2: 380, y2: 750 },
+    ];
+
+    const unionBefore = JSON.stringify(STATE.dotUnion);
+    const falsePositive = wouldStrandAnyDot([{ x1: A.x, y1: A.y, x2: B.x, y2: B.y }], A, B);
+    const unionUnchangedAfter = JSON.stringify(STATE.dotUnion) === unionBefore;
+
+    // A genuinely unrelated pair, D/E, with D sealed in that same box and
+    // no connection to E at all -- must still correctly reject (the
+    // original wave-deadlock guard from the maze-barrier work still has
+    // to work; this fix must not weaken it into never rejecting anything).
+    const D = { id: 3, pairId: 1, colorIndex: 1, x: 330, y: 700, connected: false, pulsePhase: 0 };
+    const E = { id: 4, pairId: 1, colorIndex: 1, x: 50, y: 400, connected: false, pulsePhase: 0 };
+    STATE.dots = [A, B, C, D, E];
+    STATE.dotUnion[3] = 3;
+    STATE.dotUnion[4] = 4;
+    const stillCatchesRealStranding = wouldStrandAnyDot([{ x1: A.x, y1: A.y, x2: B.x, y2: B.y }], A, B);
+
+    return { falsePositive, unionUnchangedAfter, stillCatchesRealStranding };
+  });
+
+  expect(result.falsePositive).toBe(false);
+  expect(result.unionUnchangedAfter).toBe(true); // the hypothetical union must not leak into real game state
+  expect(result.stillCatchesRealStranding).toBe(true);
+  expect(errors).toEqual([]);
+});
