@@ -1331,3 +1331,50 @@ test('in a 3+-dot color group, connecting the last unlinked dot to an already-li
   expect(result.stillCatchesRealStranding).toBe(true);
   expect(errors).toEqual([]);
 });
+
+test('a fact box never appears on any wave that shows a tutorial hint, and keeps a real buffer from other barriers once it can appear', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    let tutorialWaveTrials = 0, tutorialWaveFactBoxes = 0;
+    for (let trial = 0; trial < 40; trial++) {
+      for (let wave = 1; wave <= TUTORIAL_MESSAGES.length; wave++) {
+        const dots = generateDots(wave);
+        ensureAllDotsInWorldBounds(dots);
+        const barriers = generateBarriersSafely(wave, dots);
+        tutorialWaveTrials++;
+        if (barriers.some(b => b.type === 'factBox')) tutorialWaveFactBoxes++;
+      }
+    }
+
+    // Past the tutorial waves, a fact box should still show up sometimes
+    // (confirms the feature itself isn't broken/always-skipped), and every
+    // one found must keep real clearance from every other barrier -- not
+    // just avoid literal overlap.
+    let postTutorialFactBoxes = 0, barrierTooClose = 0;
+    const clearance = Math.max(FACT_BOX_CONFIG.DOT_CLEARANCE_ABS_MIN, 24);
+    for (let trial = 0; trial < 60; trial++) {
+      const wave = 20 + (trial % 30);
+      const dots = generateDots(wave);
+      ensureAllDotsInWorldBounds(dots);
+      const barriers = generateBarriersSafely(wave, dots);
+      const factBox = barriers.find(b => b.type === 'factBox');
+      if (!factBox) continue;
+      postTutorialFactBoxes++;
+      const half = factBox.size / 2;
+      const rect = { x1: factBox.cx - half - clearance, x2: factBox.cx + half + clearance, y1: factBox.cy - half - clearance, y2: factBox.cy + half + clearance };
+      const others = barriers.filter(b => b !== factBox).flatMap(segmentsOfBarrier);
+      if (others.some(seg => segmentNearRect(seg.x1, seg.y1, seg.x2, seg.y2, rect))) barrierTooClose++;
+    }
+
+    return { tutorialWaveTrials, tutorialWaveFactBoxes, postTutorialFactBoxes, barrierTooClose };
+  });
+
+  expect(result.tutorialWaveTrials).toBeGreaterThan(0);
+  expect(result.tutorialWaveFactBoxes).toBe(0); // never once, across every tutorial wave
+  expect(result.postTutorialFactBoxes).toBeGreaterThan(0); // the feature still works once tutorials are done
+  expect(result.barrierTooClose).toBe(0);
+  expect(errors).toEqual([]);
+});

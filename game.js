@@ -3769,15 +3769,21 @@ function generateMazeBarrier(wave, dots) {
 // dot. Whether a wave gets one at all is decided once by the caller — this
 // only ever handles placement, so retrying generation doesn't silently
 // re-roll and inflate the "1 in 5" odds.
-function generateFactBoxBarrier(dots, reservedRect) {
+function generateFactBoxBarrier(dots, reservedRect, existingBarriers) {
   const worldMinDim = Math.min(STATE.world.w, STATE.world.h);
   const size = Math.max(FACT_BOX_CONFIG.SIZE_ABS_MIN, Math.min(FACT_BOX_CONFIG.SIZE_ABS_MAX, worldMinDim * FACT_BOX_CONFIG.SIZE_FRACTION));
   const dotClearance = Math.max(FACT_BOX_CONFIG.DOT_CLEARANCE_ABS_MIN, Math.min(FACT_BOX_CONFIG.DOT_CLEARANCE_ABS_MAX, worldMinDim * FACT_BOX_CONFIG.DOT_CLEARANCE_FRACTION));
+  // Same idea as the dot clearance above, but against every other barrier
+  // already placed this attempt (regular + maze) -- generateFactBoxBarrier
+  // used to only check dots, so a fact box could land close enough to a
+  // barrier's line to visually crowd it, or even brush against it.
+  const barrierClearance = dotClearance;
   const half = size / 2;
   const c = FACT_BOX_CONFIG.SCREEN_CLEARANCE;
   const spanX = STATE.world.w - 2 * (c + half);
   const spanY = STATE.world.h - 2 * (c + half);
   if (spanX <= 0 || spanY <= 0) return null; // world too small for the box to fit at all
+  const barrierSegs = (existingBarriers || []).flatMap(segmentsOfBarrier);
 
   for (let attempts = 0; attempts < 150; attempts++) {
     const cx = c + half + Math.random() * spanX;
@@ -3792,6 +3798,10 @@ function generateFactBoxBarrier(dots, reservedRect) {
     // stacked directly on top of each other.
     if (reservedRect && cx - half < reservedRect.x2 && cx + half > reservedRect.x1 &&
         cy - half < reservedRect.y2 && cy + half > reservedRect.y1) continue;
+    if (barrierSegs.some(seg => segmentNearRect(seg.x1, seg.y1, seg.x2, seg.y2, {
+      x1: cx - half - barrierClearance, x2: cx + half + barrierClearance,
+      y1: cy - half - barrierClearance, y2: cy + half + barrierClearance,
+    }))) continue;
 
     const x1 = cx - half, x2 = cx + half, y1 = cy - half, y2 = cy + half;
     const segments = [
@@ -3855,15 +3865,20 @@ function generateBarriersSafely(wave, dots) {
   // Rolled once per wave, not once per retry attempt below — otherwise a
   // wave that happens to need a few retries to find a solvable layout would
   // get several independent shots at the fact-box roll, quietly inflating
-  // the odds past the intended 1 in 5.
-  const wantFactBox = Math.random() < FACT_BOX_CONFIG.PROBABILITY;
-  const reservedRect = wave <= TUTORIAL_MESSAGES.length ? reservedHintWorldRect() : null;
+  // the odds past the intended 1 in 5. Never rolled at all on a
+  // tutorial-hint wave (1 through TUTORIAL_MESSAGES.length) -- a fact box
+  // is a whole other block of text, and no amount of careful positioning
+  // reliably keeps two independent pieces of text apart on every screen
+  // size, so the two features simply never coexist instead.
+  const isTutorialWave = wave <= TUTORIAL_MESSAGES.length;
+  const wantFactBox = !isTutorialWave && Math.random() < FACT_BOX_CONFIG.PROBABILITY;
+  const reservedRect = isTutorialWave ? reservedHintWorldRect() : null;
   for (let attempt = 0; attempt < 20; attempt++) {
     const barriers = generateBarriers(wave, dots);
     const maze = generateMazeBarrier(wave, dots);
     if (maze) barriers.push(maze);
     if (wantFactBox) {
-      const factBox = generateFactBoxBarrier(dots, reservedRect);
+      const factBox = generateFactBoxBarrier(dots, reservedRect, barriers);
       if (factBox) barriers.push(factBox);
     }
     // A regular (non-factBox) barrier is just a line between two dots, so
