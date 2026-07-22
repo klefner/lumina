@@ -106,8 +106,24 @@ const TUTORIAL_MESSAGES = [
   { text: 'Connect all the dots to hear the song.', dismissWhen: 'complete' },
   { text: 'The longer the lines you draw, the higher your score.', dismissWhen: 'connect' },
   { text: 'This game is about making relaxing music. Please enjoy.', dismissWhen: 'connect' },
-  { text: 'Pinch or scroll to zoom out and see more of the board, or zoom in for precision on close dots — drag empty space to pan around while zoomed in.', dismissWhen: 'connect' },
+  { text: 'Pinch or scroll to zoom, drag to pan.', dismissWhen: 'connect' },
 ];
+
+// Extra clearance kept around the tutorial hint's text box, on top of a
+// dot's or barrier's own exclusion radius (see dotOverlapCount /
+// barrierOverlapCount below) -- so a dot never sits close enough to
+// visually crowd the text, not just technically avoids overlapping it.
+const TUTORIAL_HINT_BUFFER = 20;
+
+// A generous, fixed screen-space box reserved dead-center of the screen
+// on any wave that's about to show a tutorial hint (see
+// reservedHintWorldRect) -- sized to comfortably fit the longest current
+// message at up to 3 lines, regardless of which message this particular
+// wave actually shows. Dots are placed to avoid this zone in the first
+// place (see findValidPosition), so layoutTutorialHint's own search
+// afterward is normally just confirming a spot that's already clear
+// rather than hunting for one on a crowded board.
+const TUTORIAL_HINT_RESERVE = { WIDTH_FRACTION: 0.85, MAX_WIDTH: 360, HEIGHT: 150 };
 
 // ============================================================
 // PAUSE MENU CONTENT — 50 facts about music, sound, color, and space, plus
@@ -2534,12 +2550,18 @@ function generateDots(wave) {
   STATE.world.baseW = STATE.world.w;
   STATE.world.baseH = STATE.world.h;
 
+  // Waves that are about to show a tutorial hint (see TUTORIAL_MESSAGES)
+  // keep dots out of the hint's reserved zone from the start, rather than
+  // relying solely on the hint text dodging whatever dots already landed
+  // there (layoutTutorialHint still does that too, as a second layer).
+  const reservedRect = wave <= TUTORIAL_MESSAGES.length ? reservedHintWorldRect() : null;
+
   const dots = [];
   let idCounter = 0;
   for (let pairId = 0; pairId < pairCount; pairId++) {
     const colorIndex = shuffledInstruments[pairId];
     for (let k = 0; k < groupSizes[pairId]; k++) {
-      const pos = findValidPosition(dots);
+      const pos = findValidPosition(dots, reservedRect);
       dots.push({
         id: idCounter++,
         x: pos.x,
@@ -2556,13 +2578,48 @@ function generateDots(wave) {
   return dots;
 }
 
-function findValidPosition(existingDots) {
+// The world-space box findValidPosition keeps dots out of on a tutorial
+// wave (see TUTORIAL_HINT_RESERVE) -- inverse-projects a fixed
+// screen-space box back to world coordinates using exactly the
+// scale/center startWave is about to apply for this wave (world center,
+// fit-to-screen scale), plus a dot's own radius so it's the dot's visual
+// edge that clears the zone, not just its center point.
+function reservedHintWorldRect() {
+  const w = STATE.world.w, h = STATE.world.h;
+  const scale = Math.min(1, canvas.width / w, canvas.height / h);
+  const screenW = Math.min(canvas.width * TUTORIAL_HINT_RESERVE.WIDTH_FRACTION, TUTORIAL_HINT_RESERVE.MAX_WIDTH);
+  const halfW = screenW / (2 * scale) + CONFIG.DOT_RADIUS_CONNECTED_MAX / scale;
+  const halfH = TUTORIAL_HINT_RESERVE.HEIGHT / (2 * scale) + CONFIG.DOT_RADIUS_CONNECTED_MAX / scale;
+  const cx = w / 2, cy = h / 2;
+  return { x1: cx - halfW, x2: cx + halfW, y1: cy - halfH, y2: cy + halfH };
+}
+
+function inReservedRect(x, y, reservedRect) {
+  return !!reservedRect && x >= reservedRect.x1 && x <= reservedRect.x2 && y >= reservedRect.y1 && y <= reservedRect.y2;
+}
+
+// Sampled-points check for whether a world-space line segment passes
+// through a world-space rect (both endpoints outside it doesn't mean the
+// segment itself doesn't cross through the middle) -- used by
+// generateBarriersSafely to keep a regular barrier's line from cutting
+// across the reserved hint zone.
+function segmentNearRect(x1, y1, x2, y2, rect, steps = 8) {
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    if (inReservedRect(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, rect)) return true;
+  }
+  return false;
+}
+
+function findValidPosition(existingDots, reservedRect) {
   const maxAttempts = 200;
   const w = STATE.world.w, h = STATE.world.h;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const x = CONFIG.EDGE_MARGIN + Math.random() * (w - CONFIG.EDGE_MARGIN * 2);
     const y = CONFIG.EDGE_MARGIN + Math.random() * (h - CONFIG.EDGE_MARGIN * 2);
+
+    if (inReservedRect(x, y, reservedRect)) continue;
 
     let valid = true;
     for (const dot of existingDots) {
@@ -2584,13 +2641,14 @@ function findValidPosition(existingDots) {
   // at all (the actual cause of dots landing directly on top of each
   // other on crowded intense-difficulty waves). This always returns the
   // best spacing actually available, never a silent overlap.
-  return bestCandidatePosition(existingDots);
+  return bestCandidatePosition(existingDots, reservedRect);
 }
 
-function bestCandidatePosition(existingDots) {
+function bestCandidatePosition(existingDots, reservedRect) {
   const w = STATE.world.w, h = STATE.world.h;
   const cols = 24, rows = 24;
   let best = { x: w / 2, y: h / 2 }, bestDist = -1;
+  let bestOutsideReserved = null, bestOutsideReservedDist = -1;
 
   for (let r = 0; r <= rows; r++) {
     for (let c = 0; c <= cols; c++) {
@@ -2601,10 +2659,19 @@ function bestCandidatePosition(existingDots) {
         nearest = Math.min(nearest, Math.hypot(dot.x - x, dot.y - y));
       }
       if (nearest > bestDist) { bestDist = nearest; best = { x, y }; }
+      if (!inReservedRect(x, y, reservedRect) && nearest > bestOutsideReservedDist) {
+        bestOutsideReservedDist = nearest;
+        bestOutsideReserved = { x, y };
+      }
     }
   }
 
-  return best;
+  // Prefer the best spot that also clears the reserved hint zone; only an
+  // entire world too small to have any such point at all (never expected
+  // in practice -- computeWorldSize sizes the board for the dot count
+  // well before the reserved zone is a meaningful fraction of it) falls
+  // back to ignoring the zone rather than refusing to place the dot.
+  return bestOutsideReserved || best;
 }
 
 // Defense in depth on top of findValidPosition/bestCandidatePosition
@@ -3644,7 +3711,7 @@ function generateMazeBarrier(wave, dots) {
 // dot. Whether a wave gets one at all is decided once by the caller — this
 // only ever handles placement, so retrying generation doesn't silently
 // re-roll and inflate the "1 in 5" odds.
-function generateFactBoxBarrier(dots) {
+function generateFactBoxBarrier(dots, reservedRect) {
   const worldMinDim = Math.min(STATE.world.w, STATE.world.h);
   const size = Math.max(FACT_BOX_CONFIG.SIZE_ABS_MIN, Math.min(FACT_BOX_CONFIG.SIZE_ABS_MAX, worldMinDim * FACT_BOX_CONFIG.SIZE_FRACTION));
   const dotClearance = Math.max(FACT_BOX_CONFIG.DOT_CLEARANCE_ABS_MIN, Math.min(FACT_BOX_CONFIG.DOT_CLEARANCE_ABS_MAX, worldMinDim * FACT_BOX_CONFIG.DOT_CLEARANCE_FRACTION));
@@ -3661,6 +3728,12 @@ function generateFactBoxBarrier(dots) {
       Math.max(Math.abs(d.x - cx), Math.abs(d.y - cy)) < half + dotClearance
     );
     if (tooClose) continue;
+    // A fact box is a whole other block of text -- on a tutorial-hint wave,
+    // it needs to stay clear of the same reserved zone the hint itself
+    // will want (see reservedHintWorldRect), or the two texts can land
+    // stacked directly on top of each other.
+    if (reservedRect && cx - half < reservedRect.x2 && cx + half > reservedRect.x1 &&
+        cy - half < reservedRect.y2 && cy + half > reservedRect.y1) continue;
 
     const x1 = cx - half, x2 = cx + half, y1 = cy - half, y2 = cy + half;
     const segments = [
@@ -3726,14 +3799,21 @@ function generateBarriersSafely(wave, dots) {
   // get several independent shots at the fact-box roll, quietly inflating
   // the odds past the intended 1 in 5.
   const wantFactBox = Math.random() < FACT_BOX_CONFIG.PROBABILITY;
+  const reservedRect = wave <= TUTORIAL_MESSAGES.length ? reservedHintWorldRect() : null;
   for (let attempt = 0; attempt < 20; attempt++) {
     const barriers = generateBarriers(wave, dots);
     const maze = generateMazeBarrier(wave, dots);
     if (maze) barriers.push(maze);
     if (wantFactBox) {
-      const factBox = generateFactBoxBarrier(dots);
+      const factBox = generateFactBoxBarrier(dots, reservedRect);
       if (factBox) barriers.push(factBox);
     }
+    // A regular (non-factBox) barrier is just a line between two dots, so
+    // it can still thread straight through the reserved hint zone even
+    // though both its endpoints are outside it -- reject the whole set and
+    // retry with a fresh random layout rather than let a barrier cut
+    // across the tutorial text.
+    if (reservedRect && barriers.some(b => segmentsOfBarrier(b).some(seg => segmentNearRect(seg.x1, seg.y1, seg.x2, seg.y2, reservedRect)))) continue;
     if (allDotsReachableGivenBarriers(dots, barriers)) return barriers;
   }
   return [];
@@ -4952,18 +5032,21 @@ function wrapIntoLines(words, lineCount) {
   return lines;
 }
 
-function rectOverlapsAnyDot(rect) {
-  // rect is a screen-space DOM box (the tutorial hint); dot.x/y are
-  // world-space, so each dot's on-screen position — and its exclusion
-  // radius, in screen px — has to go through the camera transform first.
-  const exclusion = (CONFIG.DOT_RADIUS_CONNECTED_MAX + 14) * (STATE.camera.scale || 1);
+// Returns how many dots crowd `rect` (a screen-space DOM box, the tutorial
+// hint), not just whether any do -- layoutTutorialHint uses the count to
+// pick the least-bad fallback when no fully clear layout exists. dot.x/y
+// are world-space, so each dot's on-screen position -- and its exclusion
+// radius, in screen px -- has to go through the camera transform first.
+function dotOverlapCount(rect) {
+  const exclusion = (CONFIG.DOT_RADIUS_CONNECTED_MAX + TUTORIAL_HINT_BUFFER) * (STATE.camera.scale || 1);
+  let count = 0;
   for (const dot of STATE.dots) {
     const p = worldToScreen(dot.x, dot.y);
     const cx = Math.max(rect.left, Math.min(p.x, rect.right));
     const cy = Math.max(rect.top, Math.min(p.y, rect.bottom));
-    if (Math.hypot(p.x - cx, p.y - cy) < exclusion) return true;
+    if (Math.hypot(p.x - cx, p.y - cy) < exclusion) count++;
   }
-  return false;
+  return count;
 }
 
 function pointNearRect(px, py, rect, exclusion) {
@@ -4979,15 +5062,18 @@ function pointNearRect(px, py, rect, exclusion) {
 // of each other. Fact boxes get a real rect-vs-rect check (both are
 // filled areas); every other barrier type gets the same sampled-points
 // exclusion as a dot, since they're thin lines rather than a filled box.
-function rectOverlapsAnyBarrier(rect) {
-  const exclusion = 14 * (STATE.camera.scale || 1);
+// Returns a count (of barriers that crowd the rect), same reasoning as
+// dotOverlapCount above.
+function barrierOverlapCount(rect) {
+  const exclusion = TUTORIAL_HINT_BUFFER * (STATE.camera.scale || 1);
+  let count = 0;
   for (const b of STATE.barriers) {
     if (b.type === 'factBox') {
       const half = b.size / 2;
       const topLeft = worldToScreen(b.cx - half, b.cy - half);
       const bottomRight = worldToScreen(b.cx + half, b.cy + half);
       if (rect.left < bottomRight.x + exclusion && rect.right > topLeft.x - exclusion &&
-          rect.top < bottomRight.y + exclusion && rect.bottom > topLeft.y - exclusion) return true;
+          rect.top < bottomRight.y + exclusion && rect.bottom > topLeft.y - exclusion) count++;
       continue;
     }
     for (const seg of segmentsOfBarrier(b)) {
@@ -4996,11 +5082,11 @@ function rectOverlapsAnyBarrier(rect) {
       const steps = 6;
       for (let i = 0; i <= steps; i++) {
         const t = i / steps;
-        if (pointNearRect(p1.x + (p2.x - p1.x) * t, p1.y + (p2.y - p1.y) * t, rect, exclusion)) return true;
+        if (pointNearRect(p1.x + (p2.x - p1.x) * t, p1.y + (p2.y - p1.y) * t, rect, exclusion)) { count++; break; }
       }
     }
   }
-  return false;
+  return count;
 }
 
 // A `position: fixed` element isn't clipped to the viewport just because
@@ -5011,6 +5097,24 @@ function rectOverlapsAnyBarrier(rect) {
 function rectOutOfBounds(rect) {
   const margin = 6;
   return rect.left < margin || rect.right > canvas.width - margin || rect.top < margin || rect.bottom > canvas.height - margin;
+}
+
+// The wave counter (top-left) and the pause/hint buttons + score (top-right)
+// are real on-screen UI, not part of the board -- widening the hint's
+// search radius (see layoutTutorialHint) made it reach up under them on a
+// crowded wave, which reads even worse than grazing a dot. Treated the
+// same as being off-screen: never an acceptable landing spot at all.
+function rectOverlapsHud(rect) {
+  const margin = 4;
+  for (const id of ['wave-display', 'right-col']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) continue; // not laid out (e.g. title screen)
+    if (rect.left < r.right + margin && rect.right > r.left - margin &&
+        rect.top < r.bottom + margin && rect.bottom > r.top - margin) return true;
+  }
+  return false;
 }
 
 // Candidate positions relative to dead-center, nearest first: center itself,
@@ -5036,8 +5140,12 @@ function layoutTutorialHint(text) {
   const lineOptions = [];
   for (let lineCount = 1; lineCount <= maxLines; lineCount++) lineOptions.push(wrapIntoLines(words, lineCount));
 
-  const maxRadius = Math.min(canvas.width, canvas.height) * 0.5;
-  const positions = tutorialPositionCandidates(maxRadius, 25);
+  // Reach all the way to a corner of the screen, not just a band around
+  // the center -- a tighter cap here was the actual reason busy waves kept
+  // falling through to the fallback below even though plenty of clear
+  // screen space existed outside that band.
+  const maxRadius = Math.hypot(canvas.width, canvas.height) / 2;
+  const positions = tutorialPositionCandidates(maxRadius, 30);
 
   // Prefer staying as close to centered as possible, and the font at full
   // size: at each candidate position (starting from dead-center), try
@@ -5046,7 +5154,8 @@ function layoutTutorialHint(text) {
   // combination fails at full size — an extremely dot-crowded small
   // screen — do we shrink the font a little and search again, since a
   // smaller box is easier to fit around a busy layout.
-  let fallback = null; // best layout that at least stays on-screen, even if it still grazes a dot
+  let fallback = null; // least-crowded layout found so far, even if not fully clear
+  let fallbackScore = Infinity;
   for (const fontSize of [30, 24, 20, 17]) {
     el.style.fontSize = fontSize + 'px';
     for (const { dx, dy } of positions) {
@@ -5055,15 +5164,18 @@ function layoutTutorialHint(text) {
       for (const lines of lineOptions) {
         el.innerHTML = lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
         const rect = el.getBoundingClientRect();
-        if (rectOutOfBounds(rect)) continue; // never render part of the hint off the edge of the phone
-        if (!rectOverlapsAnyDot(rect) && !rectOverlapsAnyBarrier(rect)) return; // ideal: on-screen AND clear of every dot/barrier
-        if (!fallback) fallback = { fontSize, dx, dy, lines };
+        if (rectOutOfBounds(rect) || rectOverlapsHud(rect)) continue; // never off-screen or under the wave/score/buttons HUD
+        const score = dotOverlapCount(rect) + barrierOverlapCount(rect);
+        if (score === 0) return; // ideal: on-screen AND clear of every dot/barrier
+        if (score < fallbackScore) { fallback = { fontSize, dx, dy, lines }; fallbackScore = score; }
       }
     }
   }
   // Exhausted every split, position, and font size without a fully clear
-  // spot (pathologically cramped wave) — reapply the best on-screen
-  // layout found; worst case it grazes a dot, but it's never cut off.
+  // spot (pathologically cramped wave) — reapply the least-crowded layout
+  // found across the whole search, not just the first one tried; worst
+  // case it still grazes a dot, but it's never cut off, and it's the best
+  // available rather than an arbitrary one.
   if (fallback) {
     el.style.fontSize = fallback.fontSize + 'px';
     el.style.left = `calc(50% + ${fallback.dx}px)`;
