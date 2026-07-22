@@ -1555,3 +1555,90 @@ test('manual pinch/scroll zoom on a wide wave still respects the same absolute p
   expect(result.maxZoomIn).toBeCloseTo(3, 5); // CAMERA_CONFIG.MAX_USER_ZOOM_IN
   expect(errors).toEqual([]);
 });
+
+test('dragging pans the camera at a wide wave\'s resting zoom even though userZoom itself is still 1', async ({ page }) => {
+  // Flagged by Codex review on #20: a wide wave's comfortable zoom comes
+  // entirely from baseZoom (userZoom resets to 1 every wave, same as
+  // always) -- panning was gated on userZoom > 1 alone, so a player told
+  // by the new tutorial hint to "drag to pan" found dragging did nothing
+  // until they manually zoomed in further still.
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const setup = () => page.evaluate(() => {
+    hideMessage();
+    STATE.phase = 'PLAYING';
+    STATE.paused = false;
+    STATE.isDrawing = false;
+    STATE.world = { w: 2000, h: 2000 };
+    STATE.dots = [{ id: 0, pairId: 0, colorIndex: 0, x: 1900, y: 1900, connected: false, pulsePhase: 0 }];
+    STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
+    STATE.camera.centerX = 1000; STATE.camera.centerY = 1000;
+    STATE.camera.userZoom = 1; // never manually touched, exactly as startWave leaves it
+    STATE.camera.baseZoom = 1.5; // simulates having settled at a wide wave's comfortable zoom
+    STATE.camera.scale = STATE.camera.autoScale * STATE.camera.baseZoom * STATE.camera.userZoom;
+    clampCameraCenter();
+  });
+  await setup();
+
+  await page.mouse.move(200, 400);
+  await page.mouse.down();
+  await page.mouse.move(260, 460, { steps: 5 });
+  await page.mouse.up();
+  const result = await page.evaluate(() => ({ centerX: STATE.camera.centerX, centerY: STATE.camera.centerY }));
+
+  expect(result.centerX).not.toBe(1000); // actually panned, not a no-op
+  expect(result.centerY).not.toBe(1000);
+  expect(errors).toEqual([]);
+});
+
+test('an orientation change during a wide wave\'s intro hold keeps the camera at the full-world view until the hold releases', async ({ page }) => {
+  // Flagged by Codex review on #20: resizeCanvas unconditionally set
+  // targetScale to the composed comfortable zoom, even mid-hold -- a
+  // resize/rotation during the onboarding beat let the frame loop start
+  // easing in early, skipping the rest of the promised zoomed-out pause.
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.setViewportSize({ width: 400, height: 800 });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+
+  await page.evaluate(() => startWave(WIDE_WORLD_START_WAVE));
+  const beforeResize = await page.evaluate(() => ({
+    holding: STATE.camera.wideIntroHoldUntil > performance.now(),
+    targetScale: STATE.camera.targetScale,
+    autoScale: STATE.camera.autoScale,
+  }));
+  expect(beforeResize.holding).toBe(true);
+  expect(beforeResize.targetScale).toBeCloseTo(beforeResize.autoScale, 5);
+
+  // Still well inside the 900ms hold window -- trigger a real resize.
+  await page.setViewportSize({ width: 800, height: 400 });
+  await page.waitForTimeout(50);
+  const afterResize = await page.evaluate(() => ({
+    holding: STATE.camera.wideIntroHoldUntil > performance.now(),
+    targetScale: STATE.camera.targetScale,
+    autoScale: STATE.camera.autoScale, // re-derived against the new viewport by resizeCanvas
+    baseZoom: STATE.camera.baseZoom,
+  }));
+  expect(afterResize.holding).toBe(true); // hold survived the resize
+  // Target should track the (possibly now-different) full-world fit, not
+  // the composed comfortable zoom the hold is supposed to be delaying.
+  expect(afterResize.targetScale).toBeCloseTo(afterResize.autoScale, 5);
+  expect(afterResize.targetScale).not.toBeCloseTo(afterResize.autoScale * afterResize.baseZoom, 2);
+
+  // Once the hold's real deadline passes, it should still release and
+  // ease toward the comfortable zoom exactly as it would have unresized.
+  await page.waitForTimeout(1800);
+  const afterHold = await page.evaluate(() => ({
+    holding: STATE.camera.wideIntroHoldUntil > performance.now(),
+    scale: STATE.camera.scale,
+    autoScale: STATE.camera.autoScale,
+  }));
+  expect(afterHold.holding).toBe(false);
+  expect(afterHold.scale).toBeGreaterThan(afterHold.autoScale);
+  expect(errors).toEqual([]);
+});

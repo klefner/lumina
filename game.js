@@ -1003,8 +1003,9 @@ const STATE = {
     wideIntroHoldUntil: 0,    // performance.now() timestamp a wide wave's zoom-out hold releases at
     centerX: 0, centerY: 0,   // world-space point the camera looks at — always the world's own
                                // center whenever the viewport is at least as big as the world
-                               // (i.e. userZoom <= 1, the whole game before panning existed),
-                               // only free to move once zoomed in past that (see clampCameraCenter)
+                               // (i.e. baseZoom * userZoom <= 1, the whole game before panning
+                               // existed), only free to move once zoomed in past that (see
+                               // clampCameraCenter)
   },
   pinch: null,          // { startDist, startZoom } while a two-finger touch is in progress
   panDrag: null,        // { startScreenX, startScreenY, startCenterX, startCenterY } while panning
@@ -2151,7 +2152,15 @@ function resizeCanvas() {
       const comfortScale = Math.min(1, Math.min(canvas.width / STATE.world.comfortW, canvas.height / STATE.world.comfortH));
       STATE.camera.baseZoom = comfortScale / STATE.camera.autoScale;
     }
-    STATE.camera.targetScale = STATE.camera.autoScale * (STATE.camera.baseZoom || 1) * STATE.camera.userZoom;
+    // A wide wave's intro hold (see startWave/CAMERA_CONFIG.WIDE_INTRO_HOLD_MS)
+    // pins targetScale at the full-world fit until wideIntroHoldUntil
+    // passes -- a resize mid-hold must keep pinning it there too (at the
+    // now-current autoScale), or the composed comfortable-zoom target
+    // below would let the frame loop start lerping in early, skipping the
+    // rest of the promised zoomed-out beat.
+    STATE.camera.targetScale = STATE.camera.wideIntroHoldUntil
+      ? STATE.camera.autoScale
+      : STATE.camera.autoScale * (STATE.camera.baseZoom || 1) * STATE.camera.userZoom;
     clampCameraCenter(); // the viewport's own size just changed along with the canvas
   }
 }
@@ -2952,9 +2961,14 @@ function onInputStart(e) {
   if (!dot) {
     // Dragging empty board space was always a no-op before panning
     // existed, and stays one at the guaranteed-fit view or further out —
-    // only once zoomed in past baseline (userZoom > 1) is there actually
-    // anywhere left to pan to.
-    if (STATE.camera.userZoom > 1) {
+    // only once the viewport is actually smaller than the world is there
+    // anywhere left to pan to. That's the *composed* zoom relative to
+    // autoScale (baseZoom * userZoom), not userZoom alone -- on a wide
+    // wave (see WIDE_WORLD_START_WAVE), baseZoom alone can already put the
+    // resting "comfortable" zoom past 1 even while userZoom is still its
+    // reset default of 1, and the player needs to be able to pan right
+    // away there, not only after zooming in further still.
+    if (STATE.camera.baseZoom * STATE.camera.userZoom > 1) {
       const screenPos = getEventScreenPos(e);
       STATE.panDrag = {
         startScreenX: screenPos.x, startScreenY: screenPos.y,
