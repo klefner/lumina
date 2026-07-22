@@ -24,7 +24,9 @@ const CONFIG = {
   // it had never happened, or had silently broken, for the rest of the
   // wave. Floors the fade instead of letting it reach zero, so a faint
   // permanent thread always marks a still-live connection.
-  LINE_FADE_FLOOR: 0.15,
+  // Raised from 0.15 after player feedback that the settled line was
+  // still too dim/hard to see once faded.
+  LINE_FADE_FLOOR: 0.4,
   // Wall-clock time (not frames-per-point) for a line to fully settle at
   // the floor, independent of how many points it has. A per-point
   // sequential cascade (each point only starting once its predecessor
