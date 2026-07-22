@@ -31,9 +31,10 @@ const CONFIG = {
   // itself no longer visibly dims at all (see the fade loop in update()) --
   // the settled state is now just as bright as the moment it was drawn.
   LINE_FADE_FLOOR: 1,
-  // Settled lines render this many times CONFIG.LINE_WIDTH -- also raised
-  // per player feedback, on top of the brightness change above.
-  LINE_SETTLED_WIDTH_MULTIPLIER: 10,
+  // Settled lines render this many times CONFIG.LINE_WIDTH. Went to 10x
+  // per player feedback on top of the brightness change above, then
+  // dialed back to 3x (30% of that 10x) once they'd actually seen it.
+  LINE_SETTLED_WIDTH_MULTIPLIER: 3,
   // Wall-clock time (not frames-per-point) for a line to fully settle at
   // the floor, independent of how many points it has. A per-point
   // sequential cascade (each point only starting once its predecessor
