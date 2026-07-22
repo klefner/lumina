@@ -999,3 +999,51 @@ test('a stale tab picks up a new deploy on tab resume, not just initial load, bu
 
   expect(errors).toEqual([]);
 });
+
+test('a connection line renders at the exact same width while being drawn, while fading, and once settled', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const widths = await page.evaluate(() => {
+    STATE.phase = 'PLAYING';
+
+    // ctx.restore() reverts lineWidth once each draw function returns, so
+    // capture it at the moment of the actual stroke() call instead of
+    // reading ctx.lineWidth afterward.
+    const seen = [];
+    const realStroke = CanvasRenderingContext2D.prototype.stroke;
+    CanvasRenderingContext2D.prototype.stroke = function (...args) {
+      seen.push(this.lineWidth);
+      return realStroke.apply(this, args);
+    };
+
+    STATE.isDrawing = true;
+    STATE.activeDot = { colorIndex: 0 };
+    STATE.currentPath = [{ x: 50, y: 50 }, { x: 150, y: 150 }];
+    drawActiveLine();
+    const drawing = seen[seen.length - 1];
+
+    const fadingLine = {
+      colorIndex: 0, settled: false,
+      points: [{ x: 50, y: 50, alpha: 1 }, { x: 150, y: 150, alpha: 1 }],
+    };
+    drawFadingLine(fadingLine);
+    const fading = seen[seen.length - 1];
+
+    const settledLine = {
+      colorIndex: 0, settled: true,
+      points: [{ x: 50, y: 50, alpha: 1 }, { x: 150, y: 150, alpha: 1 }],
+    };
+    drawFadingLine(settledLine);
+    const settled = seen[seen.length - 1];
+
+    CanvasRenderingContext2D.prototype.stroke = realStroke;
+    return { drawing, fading, settled, configWidth: CONFIG.LINE_WIDTH };
+  });
+
+  expect(widths.drawing).toBe(widths.configWidth);
+  expect(widths.fading).toBe(widths.configWidth);
+  expect(widths.settled).toBe(widths.configWidth);
+  expect(errors).toEqual([]);
+});

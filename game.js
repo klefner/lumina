@@ -14,7 +14,14 @@ const CONFIG = {
   DOT_PULSE_SPEED: 0.04,     // Phase increment per frame
 
   // Lines
-  LINE_WIDTH: 3,
+  // The single width used everywhere a connection line is drawn -- while
+  // actively being drawn, while fading after a connection, and once
+  // settled. Used to differ across those three states (thinner while
+  // drawing, then a step change to a multiplier of this once settled),
+  // which read as an actual bug: a line visibly jumping to a different
+  // thickness right after being drawn. Now every state renders at exactly
+  // this width, with no jump.
+  LINE_WIDTH: 9,
   LINE_GLOW_BLUR: 18,
   // The hand-drawn line was fading all the way to invisible, and nothing
   // replaces it: drawTravelingLights (the intended ongoing indicator)
@@ -31,10 +38,6 @@ const CONFIG = {
   // itself no longer visibly dims at all (see the fade loop in update()) --
   // the settled state is now just as bright as the moment it was drawn.
   LINE_FADE_FLOOR: 1,
-  // Settled lines render this many times CONFIG.LINE_WIDTH. Went to 10x
-  // per player feedback on top of the brightness change above, then
-  // dialed back to 3x (30% of that 10x) once they'd actually seen it.
-  LINE_SETTLED_WIDTH_MULTIPLIER: 3,
   // Wall-clock time (not frames-per-point) for a line to fully settle at
   // the floor, independent of how many points it has. A per-point
   // sequential cascade (each point only starting once its predecessor
@@ -2340,14 +2343,16 @@ function drawFadingLine(line) {
   const pulseBoost = beatPulse !== null ? 0.7 + 0.6 * beatPulse : 1;
 
   ctx.save();
-  ctx.lineWidth = CONFIG.LINE_WIDTH * (beatPulse !== null ? 0.85 + 0.3 * beatPulse : 1);
+  // Same width in every branch below (and the same width drawActiveLine
+  // uses while the line is still being drawn) -- see the LINE_WIDTH
+  // comment. Only the glow pulses with the beat, never the width.
+  ctx.lineWidth = CONFIG.LINE_WIDTH;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.shadowBlur = CONFIG.LINE_GLOW_BLUR * pulseBoost;
   ctx.shadowColor = instrument.hex;
 
   if (line.settled) {
-    ctx.lineWidth = CONFIG.LINE_WIDTH * CONFIG.LINE_SETTLED_WIDTH_MULTIPLIER;
     drawSettledPath(line.points, instrument.glow + CONFIG.LINE_FADE_FLOOR + ')');
   } else {
     drawSmoothedPath(line.points, {
@@ -2365,7 +2370,9 @@ function drawActiveLine() {
   const instrument = INSTRUMENTS[STATE.activeDot.colorIndex];
 
   ctx.save();
-  ctx.lineWidth = CONFIG.LINE_WIDTH + 1;
+  // Same CONFIG.LINE_WIDTH as drawFadingLine, so there's no visible jump
+  // in thickness the moment a connection is completed.
+  ctx.lineWidth = CONFIG.LINE_WIDTH;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.shadowBlur = CONFIG.LINE_GLOW_BLUR;
