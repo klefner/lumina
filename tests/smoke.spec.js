@@ -905,3 +905,37 @@ test('growing the world on rotation re-centers everything already placed instead
   expect(backToPortrait.dotY).toBeCloseTo(before.dotY, 5);
   expect(errors).toEqual([]);
 });
+
+test('the tutorial hint avoids a fact box sitting where it would otherwise land, not just dots', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.phase = 'PLAYING';
+    STATE.dots = [
+      { id: 0, pairId: 0, colorIndex: 0, x: 30, y: 30, connected: false, pulsePhase: 0 },
+      { id: 1, pairId: 0, colorIndex: 0, x: 370, y: 770, connected: false, pulsePhase: 0 },
+    ];
+    STATE.world = { w: 400, h: 800 };
+    STATE.camera.autoScale = 1; STATE.camera.userZoom = 1;
+    STATE.camera.targetScale = 1; STATE.camera.scale = 1; // no lerp drift
+    STATE.camera.centerX = 200; STATE.camera.centerY = 400;
+    // A fact box dead-center of the screen -- exactly where the hint
+    // would otherwise default to (see tutorialPositionCandidates).
+    const half = 75;
+    STATE.barriers = [{
+      type: 'factBox', cx: 200, cy: 400, size: half * 2, colorIndex: 0,
+      text: 'fake fact for this test', segments: [], x1: 0, y1: 0, x2: 0, y2: 0,
+    }];
+
+    layoutTutorialHint('Tap/Click hold to draw a line from one colored dot to its pair.');
+    const hint = document.getElementById('tutorial-hint').getBoundingClientRect();
+    const box = { left: 200 - half, top: 400 - half, right: 200 + half, bottom: 400 + half };
+    const overlaps = hint.left < box.right && hint.right > box.left && hint.top < box.bottom && hint.bottom > box.top;
+    return { overlaps };
+  });
+
+  expect(result.overlaps).toBe(false);
+  expect(errors).toEqual([]);
+});
