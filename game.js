@@ -4948,6 +4948,43 @@ function rectOverlapsAnyDot(rect) {
   return false;
 }
 
+function pointNearRect(px, py, rect, exclusion) {
+  const cx = Math.max(rect.left, Math.min(px, rect.right));
+  const cy = Math.max(rect.top, Math.min(py, rect.bottom));
+  return Math.hypot(px - cx, py - cy) < exclusion;
+}
+
+// Dots weren't the only thing the hint could land on top of — a barrier
+// (dashed lines, wave 3+) or a fact box (a whole other block of text, any
+// wave — see FACT_BOX_CONFIG) could sit right under it too, and unlike a
+// dot, a fact box overlapping the hint reads as two texts stacked on top
+// of each other. Fact boxes get a real rect-vs-rect check (both are
+// filled areas); every other barrier type gets the same sampled-points
+// exclusion as a dot, since they're thin lines rather than a filled box.
+function rectOverlapsAnyBarrier(rect) {
+  const exclusion = 14 * (STATE.camera.scale || 1);
+  for (const b of STATE.barriers) {
+    if (b.type === 'factBox') {
+      const half = b.size / 2;
+      const topLeft = worldToScreen(b.cx - half, b.cy - half);
+      const bottomRight = worldToScreen(b.cx + half, b.cy + half);
+      if (rect.left < bottomRight.x + exclusion && rect.right > topLeft.x - exclusion &&
+          rect.top < bottomRight.y + exclusion && rect.bottom > topLeft.y - exclusion) return true;
+      continue;
+    }
+    for (const seg of segmentsOfBarrier(b)) {
+      const p1 = worldToScreen(seg.x1, seg.y1);
+      const p2 = worldToScreen(seg.x2, seg.y2);
+      const steps = 6;
+      for (let i = 0; i <= steps; i++) {
+        const t = i / steps;
+        if (pointNearRect(p1.x + (p2.x - p1.x) * t, p1.y + (p2.y - p1.y) * t, rect, exclusion)) return true;
+      }
+    }
+  }
+  return false;
+}
+
 // A `position: fixed` element isn't clipped to the viewport just because
 // its container div is narrower than the screen — nudging it sideways to
 // dodge a dot (see tutorialPositionCandidates) can push part of it past
@@ -5001,7 +5038,7 @@ function layoutTutorialHint(text) {
         el.innerHTML = lines.map(l => l.replace(/&/g, '&amp;').replace(/</g, '&lt;')).join('<br>');
         const rect = el.getBoundingClientRect();
         if (rectOutOfBounds(rect)) continue; // never render part of the hint off the edge of the phone
-        if (!rectOverlapsAnyDot(rect)) return; // ideal: on-screen AND clear of every dot
+        if (!rectOverlapsAnyDot(rect) && !rectOverlapsAnyBarrier(rect)) return; // ideal: on-screen AND clear of every dot/barrier
         if (!fallback) fallback = { fontSize, dx, dy, lines };
       }
     }
