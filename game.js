@@ -20,8 +20,10 @@ const CONFIG = {
   // drawing, then a step change to a multiplier of this once settled),
   // which read as an actual bug: a line visibly jumping to a different
   // thickness right after being drawn. Now every state renders at exactly
-  // this width, with no jump.
-  LINE_WIDTH: 9,
+  // this width, with no jump -- set to match the thinner "while drawing"
+  // width that existed before the unification, per player preference,
+  // rather than the thicker settled width.
+  LINE_WIDTH: 4,
   LINE_GLOW_BLUR: 18,
   // The hand-drawn line was fading all the way to invisible, and nothing
   // replaces it: drawTravelingLights (the intended ongoing indicator)
