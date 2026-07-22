@@ -1378,3 +1378,39 @@ test('a fact box never appears on any wave that shows a tutorial hint, and keeps
   expect(result.barrierTooClose).toBe(0);
   expect(errors).toEqual([]);
 });
+
+test('every real instrument sample still decodes even when its fetch is much slower than the old fixed timeout', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+
+  // Delay every sound file response well past the old code's fixed
+  // 2-second-per-note give-up budget (20 attempts x 100ms) -- decodeAllSamples
+  // used to poll a shared object on that timer and silently skip any note
+  // whose fetch hadn't landed in time. Awaiting the real fetch promise
+  // directly (no arbitrary timeout) should make this irrelevant now.
+  await page.route('**/sounds/**/*.mp3', async (route) => {
+    await new Promise(r => setTimeout(r, 3000));
+    route.continue();
+  });
+
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(6000); // real decode time under the simulated slow network
+
+  const counts = await page.evaluate(() => {
+    const s = window.__lumina.getState();
+    const out = {};
+    for (const instrument in s.sampleBuffers) out[instrument] = Object.keys(s.sampleBuffers[instrument]).length;
+    return out;
+  });
+
+  // Every real (fetched) instrument's full manifest should be present --
+  // none silently abandoned because the network happened to be slow.
+  expect(counts.piano).toBe(8);
+  expect(counts.flute).toBe(35);
+  expect(counts.cello).toBe(21);
+  expect(counts.marimba).toBe(37);
+  expect(counts.vibraphone).toBe(36);
+  expect(errors).toEqual([]);
+});

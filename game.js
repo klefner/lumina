@@ -1045,7 +1045,23 @@ function initAudio() {
   // played. Resume + play a silent buffer synchronously on every gesture as
   // a robust unlock — cheap and idempotent if already unlocked.
   if (STATE.audioCtx.state === 'suspended') {
-    STATE.audioCtx.resume();
+    const resumingCtx = STATE.audioCtx;
+    STATE.audioCtx.resume().then(() => {
+      // A phone call, Siri, another app grabbing the audio session, or the
+      // screen locking can leave an iOS Safari AudioContext permanently
+      // unable to resume no matter how many times resume() is called on
+      // it again — every future gesture in this same session just keeps
+      // retrying the same wedged instance. If it's still not running once
+      // this resume() actually settles, discard it so the *next* gesture
+      // builds a completely fresh AudioContext (and redecodes into it)
+      // instead of retrying forever — self-healing without requiring the
+      // player to know a full page reload is what actually fixes it.
+      if (STATE.audioCtx === resumingCtx && STATE.audioCtx.state !== 'running') {
+        STATE.audioCtx = null;
+      }
+    }).catch(() => {
+      if (STATE.audioCtx === resumingCtx) STATE.audioCtx = null;
+    });
   }
   const unlockBuffer = STATE.audioCtx.createBuffer(1, 1, 22050);
   const unlockSource = STATE.audioCtx.createBufferSource();
@@ -1114,50 +1130,69 @@ function initAudioGraph() {
 // otherwise fully playable (nothing else touches audio) with total
 // silence and no visible error, since decode failures here are caught
 // and skipped per-note by design. MP3 decodes natively everywhere.
-let sampleRawBytes = {};
+// Every real (non-synthesized) note's actual fetch Promise, keyed the same
+// way as SAMPLE_MANIFEST — not the eventual bytes. decodeAllSamples used to
+// poll a shared `sampleRawBytes` object on a 100ms timer, giving up on any
+// note whose fetch hadn't landed within a fixed 2-second budget (20
+// attempts). With ~140 real samples fetched in parallel, that budget was
+// only ever a guess at how long a real network would take — comfortably
+// enough on fast wifi, but on a slower or congested mobile connection,
+// some or all of those fetches could still be in flight past 2 seconds,
+// and every one of them still checked at that point was silently skipped
+// (by design, so one bad sample can't break the rest) — which reads to a
+// player as intermittent, network-dependent total or partial silence:
+// exactly the "reload sometimes brings sound back, sometimes doesn't"
+// symptom this was reported as. Awaiting each note's real fetch promise
+// directly removes the guess entirely: decoding simply takes as long as
+// the network actually takes, however long that is, with no arbitrary
+// cutoff.
+let samplePromises = {};
 
 function preloadSampleBytes() {
   for (const instrument in SAMPLE_MANIFEST) {
     if (SYNTHESIZED_INSTRUMENTS.has(instrument)) continue; // nothing to fetch — generated at decode time
-    sampleRawBytes[instrument] = {};
+    samplePromises[instrument] = {};
     SAMPLE_MANIFEST[instrument].forEach(note => {
-      fetch(`sounds/${instrument}/${instrument}_${note}.mp3`)
+      samplePromises[instrument][note] = fetch(`sounds/${instrument}/${instrument}_${note}.mp3`)
         .then(r => r.arrayBuffer())
-        .then(buf => { sampleRawBytes[instrument][note] = buf; })
-        .catch(() => { /* sample missing — playSample falls back gracefully */ });
+        .catch(() => null); // sample missing/failed — playSample falls back gracefully
     });
   }
 }
 
+// Every note (synthesized or fetched) decodes/synthesizes independently
+// and in parallel, rather than one at a time in sequence — the previous
+// sequential loop meant a slow note early in the list (e.g. piano, first
+// in SAMPLE_MANIFEST) delayed every instrument after it even once its own
+// fetch had actually landed, compounding the same real-world network
+// variance the polling loop above was already vulnerable to.
 async function decodeAllSamples() {
+  const jobs = [];
   for (const instrument in SAMPLE_MANIFEST) {
     STATE.sampleBuffers[instrument] = {};
 
     if (SYNTHESIZED_INSTRUMENTS.has(instrument)) {
       for (const key of SAMPLE_MANIFEST[instrument]) {
-        try {
-          STATE.sampleBuffers[instrument][key] = await synthesizeInstrumentSample(instrument, key);
-        } catch (e) { /* skip — playSample/playDrumHit fall back gracefully */ }
+        jobs.push((async () => {
+          try {
+            STATE.sampleBuffers[instrument][key] = await synthesizeInstrumentSample(instrument, key);
+          } catch (e) { /* skip — playSample/playDrumHit fall back gracefully */ }
+        })());
       }
       continue;
     }
 
     for (const note of SAMPLE_MANIFEST[instrument]) {
-      const wait = (ms) => new Promise(r => setTimeout(r, ms));
-      let raw = sampleRawBytes[instrument] && sampleRawBytes[instrument][note];
-      let attempts = 0;
-      while (!raw && attempts < 20) { // fetch may still be in flight — wait briefly
-        await wait(100);
-        raw = sampleRawBytes[instrument] && sampleRawBytes[instrument][note];
-        attempts++;
-      }
-      if (!raw) continue;
-      try {
-        const audioBuffer = await STATE.audioCtx.decodeAudioData(raw.slice(0));
-        STATE.sampleBuffers[instrument][note] = audioBuffer;
-      } catch (e) { /* skip — playSample falls back gracefully */ }
+      jobs.push((async () => {
+        const raw = await samplePromises[instrument][note];
+        if (!raw) return;
+        try {
+          STATE.sampleBuffers[instrument][note] = await STATE.audioCtx.decodeAudioData(raw.slice(0));
+        } catch (e) { /* skip — playSample falls back gracefully */ }
+      })());
     }
   }
+  await Promise.all(jobs);
 }
 
 // --- Synthesized instruments ---------------------------------------------
