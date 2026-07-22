@@ -24,9 +24,16 @@ const CONFIG = {
   // it had never happened, or had silently broken, for the rest of the
   // wave. Floors the fade instead of letting it reach zero, so a faint
   // permanent thread always marks a still-live connection.
-  // Raised from 0.15 after player feedback that the settled line was
-  // still too dim/hard to see once faded.
-  LINE_FADE_FLOOR: 0.4,
+  // Raised from 0.15 to 0.4, then to 1 (fully opaque -- alpha's own
+  // ceiling, since a literal 10x of 0.4 is 4, past what's possible) after
+  // continued player feedback that the settled line was still too dim to
+  // see once faded. A fully-opaque floor also means the fade-in animation
+  // itself no longer visibly dims at all (see the fade loop in update()) --
+  // the settled state is now just as bright as the moment it was drawn.
+  LINE_FADE_FLOOR: 1,
+  // Settled lines render this many times CONFIG.LINE_WIDTH -- also raised
+  // per player feedback, on top of the brightness change above.
+  LINE_SETTLED_WIDTH_MULTIPLIER: 10,
   // Wall-clock time (not frames-per-point) for a line to fully settle at
   // the floor, independent of how many points it has. A per-point
   // sequential cascade (each point only starting once its predecessor
@@ -2339,6 +2346,7 @@ function drawFadingLine(line) {
   ctx.shadowColor = instrument.hex;
 
   if (line.settled) {
+    ctx.lineWidth = CONFIG.LINE_WIDTH * CONFIG.LINE_SETTLED_WIDTH_MULTIPLIER;
     drawSettledPath(line.points, instrument.glow + CONFIG.LINE_FADE_FLOOR + ')');
   } else {
     drawSmoothedPath(line.points, {
