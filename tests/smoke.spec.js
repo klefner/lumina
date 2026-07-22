@@ -1174,3 +1174,56 @@ test('a real tutorial-wave dot/barrier/fact-box layout never leaves the hint tex
   expect(result.obscured).toBe(0);
   expect(errors).toEqual([]);
 });
+
+test('a rotating barrier is kept clear of the tutorial hint across its full rotation, not just its starting pose', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // Rotating barriers unlock at BARRIER_CONFIG.ROTATION_START_WAVE (6),
+    // so waves 6-7 are the only tutorial waves where one can appear.
+    // generateBarriersSafely only rejects a rotating barrier whose current
+    // (generation-time) line crosses the reserved hint zone -- but
+    // updateBarriers spins it continuously afterward, so what actually
+    // matters is whether the full disk it sweeps out ever does.
+    let trialsWithRotating = 0, failures = 0;
+    for (let trial = 0; trial < 60; trial++) {
+      for (const wave of [6, 7]) {
+        const dots = generateDots(wave);
+        ensureAllDotsInWorldBounds(dots);
+        STATE.phase = 'PLAYING';
+        STATE.dots = dots;
+        STATE.barriers = generateBarriersSafely(wave, dots);
+        STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
+        STATE.camera.userZoom = 1;
+        STATE.camera.targetScale = STATE.camera.autoScale;
+        STATE.camera.scale = STATE.camera.autoScale;
+        STATE.camera.centerX = STATE.world.w / 2;
+        STATE.camera.centerY = STATE.world.h / 2;
+        showTutorialHint(wave);
+        const rect = document.getElementById('tutorial-hint').getBoundingClientRect();
+
+        const rotators = STATE.barriers.filter(b => b.rotating);
+        if (!rotators.length) continue;
+        trialsWithRotating++;
+
+        for (const b of rotators) {
+          const originalAngle = b.angle;
+          for (let step = 0; step < 24; step++) {
+            b.angle = originalAngle + (step / 24) * Math.PI * 2;
+            const ep = barrierEndpoints(b.pivotX, b.pivotY, b.angle, b.length);
+            b.x1 = ep.x1; b.y1 = ep.y1; b.x2 = ep.x2; b.y2 = ep.y2;
+            if (barrierOverlapCount(rect) > 0) failures++;
+          }
+          b.angle = originalAngle;
+        }
+      }
+    }
+    return { trialsWithRotating, failures };
+  });
+
+  expect(result.trialsWithRotating).toBeGreaterThan(0); // confirms the scenario actually got exercised
+  expect(result.failures).toBe(0);
+  expect(errors).toEqual([]);
+});

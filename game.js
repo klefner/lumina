@@ -2598,11 +2598,26 @@ function inReservedRect(x, y, reservedRect) {
   return !!reservedRect && x >= reservedRect.x1 && x <= reservedRect.x2 && y >= reservedRect.y1 && y <= reservedRect.y2;
 }
 
+// A rotating barrier's initial pose isn't the whole story: updateBarriers
+// spins it continuously around (cx, cy), so over time it sweeps out the
+// full disk of radius `radius` (half its length) centered there -- not
+// just the line it happens to be drawn as at generation time. Used by
+// generateBarriersSafely so a rotating barrier whose starting angle
+// avoids the reserved hint zone, but whose pivot/radius means some later
+// angle would sweep through it, still gets rejected up front.
+function circleNearRect(cx, cy, radius, rect) {
+  if (!rect) return false;
+  const nearestX = Math.max(rect.x1, Math.min(cx, rect.x2));
+  const nearestY = Math.max(rect.y1, Math.min(cy, rect.y2));
+  return Math.hypot(cx - nearestX, cy - nearestY) < radius;
+}
+
 // Sampled-points check for whether a world-space line segment passes
 // through a world-space rect (both endpoints outside it doesn't mean the
 // segment itself doesn't cross through the middle) -- used by
-// generateBarriersSafely to keep a regular barrier's line from cutting
-// across the reserved hint zone.
+// generateBarriersSafely to keep a static barrier's line from cutting
+// across the reserved hint zone. Rotating barriers use circleNearRect
+// above instead, since their line doesn't stay put.
 function segmentNearRect(x1, y1, x2, y2, rect, steps = 8) {
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
@@ -3812,8 +3827,15 @@ function generateBarriersSafely(wave, dots) {
     // it can still thread straight through the reserved hint zone even
     // though both its endpoints are outside it -- reject the whole set and
     // retry with a fresh random layout rather than let a barrier cut
-    // across the tutorial text.
-    if (reservedRect && barriers.some(b => segmentsOfBarrier(b).some(seg => segmentNearRect(seg.x1, seg.y1, seg.x2, seg.y2, reservedRect)))) continue;
+    // across the tutorial text. A rotating barrier's *current* line isn't
+    // enough to check -- it sweeps a full disk around its pivot over time
+    // (see circleNearRect), and the hint can still be on screen well into
+    // that rotation since it only dismisses on the wave's first connection.
+    const crossesReserved = reservedRect && barriers.some(b => {
+      if (b.rotating) return circleNearRect(b.pivotX, b.pivotY, b.length / 2, reservedRect);
+      return segmentsOfBarrier(b).some(seg => segmentNearRect(seg.x1, seg.y1, seg.x2, seg.y2, reservedRect));
+    });
+    if (crossesReserved) continue;
     if (allDotsReachableGivenBarriers(dots, barriers)) return barriers;
   }
   return [];
