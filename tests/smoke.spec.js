@@ -572,13 +572,14 @@ test('unconnected dots render visibly dimmer than fully-connected dots', async (
   expect(errors).toEqual([]);
 });
 
-test('the hint button appears once playing, flashes unconnected dots bright at their peak, and returns to the dimmed idle state once it ends', async ({ page }) => {
+test('the HINT button appears once playing, flashes unconnected dots white at their peak, and returns to the dimmed idle state once it ends', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
 
   await expect(page.locator('#hint-button')).toBeHidden();
+  await expect(page.locator('#hint-button')).toHaveText('HINT');
   await page.mouse.click(200, 700);
   await page.waitForTimeout(1000);
   await expect(page.locator('#hint-button')).toBeVisible();
@@ -592,26 +593,63 @@ test('the hint button appears once playing, flashes unconnected dots bright at t
   // First peak (brightness == 1) lands at DURATION_MS / (2 * CYCLES).
   await page.waitForTimeout(config.DURATION_MS / (2 * config.CYCLES));
   const atPeak = await page.evaluate(() => {
-    let alpha = null;
+    const fills = []; // { alpha, style } for every fill() call this drawDot makes
     const origFill = ctx.fill.bind(ctx);
-    ctx.fill = function (...args) { if (alpha === null) alpha = ctx.globalAlpha; return origFill(...args); };
+    ctx.fill = function (...args) { fills.push({ alpha: ctx.globalAlpha, style: ctx.fillStyle }); return origFill(...args); };
     drawDot(STATE.dots[0]);
     ctx.fill = origFill;
-    return alpha;
+    return fills;
   });
-  expect(atPeak).toBeGreaterThan(0.95); // flashed up to full brightness, not just a stronger idle pulse
+  expect(atPeak[0].alpha).toBeGreaterThan(0.95); // base color fill flashed up to full brightness
+  // A same-hue brightness pulse isn't enough -- the flash must actually turn
+  // the dot white, distinct from a dot's own ambient/connected pulse (which
+  // never changes color). drawDot always draws a small white "core" circle
+  // last regardless of hint state, so a plain "is any fill white" check
+  // can't tell a real flash apart from that -- the flash is specifically
+  // the *middle* fill call (base color, then the flash, then the core),
+  // only present at all while a flash is actually happening.
+  expect(atPeak).toHaveLength(3);
+  expect(atPeak[1].style).toBe('#ffffff');
+  expect(atPeak[1].alpha).toBeGreaterThan(0.95);
 
   await page.waitForTimeout(config.DURATION_MS); // let the whole pulse finish
   const afterDone = await page.evaluate(() => {
-    let alpha = null;
+    const fills = [];
     const origFill = ctx.fill.bind(ctx);
-    ctx.fill = function (...args) { if (alpha === null) alpha = ctx.globalAlpha; return origFill(...args); };
+    ctx.fill = function (...args) { fills.push({ alpha: ctx.globalAlpha, style: ctx.fillStyle }); return origFill(...args); };
     drawDot(STATE.dots[0]);
     ctx.fill = origFill;
-    return { alpha, cleared: STATE.hintPulse === null };
+    return { fills, cleared: STATE.hintPulse === null };
   });
-  expect(afterDone.alpha).toBeCloseTo(0.55, 2); // back to the normal dimmed idle state
+  expect(afterDone.fills[0].alpha).toBeCloseTo(0.55, 2); // back to the normal dimmed idle state
+  expect(afterDone.fills).toHaveLength(2); // just the base color + the permanent core dot -- no flash fill once the pulse is over
   expect(afterDone.cleared).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('the help button opens a how-to-play overlay on both the title screen and mid-game, closable via the X or the backdrop', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+
+  // Visible (and functional) before the player has even started a game.
+  await expect(page.locator('#help-button')).toBeVisible();
+  await page.click('#help-button');
+  await expect(page.locator('#help-overlay')).toHaveClass(/visible/);
+  await expect(page.locator('#help-list li').first()).not.toBeEmpty();
+  await page.click('#help-close');
+  await expect(page.locator('#help-overlay')).not.toHaveClass(/visible/);
+
+  // Still reachable once a wave is actually in progress.
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(500);
+  await expect(page.locator('#help-button')).toBeVisible();
+  await page.click('#help-button');
+  await expect(page.locator('#help-overlay')).toHaveClass(/visible/);
+
+  // Clicking the backdrop itself (not the panel) also closes it.
+  await page.click('#help-overlay', { position: { x: 5, y: 5 } });
+  await expect(page.locator('#help-overlay')).not.toHaveClass(/visible/);
   expect(errors).toEqual([]);
 });
 
@@ -1236,5 +1274,143 @@ test('the "relax and enjoy" tutorial message is always the last one shown', asyn
   const lastText = await page.evaluate(() => TUTORIAL_MESSAGES[TUTORIAL_MESSAGES.length - 1].text);
 
   expect(lastText).toBe('Connect the dots, make music. Relax and Enjoy!');
+  expect(errors).toEqual([]);
+});
+
+test('in a 3+-dot color group, connecting the last unlinked dot to an already-linked groupmate is never falsely rejected as stranding a bystander', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // A 3-dot group: A is alone, B and C are already connected to each
+    // other via a real settled line. The player is now connecting A to B.
+    // C is sealed in a barrier box with no direct route to A at all --
+    // that must not matter, since C reaches A transitively through B the
+    // instant A-B connects (exactly like markGroupIfFullySolved already
+    // understands). wouldStrandAnyDot used to check the *current*
+    // (pre-move) union-find state, so it still demanded C have its own
+    // direct physical route to A, rejecting a perfectly valid connection
+    // for a reason invisible to the player -- nothing about A-B's own
+    // path was ever blocked.
+    const A = { id: 0, pairId: 0, colorIndex: 0, x: 50, y: 400, connected: false, pulsePhase: 0 };
+    const B = { id: 1, pairId: 0, colorIndex: 0, x: 350, y: 400, connected: false, pulsePhase: 0 };
+    const C = { id: 2, pairId: 0, colorIndex: 0, x: 330, y: 700, connected: false, pulsePhase: 0 };
+    STATE.dots = [A, B, C];
+    STATE.world = { w: 400, h: 800 };
+    STATE.dotUnion = { 0: 0, 1: 1, 2: 2 };
+    STATE.connections = [{ pairId: 0, segments: [{ x1: B.x, y1: B.y, x2: C.x, y2: C.y }] }];
+    ufUnion(B.id, C.id);
+    STATE.barriers = [
+      { x1: 280, y1: 650, x2: 380, y2: 650 },
+      { x1: 280, y1: 650, x2: 280, y2: 750 },
+      { x1: 280, y1: 750, x2: 380, y2: 750 },
+      { x1: 380, y1: 650, x2: 380, y2: 750 },
+    ];
+
+    const unionBefore = JSON.stringify(STATE.dotUnion);
+    const falsePositive = wouldStrandAnyDot([{ x1: A.x, y1: A.y, x2: B.x, y2: B.y }], A, B);
+    const unionUnchangedAfter = JSON.stringify(STATE.dotUnion) === unionBefore;
+
+    // A genuinely unrelated pair, D/E, with D sealed in that same box and
+    // no connection to E at all -- must still correctly reject (the
+    // original wave-deadlock guard from the maze-barrier work still has
+    // to work; this fix must not weaken it into never rejecting anything).
+    const D = { id: 3, pairId: 1, colorIndex: 1, x: 330, y: 700, connected: false, pulsePhase: 0 };
+    const E = { id: 4, pairId: 1, colorIndex: 1, x: 50, y: 400, connected: false, pulsePhase: 0 };
+    STATE.dots = [A, B, C, D, E];
+    STATE.dotUnion[3] = 3;
+    STATE.dotUnion[4] = 4;
+    const stillCatchesRealStranding = wouldStrandAnyDot([{ x1: A.x, y1: A.y, x2: B.x, y2: B.y }], A, B);
+
+    return { falsePositive, unionUnchangedAfter, stillCatchesRealStranding };
+  });
+
+  expect(result.falsePositive).toBe(false);
+  expect(result.unionUnchangedAfter).toBe(true); // the hypothetical union must not leak into real game state
+  expect(result.stillCatchesRealStranding).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('a fact box never appears on any wave that shows a tutorial hint, and keeps a real buffer from other barriers once it can appear', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    let tutorialWaveTrials = 0, tutorialWaveFactBoxes = 0;
+    for (let trial = 0; trial < 40; trial++) {
+      for (let wave = 1; wave <= TUTORIAL_MESSAGES.length; wave++) {
+        const dots = generateDots(wave);
+        ensureAllDotsInWorldBounds(dots);
+        const barriers = generateBarriersSafely(wave, dots);
+        tutorialWaveTrials++;
+        if (barriers.some(b => b.type === 'factBox')) tutorialWaveFactBoxes++;
+      }
+    }
+
+    // Past the tutorial waves, a fact box should still show up sometimes
+    // (confirms the feature itself isn't broken/always-skipped), and every
+    // one found must keep real clearance from every other barrier -- not
+    // just avoid literal overlap.
+    let postTutorialFactBoxes = 0, barrierTooClose = 0;
+    const clearance = Math.max(FACT_BOX_CONFIG.DOT_CLEARANCE_ABS_MIN, 24);
+    for (let trial = 0; trial < 60; trial++) {
+      const wave = 20 + (trial % 30);
+      const dots = generateDots(wave);
+      ensureAllDotsInWorldBounds(dots);
+      const barriers = generateBarriersSafely(wave, dots);
+      const factBox = barriers.find(b => b.type === 'factBox');
+      if (!factBox) continue;
+      postTutorialFactBoxes++;
+      const half = factBox.size / 2;
+      const rect = { x1: factBox.cx - half - clearance, x2: factBox.cx + half + clearance, y1: factBox.cy - half - clearance, y2: factBox.cy + half + clearance };
+      const others = barriers.filter(b => b !== factBox).flatMap(segmentsOfBarrier);
+      if (others.some(seg => segmentNearRect(seg.x1, seg.y1, seg.x2, seg.y2, rect))) barrierTooClose++;
+    }
+
+    return { tutorialWaveTrials, tutorialWaveFactBoxes, postTutorialFactBoxes, barrierTooClose };
+  });
+
+  expect(result.tutorialWaveTrials).toBeGreaterThan(0);
+  expect(result.tutorialWaveFactBoxes).toBe(0); // never once, across every tutorial wave
+  expect(result.postTutorialFactBoxes).toBeGreaterThan(0); // the feature still works once tutorials are done
+  expect(result.barrierTooClose).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test('every real instrument sample still decodes even when its fetch is much slower than the old fixed timeout', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+
+  // Delay every sound file response well past the old code's fixed
+  // 2-second-per-note give-up budget (20 attempts x 100ms) -- decodeAllSamples
+  // used to poll a shared object on that timer and silently skip any note
+  // whose fetch hadn't landed in time. Awaiting the real fetch promise
+  // directly (no arbitrary timeout) should make this irrelevant now.
+  await page.route('**/sounds/**/*.mp3', async (route) => {
+    await new Promise(r => setTimeout(r, 3000));
+    route.continue();
+  });
+
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(6000); // real decode time under the simulated slow network
+
+  const counts = await page.evaluate(() => {
+    const s = window.__lumina.getState();
+    const out = {};
+    for (const instrument in s.sampleBuffers) out[instrument] = Object.keys(s.sampleBuffers[instrument]).length;
+    return out;
+  });
+
+  // Every real (fetched) instrument's full manifest should be present --
+  // none silently abandoned because the network happened to be slow.
+  expect(counts.piano).toBe(8);
+  expect(counts.flute).toBe(35);
+  expect(counts.cello).toBe(21);
+  expect(counts.marimba).toBe(37);
+  expect(counts.vibraphone).toBe(36);
   expect(errors).toEqual([]);
 });

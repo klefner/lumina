@@ -1045,7 +1045,23 @@ function initAudio() {
   // played. Resume + play a silent buffer synchronously on every gesture as
   // a robust unlock — cheap and idempotent if already unlocked.
   if (STATE.audioCtx.state === 'suspended') {
-    STATE.audioCtx.resume();
+    const resumingCtx = STATE.audioCtx;
+    STATE.audioCtx.resume().then(() => {
+      // A phone call, Siri, another app grabbing the audio session, or the
+      // screen locking can leave an iOS Safari AudioContext permanently
+      // unable to resume no matter how many times resume() is called on
+      // it again — every future gesture in this same session just keeps
+      // retrying the same wedged instance. If it's still not running once
+      // this resume() actually settles, discard it so the *next* gesture
+      // builds a completely fresh AudioContext (and redecodes into it)
+      // instead of retrying forever — self-healing without requiring the
+      // player to know a full page reload is what actually fixes it.
+      if (STATE.audioCtx === resumingCtx && STATE.audioCtx.state !== 'running') {
+        STATE.audioCtx = null;
+      }
+    }).catch(() => {
+      if (STATE.audioCtx === resumingCtx) STATE.audioCtx = null;
+    });
   }
   const unlockBuffer = STATE.audioCtx.createBuffer(1, 1, 22050);
   const unlockSource = STATE.audioCtx.createBufferSource();
@@ -1114,50 +1130,69 @@ function initAudioGraph() {
 // otherwise fully playable (nothing else touches audio) with total
 // silence and no visible error, since decode failures here are caught
 // and skipped per-note by design. MP3 decodes natively everywhere.
-let sampleRawBytes = {};
+// Every real (non-synthesized) note's actual fetch Promise, keyed the same
+// way as SAMPLE_MANIFEST — not the eventual bytes. decodeAllSamples used to
+// poll a shared `sampleRawBytes` object on a 100ms timer, giving up on any
+// note whose fetch hadn't landed within a fixed 2-second budget (20
+// attempts). With ~140 real samples fetched in parallel, that budget was
+// only ever a guess at how long a real network would take — comfortably
+// enough on fast wifi, but on a slower or congested mobile connection,
+// some or all of those fetches could still be in flight past 2 seconds,
+// and every one of them still checked at that point was silently skipped
+// (by design, so one bad sample can't break the rest) — which reads to a
+// player as intermittent, network-dependent total or partial silence:
+// exactly the "reload sometimes brings sound back, sometimes doesn't"
+// symptom this was reported as. Awaiting each note's real fetch promise
+// directly removes the guess entirely: decoding simply takes as long as
+// the network actually takes, however long that is, with no arbitrary
+// cutoff.
+let samplePromises = {};
 
 function preloadSampleBytes() {
   for (const instrument in SAMPLE_MANIFEST) {
     if (SYNTHESIZED_INSTRUMENTS.has(instrument)) continue; // nothing to fetch — generated at decode time
-    sampleRawBytes[instrument] = {};
+    samplePromises[instrument] = {};
     SAMPLE_MANIFEST[instrument].forEach(note => {
-      fetch(`sounds/${instrument}/${instrument}_${note}.mp3`)
+      samplePromises[instrument][note] = fetch(`sounds/${instrument}/${instrument}_${note}.mp3`)
         .then(r => r.arrayBuffer())
-        .then(buf => { sampleRawBytes[instrument][note] = buf; })
-        .catch(() => { /* sample missing — playSample falls back gracefully */ });
+        .catch(() => null); // sample missing/failed — playSample falls back gracefully
     });
   }
 }
 
+// Every note (synthesized or fetched) decodes/synthesizes independently
+// and in parallel, rather than one at a time in sequence — the previous
+// sequential loop meant a slow note early in the list (e.g. piano, first
+// in SAMPLE_MANIFEST) delayed every instrument after it even once its own
+// fetch had actually landed, compounding the same real-world network
+// variance the polling loop above was already vulnerable to.
 async function decodeAllSamples() {
+  const jobs = [];
   for (const instrument in SAMPLE_MANIFEST) {
     STATE.sampleBuffers[instrument] = {};
 
     if (SYNTHESIZED_INSTRUMENTS.has(instrument)) {
       for (const key of SAMPLE_MANIFEST[instrument]) {
-        try {
-          STATE.sampleBuffers[instrument][key] = await synthesizeInstrumentSample(instrument, key);
-        } catch (e) { /* skip — playSample/playDrumHit fall back gracefully */ }
+        jobs.push((async () => {
+          try {
+            STATE.sampleBuffers[instrument][key] = await synthesizeInstrumentSample(instrument, key);
+          } catch (e) { /* skip — playSample/playDrumHit fall back gracefully */ }
+        })());
       }
       continue;
     }
 
     for (const note of SAMPLE_MANIFEST[instrument]) {
-      const wait = (ms) => new Promise(r => setTimeout(r, ms));
-      let raw = sampleRawBytes[instrument] && sampleRawBytes[instrument][note];
-      let attempts = 0;
-      while (!raw && attempts < 20) { // fetch may still be in flight — wait briefly
-        await wait(100);
-        raw = sampleRawBytes[instrument] && sampleRawBytes[instrument][note];
-        attempts++;
-      }
-      if (!raw) continue;
-      try {
-        const audioBuffer = await STATE.audioCtx.decodeAudioData(raw.slice(0));
-        STATE.sampleBuffers[instrument][note] = audioBuffer;
-      } catch (e) { /* skip — playSample falls back gracefully */ }
+      jobs.push((async () => {
+        const raw = await samplePromises[instrument][note];
+        if (!raw) return;
+        try {
+          STATE.sampleBuffers[instrument][note] = await STATE.audioCtx.decodeAudioData(raw.slice(0));
+        } catch (e) { /* skip — playSample falls back gracefully */ }
+      })());
     }
   }
+  await Promise.all(jobs);
 }
 
 // --- Synthesized instruments ---------------------------------------------
@@ -2200,25 +2235,31 @@ function traceDotShapePath(shape, cx, cy, r) {
 // The hint button's whole point: let the player self-check "is everything
 // really connected?" before reporting a defect, rather than guessing from
 // a screenshot the way the dimming fix above was originally motivated by.
-// Three full bright/dim cycles over a couple of seconds reads unmistakably
-// as "these specific dots", distinct from any dot's own ambient pulse.
+// Five white flashes over a few seconds reads unmistakably as "these
+// specific dots" -- a smooth same-hue brightness pulse (the original
+// version of this) was too easily mistaken for a dot's own ambient
+// pulse, since neither one ever changes color, just brightness/size.
 const HINT_PULSE_CONFIG = {
-  DURATION_MS: 2100,
-  CYCLES: 3,
+  DURATION_MS: 3500,
+  CYCLES: 5,
 };
 
 function triggerHintPulse() {
   STATE.hintPulse = { startTime: performance.now() };
 }
 
-// 0 at the very start/end of the pulse, 1 at each cycle's peak — same
-// shape for every unconnected dot, so they all flash in unison.
+// 0 at the very start/end/between flashes, 1 at each flash's peak -- same
+// shape for every unconnected dot, so they all flash in unison. Raising
+// the underlying cosine wave to a power sharpens each cycle into a brief
+// flash with a longer dark valley in between, so it reads as a strobe
+// (five distinct flashes) rather than a smooth pulse.
 function hintPulseBrightness() {
   if (!STATE.hintPulse) return null;
   const elapsed = performance.now() - STATE.hintPulse.startTime;
   if (elapsed >= HINT_PULSE_CONFIG.DURATION_MS) { STATE.hintPulse = null; return null; }
   const t = elapsed / HINT_PULSE_CONFIG.DURATION_MS;
-  return (1 - Math.cos(t * HINT_PULSE_CONFIG.CYCLES * Math.PI * 2)) / 2;
+  const raw = (1 - Math.cos(t * HINT_PULSE_CONFIG.CYCLES * Math.PI * 2)) / 2;
+  return Math.pow(raw, 3);
 }
 
 function drawDot(dot) {
@@ -2247,12 +2288,17 @@ function drawDot(dot) {
   ctx.save();
   const hintBrightness = dot.connected ? null : hintPulseBrightness();
   if (hintBrightness !== null) {
-    // Flashes from the normal dim level up to full brightness/glow and
-    // back, HINT_PULSE_CONFIG.CYCLES times -- deliberately overriding the
-    // dimming above rather than just fighting the ambient pulse, so it
-    // reads as a distinct "look here" signal, not a stronger idle pulse.
+    // Dim between flashes (same idle baseline as the plain unconnected
+    // case below), full brightness right at each flash's peak -- so each
+    // flash has an actual dark valley on either side of it and reads as
+    // 5 distinct pops, not one dot that's simply brighter the whole time.
+    // The glow stays at the idle size here rather than also growing --
+    // the white pass below is what grows, and a same-size or smaller
+    // colored halo underneath it is fully covered instead of peeking out
+    // past the edge of a bigger white one (very light colors like gold
+    // otherwise left a faint tinted ring around an otherwise-white dot).
     ctx.globalAlpha *= 0.55 + hintBrightness * 0.45;
-    ctx.shadowBlur = 18 + hintBrightness * 17;
+    ctx.shadowBlur = 18;
   } else if (!dot.connected) {
     ctx.globalAlpha *= 0.55;
     ctx.shadowBlur = 18;
@@ -2264,6 +2310,26 @@ function drawDot(dot) {
   traceDotShapePath(shape, dot.x, dot.y, radius);
   ctx.fillStyle = instrument.hex;
   ctx.fill();
+  if (hintBrightness !== null && hintBrightness > 0.02) {
+    // A same-hue brightness pulse (the original version of this) read as
+    // just a stronger idle pulse -- a dot's ambient/connected pulse never
+    // changes color either, only size/glow. Crossfading a solid white
+    // fill on top, keyed to the same flash curve, changes the dot's
+    // actual color at each peak instead, which is what actually makes it
+    // read as a distinct "look here" signal. The glow has to switch to
+    // white here too, not just the fill -- otherwise the halo stays
+    // tinted the dot's own color even while the shape itself goes white,
+    // and the flash reads as "colored glow, white middle" instead of
+    // "this whole dot is now white".
+    ctx.globalAlpha = hintBrightness;
+    ctx.shadowColor = '#ffffff';
+    ctx.shadowBlur = 18 + hintBrightness * 25;
+    ctx.beginPath();
+    traceDotShapePath(shape, dot.x, dot.y, radius);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
 
   ctx.shadowBlur = 12;
   ctx.beginPath();
@@ -3241,23 +3307,35 @@ function wouldStrandAnyDot(newSegments, dotA, dotB) {
   const barrierSegs = STATE.barriers.flatMap(segmentsOfBarrier);
   const blocked = buildBlockedGrid([...existingConnectionSegments(newSegments), ...barrierSegs], size);
 
+  // Simulate the pending union before checking anyone's reachability. A
+  // 3+-dot group (see GROUP_CONFIG) can already have some dots unioned
+  // together through an earlier connection — e.g. B and C already linked,
+  // with the player now connecting A to B. Without this, dot C's
+  // groupmate filter still lists A as "not yet connected" (true right
+  // now, before this move), so the loop below went on to demand that C
+  // *itself* have a real physical route straight to A — even though C
+  // plainly reaches A transitively through B the instant A-B connects,
+  // exactly like markGroupIfFullySolved already understands. Any barrier
+  // that merely blocked C's own direct line to A (irrelevant to the move
+  // actually being made) was enough to reject a perfectly valid
+  // connection, with nothing about it looking wrong to the player. Undone
+  // afterward either way — this is a hypothetical check, not the real
+  // move; completeConnection() does the real union only if this is
+  // accepted.
+  const savedUnion = { ...STATE.dotUnion };
+  ufUnion(dotA.id, dotB.id);
+
+  let stranded = false;
   for (const dot of STATE.dots) {
     if (dot.connected) continue;
     const groupmates = STATE.dots.filter(d => d.pairId === dot.pairId && d.id !== dot.id && !ufConnected(d.id, dot.id));
     if (groupmates.length === 0) continue;
-    const hasRoute = groupmates.some(g => {
-      // The pair actually being connected right now is trivially reachable
-      // via the very line about to be drawn between them — that new
-      // segment is already baked into `blocked`, so testing it against
-      // the grid would treat their own about-to-exist connection as a
-      // wall between them.
-      const isActivePair = (dot.id === dotA.id && g.id === dotB.id) || (dot.id === dotB.id && g.id === dotA.id);
-      if (isActivePair) return true;
-      return isReachableAround(dot.x, dot.y, g.x, g.y, blocked, size, cols, rows);
-    });
-    if (!hasRoute) return true;
+    const hasRoute = groupmates.some(g => isReachableAround(dot.x, dot.y, g.x, g.y, blocked, size, cols, rows));
+    if (!hasRoute) { stranded = true; break; }
   }
-  return false;
+
+  STATE.dotUnion = savedUnion;
+  return stranded;
 }
 
 function checkWaveComplete() {
@@ -3726,15 +3804,21 @@ function generateMazeBarrier(wave, dots) {
 // dot. Whether a wave gets one at all is decided once by the caller — this
 // only ever handles placement, so retrying generation doesn't silently
 // re-roll and inflate the "1 in 5" odds.
-function generateFactBoxBarrier(dots, reservedRect) {
+function generateFactBoxBarrier(dots, reservedRect, existingBarriers) {
   const worldMinDim = Math.min(STATE.world.w, STATE.world.h);
   const size = Math.max(FACT_BOX_CONFIG.SIZE_ABS_MIN, Math.min(FACT_BOX_CONFIG.SIZE_ABS_MAX, worldMinDim * FACT_BOX_CONFIG.SIZE_FRACTION));
   const dotClearance = Math.max(FACT_BOX_CONFIG.DOT_CLEARANCE_ABS_MIN, Math.min(FACT_BOX_CONFIG.DOT_CLEARANCE_ABS_MAX, worldMinDim * FACT_BOX_CONFIG.DOT_CLEARANCE_FRACTION));
+  // Same idea as the dot clearance above, but against every other barrier
+  // already placed this attempt (regular + maze) -- generateFactBoxBarrier
+  // used to only check dots, so a fact box could land close enough to a
+  // barrier's line to visually crowd it, or even brush against it.
+  const barrierClearance = dotClearance;
   const half = size / 2;
   const c = FACT_BOX_CONFIG.SCREEN_CLEARANCE;
   const spanX = STATE.world.w - 2 * (c + half);
   const spanY = STATE.world.h - 2 * (c + half);
   if (spanX <= 0 || spanY <= 0) return null; // world too small for the box to fit at all
+  const barrierSegs = (existingBarriers || []).flatMap(segmentsOfBarrier);
 
   for (let attempts = 0; attempts < 150; attempts++) {
     const cx = c + half + Math.random() * spanX;
@@ -3749,6 +3833,10 @@ function generateFactBoxBarrier(dots, reservedRect) {
     // stacked directly on top of each other.
     if (reservedRect && cx - half < reservedRect.x2 && cx + half > reservedRect.x1 &&
         cy - half < reservedRect.y2 && cy + half > reservedRect.y1) continue;
+    if (barrierSegs.some(seg => segmentNearRect(seg.x1, seg.y1, seg.x2, seg.y2, {
+      x1: cx - half - barrierClearance, x2: cx + half + barrierClearance,
+      y1: cy - half - barrierClearance, y2: cy + half + barrierClearance,
+    }))) continue;
 
     const x1 = cx - half, x2 = cx + half, y1 = cy - half, y2 = cy + half;
     const segments = [
@@ -3812,15 +3900,20 @@ function generateBarriersSafely(wave, dots) {
   // Rolled once per wave, not once per retry attempt below — otherwise a
   // wave that happens to need a few retries to find a solvable layout would
   // get several independent shots at the fact-box roll, quietly inflating
-  // the odds past the intended 1 in 5.
-  const wantFactBox = Math.random() < FACT_BOX_CONFIG.PROBABILITY;
-  const reservedRect = wave <= TUTORIAL_MESSAGES.length ? reservedHintWorldRect() : null;
+  // the odds past the intended 1 in 5. Never rolled at all on a
+  // tutorial-hint wave (1 through TUTORIAL_MESSAGES.length) -- a fact box
+  // is a whole other block of text, and no amount of careful positioning
+  // reliably keeps two independent pieces of text apart on every screen
+  // size, so the two features simply never coexist instead.
+  const isTutorialWave = wave <= TUTORIAL_MESSAGES.length;
+  const wantFactBox = !isTutorialWave && Math.random() < FACT_BOX_CONFIG.PROBABILITY;
+  const reservedRect = isTutorialWave ? reservedHintWorldRect() : null;
   for (let attempt = 0; attempt < 20; attempt++) {
     const barriers = generateBarriers(wave, dots);
     const maze = generateMazeBarrier(wave, dots);
     if (maze) barriers.push(maze);
     if (wantFactBox) {
-      const factBox = generateFactBoxBarrier(dots, reservedRect);
+      const factBox = generateFactBoxBarrier(dots, reservedRect, barriers);
       if (factBox) barriers.push(factBox);
     }
     // A regular (non-factBox) barrier is just a line between two dots, so
@@ -4799,6 +4892,21 @@ function togglePause() {
   if (STATE.paused) resumeGame(); else pauseGame();
 }
 
+// ============================================================
+// HOW-TO-PLAY OVERLAY
+// ============================================================
+// Reachable from the title screen and mid-game alike (see #help-button's
+// CSS). A plain reference, not a second pause mechanism -- its own opaque
+// backdrop already blocks every pointer event from reaching the board
+// underneath while it's open, so there's nothing else to freeze.
+function openHelp() {
+  document.getElementById('help-overlay').classList.add('visible');
+}
+
+function closeHelp() {
+  document.getElementById('help-overlay').classList.remove('visible');
+}
+
 function handleSaveGame() {
   const ok = saveGame();
   const toast = document.getElementById('pause-save-toast');
@@ -4983,6 +5091,11 @@ function maybeFetchOnlineFacts() {
 function setupPauseMenuListeners() {
   document.getElementById('pause-button').addEventListener('click', togglePause);
   document.getElementById('hint-button').addEventListener('click', triggerHintPulse);
+  document.getElementById('help-button').addEventListener('click', openHelp);
+  document.getElementById('help-close').addEventListener('click', closeHelp);
+  document.getElementById('help-overlay').addEventListener('click', (e) => {
+    if (e.target.id === 'help-overlay') closeHelp(); // tapping the backdrop itself, not the panel
+  });
   document.getElementById('pause-resume').addEventListener('click', resumeGame);
   document.getElementById('pause-save').addEventListener('click', handleSaveGame);
   document.getElementById('pause-load').addEventListener('click', handleLoadGame);
