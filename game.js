@@ -106,8 +106,22 @@ const TUTORIAL_MESSAGES = [
   { text: 'Connect all the dots to hear the song.', dismissWhen: 'complete' },
   { text: 'The longer the lines you draw, the higher your score.', dismissWhen: 'connect' },
   { text: 'Pinch or scroll to zoom, drag to pan.', dismissWhen: 'connect' },
+  // Flagged rather than positioned by a hardcoded wave number: this is the
+  // wave the board first grows wider than the screen (see
+  // WIDE_WORLD_START_WAVE below), so the explanation has to land on
+  // whichever wave this entry ends up on, even if messages are added or
+  // reordered above it later.
+  { text: 'This board is bigger than your screen — drag to pan, pinch or scroll to zoom, and find every dot.', dismissWhen: 'connect', unlocksWideWorld: true },
   { text: 'Connect the dots, make music. Relax and Enjoy!', dismissWhen: 'connect' },
 ];
+
+// The wave the playfield first grows wider than the viewport (and stays
+// that way every wave after) -- derived from TUTORIAL_MESSAGES' own
+// unlocksWideWorld-flagged entry rather than a separate hardcoded wave
+// number, so editing the tutorial sequence can never silently desync the
+// two. See computeWorldSize's wide-world floor and startWave's camera
+// intro below.
+const WIDE_WORLD_START_WAVE = TUTORIAL_MESSAGES.findIndex(m => m.unlocksWideWorld) + 1;
 
 // Extra clearance kept around the tutorial hint's text box, on top of a
 // dot's or barrier's own exclusion radius (see dotOverlapCount /
@@ -678,6 +692,12 @@ const CAMERA_CONFIG = {
   // purely a backstop against a pathologically-shaped viewport, not a
   // normal-use limit.
   MAX_ORIENTATION_GROWTH: 5,
+  // How long a wide wave (see WIDE_WORLD_START_WAVE) holds at the
+  // full-world fit-scale before easing in to the comfortable play zoom --
+  // long enough to register as a deliberate "look, there's more board
+  // than this" beat rather than a flicker, short enough not to make the
+  // player wait to start playing.
+  WIDE_INTRO_HOLD_MS: 900,
 };
 
 // Sizes the world for a wave with `dotCount` dots: big enough that random
@@ -693,6 +713,26 @@ function computeWorldSize(dotCount) {
   const requiredArea = dotCount * areaPerDot;
   const growth = Math.min(CAMERA_CONFIG.MAX_WORLD_GROWTH, Math.sqrt(Math.max(1, requiredArea / (usableW * usableH))));
   return { w: screenW * growth, h: screenH * growth };
+}
+
+// From WIDE_WORLD_START_WAVE on (see TUTORIAL_MESSAGES' unlocksWideWorld
+// flag), the board must need real panning to see in full even when dot
+// count alone wouldn't otherwise call for a bigger world -- so this floors
+// computeWorldSize's result at a flat multiple of the screen's own
+// dimension. Deliberately flat, not scaled by wave number: computeWorldSize's
+// own dot-density growth already ramps with wave count, so this is a floor
+// underneath that ramp, not a second one competing with it, and it stays
+// comfortably under CAMERA_CONFIG.MAX_WORLD_GROWTH (2.2) so the two never
+// fight over the same wave.
+const WIDE_WORLD_CONFIG = {
+  MIN_WIDTH_FACTOR: 1.6,
+};
+
+function applyWideWorldFloor(size) {
+  return {
+    w: Math.max(size.w, canvas.width * WIDE_WORLD_CONFIG.MIN_WIDTH_FACTOR),
+    h: Math.max(size.h, canvas.height * WIDE_WORLD_CONFIG.MIN_WIDTH_FACTOR),
+  };
 }
 
 const BARRIER_CONFIG = {
@@ -954,9 +994,13 @@ const STATE = {
   camera: {
     autoScale: 1,          // scale that fits the whole world into the current screen
     scale: 1,               // actual rendered scale, lerped toward targetScale each frame
-    targetScale: 1,          // autoScale * userZoom
+    targetScale: 1,          // autoScale * baseZoom * userZoom
     userZoom: 1,              // manual pull-back, 1 = the guaranteed-fit view, down to MIN_USER_PULLBACK
                                // or in past it up to MAX_USER_ZOOM_IN
+    baseZoom: 1,              // the resting zoom a wide wave eases in to after its intro (see
+                               // WIDE_WORLD_START_WAVE/startWave) as a multiple of autoScale;
+                               // always 1 on a non-wide wave, meaning no behavior change
+    wideIntroHoldUntil: 0,    // performance.now() timestamp a wide wave's zoom-out hold releases at
     centerX: 0, centerY: 0,   // world-space point the camera looks at — always the world's own
                                // center whenever the viewport is at least as big as the world
                                // (i.e. userZoom <= 1, the whole game before panning existed),
@@ -2098,7 +2142,16 @@ function resizeCanvas() {
   if (STATE.world.w > 0) {
     growWorldToMatchAspect();
     STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
-    STATE.camera.targetScale = STATE.camera.autoScale * STATE.camera.userZoom;
+    // On a wide wave (see WIDE_WORLD_START_WAVE), re-derive baseZoom against
+    // the new viewport too, using world.comfortW/H as the fixed reference
+    // dimensions (analogous to baseW/H for growWorldToMatchAspect) --
+    // otherwise an orientation change mid-wide-wave would leave the
+    // comfortable zoom's meaning stuck at whatever the screen used to be.
+    if (STATE.world.comfortW) {
+      const comfortScale = Math.min(1, Math.min(canvas.width / STATE.world.comfortW, canvas.height / STATE.world.comfortH));
+      STATE.camera.baseZoom = comfortScale / STATE.camera.autoScale;
+    }
+    STATE.camera.targetScale = STATE.camera.autoScale * (STATE.camera.baseZoom || 1) * STATE.camera.userZoom;
     clampCameraCenter(); // the viewport's own size just changed along with the canvas
   }
 }
@@ -2144,8 +2197,20 @@ function worldToScreen(wx, wy) {
 }
 
 function setUserZoom(z) {
-  STATE.camera.userZoom = Math.max(CAMERA_CONFIG.MIN_USER_PULLBACK, Math.min(CAMERA_CONFIG.MAX_USER_ZOOM_IN, z));
-  STATE.camera.targetScale = STATE.camera.autoScale * STATE.camera.userZoom;
+  // MIN_USER_PULLBACK/MAX_USER_ZOOM_IN are meant as bounds on the total
+  // scale relative to autoScale (the full-world fit) -- so on a wide wave,
+  // where baseZoom already accounts for some of that range (see
+  // CAMERA_CONFIG's baseZoom composition in startWave/resizeCanvas),
+  // userZoom's own clamp is divided through by baseZoom first. That keeps
+  // baseZoom * userZoom always within [MIN_USER_PULLBACK, MAX_USER_ZOOM_IN]
+  // regardless of baseZoom, so the player can still always pull back far
+  // enough to see the entire board, and never zoom in past the same
+  // absolute ceiling as any other wave.
+  const baseZoom = STATE.camera.baseZoom || 1;
+  const minZ = CAMERA_CONFIG.MIN_USER_PULLBACK / baseZoom;
+  const maxZ = CAMERA_CONFIG.MAX_USER_ZOOM_IN / baseZoom;
+  STATE.camera.userZoom = Math.max(minZ, Math.min(maxZ, z));
+  STATE.camera.targetScale = STATE.camera.autoScale * baseZoom * STATE.camera.userZoom;
 }
 
 // Keeps the camera's look-at point from ever showing past the world's own
@@ -2607,12 +2672,19 @@ function generateDots(wave) {
     totalDots += size;
   }
 
-  STATE.world = computeWorldSize(totalDots);
-  // The wave's own dot-count-driven size, kept alongside the (possibly
-  // since-grown, see growWorldToMatchAspect) w/h -- an orientation change
-  // recomputes growth from this fixed baseline every time, rather than
-  // compounding onto whatever the world had already grown to, so rotating
-  // back and forth repeatedly can't balloon the world without bound.
+  const comfortSize = computeWorldSize(totalDots);
+  STATE.world = wave >= WIDE_WORLD_START_WAVE ? applyWideWorldFloor(comfortSize) : comfortSize;
+  // The dot-count-driven size on its own, without the wide-world floor --
+  // this is what "comfortable" (normal, non-scrolled) zoom means once the
+  // floor has made the actual world bigger; see startWave's camera intro.
+  STATE.world.comfortW = comfortSize.w;
+  STATE.world.comfortH = comfortSize.h;
+  // The wave's own size (post wide-world floor), kept alongside the
+  // (possibly since-grown, see growWorldToMatchAspect) w/h -- an
+  // orientation change recomputes growth from this fixed baseline every
+  // time, rather than compounding onto whatever the world had already
+  // grown to, so rotating back and forth repeatedly can't balloon the
+  // world without bound.
   STATE.world.baseW = STATE.world.w;
   STATE.world.baseH = STATE.world.h;
 
@@ -3402,8 +3474,31 @@ function startWave(waveNumber) {
   // animates smoothly into the new wave rather than snapping.
   STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
   STATE.camera.userZoom = 1;
-  STATE.camera.targetScale = STATE.camera.autoScale;
-  if (!STATE.camera.scale) STATE.camera.scale = STATE.camera.autoScale; // first wave: nothing to animate from
+  if (waveNumber >= WIDE_WORLD_START_WAVE) {
+    // The board is genuinely wider than the screen this wave (see
+    // WIDE_WORLD_START_WAVE) -- "comfortable" zoom is whatever fit-scale
+    // this wave's dot count alone would have called for, before the
+    // wide-world floor widened it (see generateDots/world.comfortW/H).
+    // baseZoom expresses that as a multiple of autoScale so it composes
+    // with manual pinch/scroll the same way userZoom always has (see
+    // setUserZoom).
+    const comfortScale = Math.min(1, Math.min(canvas.width / STATE.world.comfortW, canvas.height / STATE.world.comfortH));
+    STATE.camera.baseZoom = comfortScale / STATE.camera.autoScale;
+    // Snap straight to the full-world view (not animated in from wherever
+    // the previous wave's camera ended up) and hold there briefly before
+    // easing toward the comfortable zoom -- see the wideIntroHoldUntil
+    // check in the main update loop. Every wide wave gets this beat, not
+    // just the first, so a differently-laid-out board still gets shown
+    // off each time.
+    STATE.camera.scale = STATE.camera.autoScale;
+    STATE.camera.targetScale = STATE.camera.autoScale;
+    STATE.camera.wideIntroHoldUntil = performance.now() + CAMERA_CONFIG.WIDE_INTRO_HOLD_MS;
+  } else {
+    STATE.camera.baseZoom = 1;
+    STATE.camera.targetScale = STATE.camera.autoScale;
+    STATE.camera.wideIntroHoldUntil = 0;
+    if (!STATE.camera.scale) STATE.camera.scale = STATE.camera.autoScale; // first wave: nothing to animate from
+  }
   // A new wave's world is a different size (or the same size laid out
   // completely differently) — last wave's pan position doesn't mean
   // anything here, so re-center on this wave's own middle rather than
@@ -5405,6 +5500,16 @@ function update() {
     if (elapsedFrac >= 1) line.settled = true;
   }
 
+  // Wide waves (see WIDE_WORLD_START_WAVE) start held at the full-world
+  // fit-scale (set in startWave) rather than immediately easing toward the
+  // comfortable play zoom -- this is that hold's release: once its
+  // deadline passes, targetScale flips to the comfortable composed value
+  // exactly once, and the ordinary per-frame lerp below takes it from
+  // there like any other scale change.
+  if (STATE.camera.wideIntroHoldUntil && performance.now() >= STATE.camera.wideIntroHoldUntil) {
+    STATE.camera.targetScale = STATE.camera.autoScale * STATE.camera.baseZoom * STATE.camera.userZoom;
+    STATE.camera.wideIntroHoldUntil = 0;
+  }
   STATE.camera.scale += (STATE.camera.targetScale - STATE.camera.scale) * CAMERA_CONFIG.ZOOM_LERP;
   clampCameraCenter(); // re-clamp every frame, since the viewport's own size keeps changing while scale is still animating toward targetScale
 

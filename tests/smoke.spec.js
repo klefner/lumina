@@ -1414,3 +1414,144 @@ test('every real instrument sample still decodes even when its fetch is much slo
   expect(counts.vibraphone).toBe(36);
   expect(errors).toEqual([]);
 });
+
+test('WIDE_WORLD_START_WAVE is derived from the flagged tutorial entry, not a hardcoded number', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const flaggedIndex = TUTORIAL_MESSAGES.findIndex(m => m.unlocksWideWorld);
+    return {
+      flaggedIndex,
+      wideWorldStartWave: WIDE_WORLD_START_WAVE,
+      isSecondToLast: flaggedIndex === TUTORIAL_MESSAGES.length - 2,
+      onlyOneFlagged: TUTORIAL_MESSAGES.filter(m => m.unlocksWideWorld).length,
+    };
+  });
+
+  // WIDE_WORLD_START_WAVE is 1-indexed (wave numbers start at 1), so it
+  // should equal the flagged entry's 0-indexed array position + 1.
+  expect(result.wideWorldStartWave).toBe(result.flaggedIndex + 1);
+  expect(result.isSecondToLast).toBe(true);
+  expect(result.onlyOneFlagged).toBe(1);
+  expect(errors).toEqual([]);
+});
+
+test('the playfield only gets a wide-world floor from WIDE_WORLD_START_WAVE on, and never below it', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+
+    // A low dot count (wave 1) would otherwise size the world at exactly
+    // the screen's own dimensions (growth == 1) -- the clearest possible
+    // signal of whether the floor wrongly applied early.
+    const earlyDots = generateDots(1);
+    ensureAllDotsInWorldBounds(earlyDots);
+    const earlyWorld = { w: STATE.world.w, h: STATE.world.h };
+
+    const wideDots = generateDots(WIDE_WORLD_START_WAVE);
+    ensureAllDotsInWorldBounds(wideDots);
+    const wideWorld = { w: STATE.world.w, h: STATE.world.h, comfortW: STATE.world.comfortW, comfortH: STATE.world.comfortH };
+
+    return { earlyWorld, wideWorld };
+  });
+
+  expect(result.earlyWorld.w).toBe(500); // no floor applied below WIDE_WORLD_START_WAVE
+  expect(result.earlyWorld.h).toBe(900);
+  expect(result.wideWorld.w).toBeGreaterThanOrEqual(500 * 1.6);
+  expect(result.wideWorld.h).toBeGreaterThanOrEqual(900 * 1.6);
+  // comfortW/H record what the world would have been without the floor --
+  // for a low-ish dot count that's still just the screen itself.
+  expect(result.wideWorld.comfortW).toBeLessThan(result.wideWorld.w);
+  expect(result.wideWorld.comfortH).toBeLessThan(result.wideWorld.h);
+  expect(errors).toEqual([]);
+});
+
+test('a wide wave holds the camera at the full-world view before easing to a comfortable zoom, every time it recurs', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000); // real wave 1 underway, audio/game loop running
+
+  const first = await page.evaluate(() => {
+    startWave(WIDE_WORLD_START_WAVE);
+    return {
+      scaleAtStart: STATE.camera.scale,
+      autoScaleAtStart: STATE.camera.autoScale,
+      baseZoom: STATE.camera.baseZoom,
+      holding: STATE.camera.wideIntroHoldUntil > performance.now(),
+    };
+  });
+
+  expect(first.scaleAtStart).toBeCloseTo(first.autoScaleAtStart, 5); // snapped straight to the full-world view
+  expect(first.baseZoom).toBeGreaterThanOrEqual(1); // comfortable zoom is always >= the full-world fit
+  expect(first.holding).toBe(true);
+
+  // Real-time wait past the hold (900ms) plus room for the lerp to make
+  // visible progress toward the comfortable zoom.
+  await page.waitForTimeout(1800);
+  const afterEase = await page.evaluate(() => ({
+    scale: STATE.camera.scale,
+    autoScale: STATE.camera.autoScale,
+    holding: STATE.camera.wideIntroHoldUntil > performance.now(),
+  }));
+  expect(afterEase.holding).toBe(false); // hold has released
+  expect(afterEase.scale).toBeGreaterThan(afterEase.autoScale); // eased in, no longer at the full-world view
+
+  // Two waves later is past every tutorial message (the wide-world
+  // explainer's own wave, then the final "Relax and Enjoy!" wave right
+  // after it) -- still a wide wave, but with no tutorial hint left to
+  // show at all. The zoom hold-then-ease beat should still replay here,
+  // proving it's tied to being a wide wave, not to the one-time explainer.
+  const second = await page.evaluate(() => {
+    const laterWave = STATE.wave + 2;
+    startWave(laterWave);
+    return {
+      scaleAtStart: STATE.camera.scale,
+      autoScaleAtStart: STATE.camera.autoScale,
+      holding: STATE.camera.wideIntroHoldUntil > performance.now(),
+      tutorialWave: STATE.tutorialWave, // should be null -- the explainer only shows once
+    };
+  });
+  expect(second.scaleAtStart).toBeCloseTo(second.autoScaleAtStart, 5);
+  expect(second.holding).toBe(true);
+  expect(second.tutorialWave).toBeNull();
+  expect(errors).toEqual([]);
+});
+
+test('manual pinch/scroll zoom on a wide wave still respects the same absolute pull-back and zoom-in limits as any other wave', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.dots = generateDots(WIDE_WORLD_START_WAVE);
+    ensureAllDotsInWorldBounds(STATE.dots);
+    STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
+    const comfortScale = Math.min(1, Math.min(canvas.width / STATE.world.comfortW, canvas.height / STATE.world.comfortH));
+    STATE.camera.baseZoom = comfortScale / STATE.camera.autoScale;
+
+    setUserZoom(-999); // try to pull far out past any limit
+    const maxPullback = STATE.camera.baseZoom * STATE.camera.userZoom;
+    setUserZoom(999); // try to push far in past any limit
+    const maxZoomIn = STATE.camera.baseZoom * STATE.camera.userZoom;
+
+    return { baseZoom: STATE.camera.baseZoom, maxPullback, maxZoomIn };
+  });
+
+  expect(result.baseZoom).toBeGreaterThan(1); // this is genuinely a wide wave, baseZoom actually engaged
+  // Composed (baseZoom * userZoom) should land on the same absolute bounds
+  // as a non-wide wave (where baseZoom == 1), regardless of how big
+  // baseZoom itself is -- the player can always pull back to see the
+  // entire board, and never zoom in past the usual ceiling.
+  expect(result.maxPullback).toBeCloseTo(0.65, 5); // CAMERA_CONFIG.MIN_USER_PULLBACK
+  expect(result.maxZoomIn).toBeCloseTo(3, 5); // CAMERA_CONFIG.MAX_USER_ZOOM_IN
+  expect(errors).toEqual([]);
+});
