@@ -2156,3 +2156,36 @@ test('connection praise never appears on a tutorial wave, even for a connection 
   expect(result.pastTutorial.praiseCount).toBe(1);
   expect(errors).toEqual([]);
 });
+
+test('connection praise: an ordinary direct connection sharing a dot with an existing one (e.g. a second spoke in a 3+-dot group) is not misread as a squeeze', async ({ page }) => {
+  // Flagged by Codex review on #24: in a 3+-dot group, connecting A-B then
+  // a direct A-C produces one long straight segment. The old exclusion
+  // check tested the drawn segment's own MIDPOINT against each dot -- for
+  // a long segment that midpoint can be far from both dots even though the
+  // segment's actual closest approach to the existing A-B line is 0, right
+  // at their shared dot A. That got misread as an "incredible squeeze."
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const dotA = { x: 500, y: 500 };
+    const dotB = { x: 500, y: 300 }; // straight up from A
+    const dotC = { x: 700, y: 500 }; // straight right from A -- perpendicular spoke
+
+    // A-B already connected.
+    STATE.connections = [{ dotA: 0, dotB: 1, colorIndex: 0, pairId: 0, segments: [{ x1: dotA.x, y1: dotA.y, x2: dotB.x, y2: dotB.y }] }];
+    STATE.barriers = [];
+
+    // A direct, ordinary A-C connection -- nothing tight or noteworthy
+    // about it, it just happens to share dot A with the existing line.
+    const path = [{ x: dotA.x, y: dotA.y }, { x: dotC.x, y: dotC.y }];
+    const segs = smoothedCurveSegments(path);
+    const len = pathLength(path);
+
+    return evaluateConnectionPraise(dotA, dotC, segs, len);
+  });
+
+  expect(result).toBeNull();
+  expect(errors).toEqual([]);
+});

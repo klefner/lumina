@@ -3266,17 +3266,21 @@ function tierIndexFor(value, thresholds, higherIsBetter) {
   return -1;
 }
 
-// Minimum distance between two line segments. Assumes they don't actually
-// intersect (guaranteed here -- a crossing connection is already rejected
-// before completeConnection ever runs), in which case the minimum distance
-// is always at one of the four endpoints.
-function segmentToSegmentDistance(a, b) {
-  return Math.min(
-    distPointToSegment(a.x1, a.y1, b.x1, b.y1, b.x2, b.y2),
-    distPointToSegment(a.x2, a.y2, b.x1, b.y1, b.x2, b.y2),
-    distPointToSegment(b.x1, b.y1, a.x1, a.y1, a.x2, a.y2),
-    distPointToSegment(b.x2, b.y2, a.x1, a.y1, a.x2, a.y2)
-  );
+// Minimum distance between two line segments, plus the point where that
+// minimum is achieved. Assumes they don't actually intersect (guaranteed
+// here -- a crossing connection is already rejected before
+// completeConnection ever runs), in which case the minimum distance is
+// always at one of the four endpoints.
+function closestApproach(a, b) {
+  const candidates = [
+    { d: distPointToSegment(a.x1, a.y1, b.x1, b.y1, b.x2, b.y2), x: a.x1, y: a.y1 },
+    { d: distPointToSegment(a.x2, a.y2, b.x1, b.y1, b.x2, b.y2), x: a.x2, y: a.y2 },
+    { d: distPointToSegment(b.x1, b.y1, a.x1, a.y1, a.x2, a.y2), x: b.x1, y: b.y1 },
+    { d: distPointToSegment(b.x2, b.y2, a.x1, a.y1, a.x2, a.y2), x: b.x2, y: b.y2 },
+  ];
+  let best = candidates[0];
+  for (const c of candidates) if (c.d < best.d) best = c;
+  return best;
 }
 
 function straightLineBlocked(dotA, dotB) {
@@ -3303,17 +3307,32 @@ function evaluateConnectionPraise(dotA, dotB, newSegments, actualLen) {
   const straightDist = Math.hypot(dotB.x - dotA.x, dotB.y - dotA.y);
   if (straightDist < 1) return null; // guards a divide-by-zero that MIN_DOT_DISTANCE should already prevent
 
+  // Excluding by the *closest-approach point* between the two segments,
+  // not by the drawn segment's own midpoint -- a long segment (e.g. a
+  // direct second connection from a dot that's already got one, in a
+  // 3+-dot group) can have its midpoint far from either dot while still
+  // touching an existing line right at their shared dot. Checking the
+  // actual near-point catches that; checking the segment's midpoint
+  // doesn't (flagged by Codex review on #24: this was misreading an
+  // ordinary shared-dot spoke as an "incredible squeeze").
   const excludeR = CONFIG.DOT_RADIUS_CONNECTED_MAX + CONNECTION_PRAISE_CONFIG.SQUEEZE_EXCLUDE_RADIUS;
   let minClearance = Infinity;
   for (const seg of newSegments) {
-    const midX = (seg.x1 + seg.x2) / 2, midY = (seg.y1 + seg.y2) / 2;
-    if (Math.hypot(midX - dotA.x, midY - dotA.y) < excludeR) continue;
-    if (Math.hypot(midX - dotB.x, midY - dotB.y) < excludeR) continue;
     for (const b of STATE.barriers) {
-      for (const bSeg of segmentsOfBarrier(b)) minClearance = Math.min(minClearance, segmentToSegmentDistance(seg, bSeg));
+      for (const bSeg of segmentsOfBarrier(b)) {
+        const approach = closestApproach(seg, bSeg);
+        if (Math.hypot(approach.x - dotA.x, approach.y - dotA.y) < excludeR) continue;
+        if (Math.hypot(approach.x - dotB.x, approach.y - dotB.y) < excludeR) continue;
+        minClearance = Math.min(minClearance, approach.d);
+      }
     }
     for (const c of STATE.connections) {
-      for (const cSeg of c.segments) minClearance = Math.min(minClearance, segmentToSegmentDistance(seg, cSeg));
+      for (const cSeg of c.segments) {
+        const approach = closestApproach(seg, cSeg);
+        if (Math.hypot(approach.x - dotA.x, approach.y - dotA.y) < excludeR) continue;
+        if (Math.hypot(approach.x - dotB.x, approach.y - dotB.y) < excludeR) continue;
+        minClearance = Math.min(minClearance, approach.d);
+      }
     }
   }
   const squeezeTier = tierIndexFor(minClearance, CONNECTION_PRAISE_CONFIG.SQUEEZE_TIERS, false);
