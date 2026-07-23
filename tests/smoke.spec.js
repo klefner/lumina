@@ -1874,3 +1874,285 @@ test('resizing/rotating during the wave-complete reveal does not restore a wide 
   expect(afterResize.targetScale).toBeCloseTo(afterResize.autoScale, 5);
   expect(errors).toEqual([]);
 });
+
+test('tierIndexFor picks the hardest-satisfied tier in both directions, or none', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => ({
+    lowerIsBetter_easy: tierIndexFor(40, [48, 28, 14], false),
+    lowerIsBetter_great: tierIndexFor(20, [48, 28, 14], false),
+    lowerIsBetter_incredible: tierIndexFor(10, [48, 28, 14], false),
+    lowerIsBetter_none: tierIndexFor(60, [48, 28, 14], false),
+    higherIsBetter_easy: tierIndexFor(2.0, [1.8, 2.6, 3.6], true),
+    higherIsBetter_incredible: tierIndexFor(4.0, [1.8, 2.6, 3.6], true),
+    higherIsBetter_none: tierIndexFor(1.2, [1.8, 2.6, 3.6], true),
+  }));
+
+  expect(result.lowerIsBetter_easy).toBe(0);
+  expect(result.lowerIsBetter_great).toBe(1);
+  expect(result.lowerIsBetter_incredible).toBe(2);
+  expect(result.lowerIsBetter_none).toBe(-1);
+  expect(result.higherIsBetter_easy).toBe(0);
+  expect(result.higherIsBetter_incredible).toBe(2);
+  expect(result.higherIsBetter_none).toBe(-1);
+  expect(errors).toEqual([]);
+});
+
+test('connection praise: a tight squeeze past a nearby barrier is detected at the right tier, excluding the area right around each dot', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const dotA = { x: 100, y: 500 };
+    const dotB = { x: 900, y: 500 };
+    const path = [{ x: 100, y: 500 }, { x: 500, y: 500 }, { x: 900, y: 500 }];
+    const segs = smoothedCurveSegments(path);
+    const len = pathLength(path);
+
+    // A barrier whose nearest point to the (straight, colinear) path is
+    // exactly 20px away, comfortably inside the "great" tier (<=28) but
+    // outside "incredible" (<=14).
+    STATE.barriers = [{ segments: [{ x1: 500, y1: 520, x2: 500, y2: 600 }] }];
+    STATE.connections = [];
+    const great = evaluateConnectionPraise(dotA, dotB, segs, len);
+
+    // Move it right up against the path (2px clearance) -- incredible.
+    STATE.barriers = [{ segments: [{ x1: 500, y1: 502, x2: 500, y2: 600 }] }];
+    const incredible = evaluateConnectionPraise(dotA, dotB, segs, len);
+
+    // A barrier that's only close to a point right next to dotA itself
+    // (inside the exclusion radius) shouldn't count as a squeeze at all --
+    // being near your own destination isn't threading a needle. Built with
+    // finer-grained manual segments near dotA (rather than relying on
+    // smoothedCurveSegments' own coarse sampling for this specific
+    // geometry) so the exclusion zone is tested precisely regardless of
+    // curve-sampling granularity.
+    const fineSegsNearDotA = [
+      { x1: 100, y1: 500, x2: 130, y2: 500 }, // midpoint 15px from dotA -- excluded
+      { x1: 130, y1: 500, x2: 160, y2: 500 }, // midpoint 45px from dotA -- still excluded (<50)
+      { x1: 160, y1: 500, x2: 900, y2: 500 }, // midpoint far from both dots -- not excluded
+    ];
+    STATE.barriers = [{ segments: [{ x1: 105, y1: 501, x2: 105, y2: 505 }] }];
+    const nearDotOnly = evaluateConnectionPraise(dotA, dotB, fineSegsNearDotA, len);
+
+    // Nothing nearby at all -- no barriers, no other connections.
+    STATE.barriers = [];
+    const nothingNearby = evaluateConnectionPraise(dotA, dotB, segs, len);
+
+    return { great, incredible, nearDotOnly, nothingNearby };
+  });
+
+  expect(result.great).toEqual({ criterion: 'squeeze', tier: 1 });
+  expect(result.incredible).toEqual({ criterion: 'squeeze', tier: 2 });
+  expect(result.nearDotOnly).toBeNull();
+  expect(result.nothingNearby).toBeNull();
+  expect(errors).toEqual([]);
+});
+
+test('connection praise: "efficient despite complexity" only counts when the straight line itself would have been illegal', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const dotA = { x: 100, y: 500 };
+    const dotB = { x: 900, y: 500 };
+    // A shallow, symmetric detour around a barrier that sits on the
+    // straight line -- manually built (not run through
+    // smoothedCurveSegments) so the clearance from the barrier is a known
+    // ~54px, safely outside every SQUEEZE_TIERS threshold (<=48), and only
+    // "efficient" can fire. Ratio = hypot(400,60)*2 / 800 =~ 1.011, deep
+    // inside every EFFICIENT_TIERS threshold.
+    const segs = [
+      { x1: 100, y1: 500, x2: 500, y2: 440 },
+      { x1: 500, y1: 440, x2: 900, y2: 500 },
+    ];
+    const len = Math.hypot(400, 60) * 2;
+
+    STATE.barriers = [{ segments: [{ x1: 500, y1: 495, x2: 500, y2: 505 }] }]; // sits right on the straight line
+    STATE.connections = [];
+    const blocked = evaluateConnectionPraise(dotA, dotB, segs, len);
+
+    // Same path/ratio, but nothing actually blocks the straight line --
+    // should not count as "efficient despite complexity" (or anything
+    // else -- the detour is too small to read as a deliberately long
+    // line either).
+    STATE.barriers = [];
+    const unblocked = evaluateConnectionPraise(dotA, dotB, segs, len);
+
+    return { blocked, unblocked };
+  });
+
+  expect(result.blocked.criterion).toBe('efficient');
+  expect(result.blocked.tier).toBeGreaterThanOrEqual(0);
+  expect(result.unblocked).toBeNull();
+  expect(errors).toEqual([]);
+});
+
+test('connection praise: "went the distance" needs both a real length ratio and an absolute floor, and squeeze/efficient take priority over it', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // No barriers or connections at all, isolating the ratio/floor
+    // interaction on its own -- segs is irrelevant here since the squeeze
+    // check can't fire with nothing in the world to measure clearance
+    // against, and "efficient" can't fire since straightLineBlocked is
+    // false with no barriers/connections either.
+    STATE.barriers = [];
+    STATE.connections = [];
+
+    // Ratio 4.0 (comfortably past the "incredible" LONG_TIERS threshold
+    // of 3.6), but the two dots are close enough together that the
+    // absolute length (160px) is still under the floor
+    // (CONFIG.MIN_DOT_DISTANCE * 2.5 = 275px) -- ratio alone isn't enough.
+    const dotA = { x: 100, y: 500 };
+    const dotB = { x: 140, y: 500 }; // straightDist = 40
+    const belowFloor = evaluateConnectionPraise(dotA, dotB, [], 160); // ratio = 160/40 = 4.0
+
+    // Same 4.0 ratio, but with the dots far enough apart that the same
+    // ratio clears the absolute floor too.
+    const dotA2 = { x: 100, y: 500 };
+    const dotB2 = { x: 400, y: 500 }; // straightDist = 300, already past the floor on its own
+    const longResult = evaluateConnectionPraise(dotA2, dotB2, [], 1200); // ratio = 1200/300 = 4.0
+
+    return { belowFloor, longResult };
+  });
+
+  expect(result.belowFloor).toBeNull(); // ratio alone isn't enough without the absolute floor
+  expect(result.longResult.criterion).toBe('long');
+  expect(errors).toEqual([]);
+});
+
+test('connection praise: spawning creates a correctly-classed, correctly-flipped popup that opens, then closes and removes itself on schedule', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.camera.scale = 1; STATE.camera.centerX = 250; STATE.camera.centerY = 450;
+
+    // Left-side dot: should not flip.
+    const dotLeft = { x: 250 - 200, y: 450 }; // screen x well under 60% of 500
+    spawnConnectionPraise(dotLeft, { criterion: 'squeeze', tier: 1 });
+    await new Promise(r => setTimeout(r, 20)); // let the reflow/`.open` trick settle
+
+    const entry = STATE.connectionPraise[STATE.connectionPraise.length - 1];
+    const beforeClose = {
+      count: STATE.connectionPraise.length,
+      hasOpenClass: entry.el.classList.contains('open'),
+      hasFlipClass: entry.el.classList.contains('praise-flip'),
+      hasTierClass: entry.el.classList.contains('praise-tier-1'),
+      inDom: document.getElementById('connection-praise-layer').contains(entry.el),
+    };
+
+    // Right-side dot: should flip.
+    const dotRight = { x: 250 + 200, y: 450 }; // screen x well over 60% of 500
+    spawnConnectionPraise(dotRight, { criterion: 'long', tier: 2 });
+    const flippedEntry = STATE.connectionPraise[STATE.connectionPraise.length - 1];
+    const flipped = flippedEntry.el.classList.contains('praise-flip');
+
+    // Fast-forward past the visible window entirely by back-dating
+    // spawnedAt rather than waiting the real 4 seconds.
+    for (const e of STATE.connectionPraise) e.spawnedAt = performance.now() - 10000;
+    updateConnectionPraise();
+
+    return {
+      beforeClose,
+      flipped,
+      countAfterExpiry: STATE.connectionPraise.length,
+      layerEmptyAfterExpiry: document.getElementById('connection-praise-layer').children.length,
+    };
+  });
+
+  expect(result.beforeClose.count).toBe(1);
+  expect(result.beforeClose.hasOpenClass).toBe(true);
+  expect(result.beforeClose.hasFlipClass).toBe(false);
+  expect(result.beforeClose.hasTierClass).toBe(true);
+  expect(result.beforeClose.inDom).toBe(true);
+  expect(result.flipped).toBe(true);
+  expect(result.countAfterExpiry).toBe(0);
+  expect(result.layerEmptyAfterExpiry).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test('connection praise popups close (drop the open class) shortly before they expire, and starting a new wave clears any still active', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    spawnConnectionPraise({ x: STATE.camera.centerX, y: STATE.camera.centerY }, { criterion: 'squeeze', tier: 0 });
+    const entry = STATE.connectionPraise[0];
+
+    // Just inside the closing window (CONNECTION_PRAISE_TRANSITION_MS
+    // before the end) -- should have dropped .open, but not been removed yet.
+    entry.spawnedAt = performance.now() - (CONNECTION_PRAISE_VISIBLE_MS - CONNECTION_PRAISE_TRANSITION_MS + 10);
+    updateConnectionPraise();
+    const closing = { stillTracked: STATE.connectionPraise.length === 1, hasOpenClass: entry.el.classList.contains('open') };
+
+    // Starting a fresh wave should clear it out entirely, DOM node included.
+    startWave(1);
+    const afterNewWave = {
+      count: STATE.connectionPraise.length,
+      layerEmpty: document.getElementById('connection-praise-layer').children.length === 0,
+    };
+
+    return { closing, afterNewWave };
+  });
+
+  expect(result.closing.stillTracked).toBe(true);
+  expect(result.closing.hasOpenClass).toBe(false);
+  expect(result.afterNewWave.count).toBe(0);
+  expect(result.afterNewWave.layerEmpty).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('connection praise never appears on a tutorial wave, even for a connection that would clearly qualify -- same rule fact boxes already follow', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+
+  const result = await page.evaluate(() => {
+    function forceQualifyingLongConnection() {
+      const dotA = STATE.dots[0], dotB = STATE.dots[1];
+      // A long, deliberately winding path between the two real dots --
+      // easily clears the "long" criterion with no barriers involved.
+      const straightDist = Math.hypot(dotB.x - dotA.x, dotB.y - dotA.y);
+      STATE.currentPath = [
+        { x: dotA.x, y: dotA.y },
+        { x: dotA.x, y: dotA.y - straightDist },
+        { x: dotB.x, y: dotB.y + straightDist },
+        { x: dotB.x, y: dotB.y },
+      ];
+      completeConnection(dotA, dotB);
+      return STATE.connectionPraise.length;
+    }
+
+    startWave(1); // a real tutorial wave (TUTORIAL_MESSAGES[0])
+    const onTutorialWave = { tutorialWave: STATE.tutorialWave, praiseCount: forceQualifyingLongConnection() };
+
+    startWave(9); // past every tutorial message (TUTORIAL_MESSAGES.length === 8)
+    const pastTutorial = { tutorialWave: STATE.tutorialWave, praiseCount: forceQualifyingLongConnection() };
+
+    return { onTutorialWave, pastTutorial };
+  });
+
+  expect(result.onTutorialWave.tutorialWave).not.toBeNull();
+  expect(result.onTutorialWave.praiseCount).toBe(0);
+  expect(result.pastTutorial.tutorialWave).toBeNull();
+  expect(result.pastTutorial.praiseCount).toBe(1);
+  expect(errors).toEqual([]);
+});
