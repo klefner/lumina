@@ -1642,3 +1642,140 @@ test('an orientation change during a wide wave\'s intro hold keeps the camera at
   expect(afterHold.scale).toBeGreaterThan(afterHold.autoScale);
   expect(errors).toEqual([]);
 });
+
+test('holding a draw gesture near a screen edge auto-pans the camera toward it, only while zoomed in and only while drawing', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.world = { w: 2000, h: 2000 };
+    STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
+    STATE.camera.centerX = 1000; STATE.camera.centerY = 1000;
+    STATE.camera.userZoom = 1;
+
+    const out = {};
+
+    // Not drawing at all: near an edge should never pan, regardless of zoom.
+    STATE.camera.baseZoom = 2;
+    STATE.camera.scale = STATE.camera.autoScale * STATE.camera.baseZoom;
+    STATE.isDrawing = false;
+    STATE.lastDrawScreenPos = { x: 10, y: 450 };
+    updateEdgePan();
+    out.noPanWhenNotDrawing = STATE.camera.centerX === 1000;
+
+    // Drawing, but not zoomed in past the full-world view: nothing is
+    // off-screen to reveal, so this should still be a no-op.
+    STATE.camera.baseZoom = 1;
+    STATE.camera.scale = STATE.camera.autoScale;
+    STATE.isDrawing = true;
+    STATE.currentPath = [{ x: 1000, y: 1000 }];
+    STATE.smoothedCursor = { x: 1000, y: 1000 };
+    STATE.lastDrawScreenPos = { x: 10, y: 450 };
+    updateEdgePan();
+    out.noPanWhenNotZoomedIn = STATE.camera.centerX === 1000;
+
+    // Drawing AND zoomed in, cursor pinned near the left edge: should pull
+    // centerX down (reveal more world to the left) over repeated frames,
+    // and the path should grow new points toward that shifting world point
+    // even though the screen-space cursor position itself never moves.
+    STATE.camera.baseZoom = 2;
+    STATE.camera.scale = STATE.camera.autoScale * STATE.camera.baseZoom;
+    STATE.camera.centerX = 1000; STATE.camera.centerY = 1000;
+    STATE.isDrawing = true;
+    STATE.currentPath = [{ x: 1000, y: 1000 }];
+    STATE.smoothedCursor = { x: 1000, y: 1000 };
+    STATE.lastDrawScreenPos = { x: 10, y: 450 }; // near left edge, vertically centered
+    const pathLenBefore = STATE.currentPath.length;
+    for (let i = 0; i < 80; i++) updateEdgePan();
+    out.leftEdgePannedLeft = STATE.camera.centerX < 1000;
+    out.leftEdgeDidNotPanVertically = STATE.camera.centerY === 1000; // cursor was screen-vertically centered
+    out.pathGrewWhileStationary = STATE.currentPath.length > pathLenBefore;
+
+    // Right edge should pan the opposite direction.
+    STATE.camera.centerX = 1000; STATE.camera.centerY = 1000;
+    STATE.currentPath = [{ x: 1000, y: 1000 }];
+    STATE.smoothedCursor = { x: 1000, y: 1000 };
+    STATE.lastDrawScreenPos = { x: 490, y: 450 }; // near right edge
+    for (let i = 0; i < 80; i++) updateEdgePan();
+    out.rightEdgePannedRight = STATE.camera.centerX > 1000;
+
+    // Dead center should never pan on either axis.
+    STATE.camera.centerX = 1000; STATE.camera.centerY = 1000;
+    STATE.lastDrawScreenPos = { x: 250, y: 450 };
+    updateEdgePan();
+    out.centerIsInert = STATE.camera.centerX === 1000 && STATE.camera.centerY === 1000;
+
+    return out;
+  });
+
+  expect(result.noPanWhenNotDrawing).toBe(true);
+  expect(result.noPanWhenNotZoomedIn).toBe(true);
+  expect(result.leftEdgePannedLeft).toBe(true);
+  expect(result.leftEdgeDidNotPanVertically).toBe(true);
+  expect(result.pathGrewWhileStationary).toBe(true);
+  expect(result.rightEdgePannedRight).toBe(true);
+  expect(result.centerIsInert).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('a draw gesture whose end event never reaches canvas is cleared by window-level mouseup/blur, not left to edge-pan forever', async ({ page }) => {
+  // Flagged by Codex review on #22: mouseup/touchend are only bound on
+  // canvas, so a drag released over the page background or a browser
+  // window losing focus mid-drag would leave isDrawing stuck true --
+  // previously a static stale line, but now a runaway edge-pan since
+  // updateEdgePan runs every frame regardless of new input events.
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.world = { w: 2000, h: 2000 };
+    STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
+    STATE.camera.baseZoom = 2; // zoomed in -- edge-pan would otherwise actually engage
+    STATE.camera.scale = STATE.camera.autoScale * STATE.camera.baseZoom;
+    STATE.camera.centerX = 1000; STATE.camera.centerY = 1000;
+
+    const out = {};
+
+    // Simulate a gesture stuck open near the left edge -- the exact setup
+    // that would otherwise runaway-pan forever.
+    STATE.isDrawing = true;
+    STATE.activeDot = { id: 0 };
+    STATE.currentPath = [{ x: 1000, y: 1000 }];
+    STATE.smoothedCursor = { x: 1000, y: 1000 };
+    STATE.lastDrawScreenPos = { x: 10, y: 450 };
+
+    window.dispatchEvent(new Event('blur'));
+    out.clearedByBlur = { isDrawing: STATE.isDrawing, lastPos: STATE.lastDrawScreenPos, activeDot: STATE.activeDot };
+
+    // Confirm it's not just cleared once -- a still-stuck gesture near an
+    // edge really would have kept panning every frame if left alone.
+    const centerXAfterBlur = STATE.camera.centerX;
+    updateEdgePan();
+    out.inertAfterBlur = STATE.camera.centerX === centerXAfterBlur;
+
+    // Re-arm the same stuck scenario and confirm a window-level mouseup
+    // (not targeting canvas -- e.g. released over the page background)
+    // clears it exactly the same way.
+    STATE.isDrawing = true;
+    STATE.activeDot = { id: 0 };
+    STATE.currentPath = [{ x: 1000, y: 1000 }];
+    STATE.smoothedCursor = { x: 1000, y: 1000 };
+    STATE.lastDrawScreenPos = { x: 10, y: 450 };
+    window.dispatchEvent(new MouseEvent('mouseup'));
+    out.clearedByWindowMouseup = { isDrawing: STATE.isDrawing, lastPos: STATE.lastDrawScreenPos };
+
+    return out;
+  });
+
+  expect(result.clearedByBlur.isDrawing).toBe(false);
+  expect(result.clearedByBlur.lastPos).toBeNull();
+  expect(result.clearedByBlur.activeDot).toBeNull();
+  expect(result.inertAfterBlur).toBe(true);
+  expect(result.clearedByWindowMouseup.isDrawing).toBe(false);
+  expect(result.clearedByWindowMouseup.lastPos).toBeNull();
+  expect(errors).toEqual([]);
+});

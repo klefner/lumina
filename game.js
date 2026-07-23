@@ -1009,6 +1009,7 @@ const STATE = {
   },
   pinch: null,          // { startDist, startZoom } while a two-finger touch is in progress
   panDrag: null,        // { startScreenX, startScreenY, startCenterX, startCenterY } while panning
+  lastDrawScreenPos: null, // { x, y } screen-space, last known position of an in-progress draw gesture -- see updateEdgePan
   hintPulse: null,      // { startTime } while the hint button's "flash every unconnected dot" is playing
 
   activeDot: null,     // The dot currently being dragged from
@@ -2865,6 +2866,26 @@ canvas.addEventListener('mousemove', onInputMove, { passive: false });
 canvas.addEventListener('mouseup', onInputEnd, { passive: false });
 canvas.addEventListener('wheel', onWheelZoom, { passive: false });
 
+// Safety net for a draw gesture whose end event never reaches canvas at
+// all -- a mouse released over the page background outside canvas (no
+// mouseup target there to bubble from), or the browser window losing
+// focus entirely mid-drag (dragged out of the viewport and released
+// somewhere else), or iOS interrupting an in-progress touch. Without
+// this, STATE.isDrawing would stick true forever: previously that just
+// left one static stale line on screen, but now that updateEdgePan runs
+// every frame regardless of new input events (see its own comment), a
+// stuck gesture left near a screen edge would pan the camera and grow
+// the path indefinitely instead. A window-level 'mouseup' still fires
+// after canvas's own bubble-phase handler for any release that DID land
+// on canvas, so this is a no-op for a normal connection -- onInputEnd
+// has already cleared isDrawing by the time it runs.
+function cancelStaleDrawGesture() {
+  if (STATE.isDrawing) cancelActiveLine();
+}
+window.addEventListener('mouseup', cancelStaleDrawGesture);
+window.addEventListener('blur', cancelStaleDrawGesture);
+canvas.addEventListener('touchcancel', cancelStaleDrawGesture, { passive: false });
+
 // A key press also advances past the WAVE_COMPLETE screen, same as a tap.
 window.addEventListener('keydown', () => {
   if (STATE.phase === 'WAVE_COMPLETE' && STATE.waveCompleteAdvanceFn) {
@@ -2982,6 +3003,7 @@ function onInputStart(e) {
   STATE.isDrawing = true;
   STATE.currentPath = [{ x: dot.x, y: dot.y }];
   STATE.smoothedCursor = { x: dot.x, y: dot.y };
+  STATE.lastDrawScreenPos = getEventScreenPos(e);
 }
 
 function onInputMove(e) {
@@ -3004,14 +3026,24 @@ function onInputMove(e) {
 
   if (!STATE.isDrawing || STATE.phase !== 'PLAYING') return;
 
-  const pos = getEventPos(e);
+  // Remembered so updateEdgePan (see its own comment) can keep re-deriving
+  // the world point under a finger/cursor that's holding still near the
+  // screen edge, as the camera it's dragging along shifts what that point
+  // actually is -- a real move event isn't the only thing that should
+  // extend the line while edge-panning is active.
+  STATE.lastDrawScreenPos = getEventScreenPos(e);
+  advanceDrawingTo(getEventPos(e));
+}
 
-  // Low-pass filter the raw pointer position every move event (not just
-  // every recorded path point) so hand tremor is damped out at the source —
-  // curving through noisy points after the fact still looks jagged, but
-  // filtering before recording actually removes the shake.
-  STATE.smoothedCursor.x += (pos.x - STATE.smoothedCursor.x) * CONFIG.LINE_SMOOTHING;
-  STATE.smoothedCursor.y += (pos.y - STATE.smoothedCursor.y) * CONFIG.LINE_SMOOTHING;
+// Low-pass filters the raw pointer position (world space) toward
+// STATE.smoothedCursor every call, not just every recorded path point, so
+// hand tremor is damped out at the source -- curving through noisy points
+// after the fact still looks jagged, but filtering before recording
+// actually removes the shake. Shared between real move events (onInputMove)
+// and updateEdgePan's synthetic per-frame re-derivation of the same point.
+function advanceDrawingTo(worldPos) {
+  STATE.smoothedCursor.x += (worldPos.x - STATE.smoothedCursor.x) * CONFIG.LINE_SMOOTHING;
+  STATE.smoothedCursor.y += (worldPos.y - STATE.smoothedCursor.y) * CONFIG.LINE_SMOOTHING;
 
   const lastPoint = STATE.currentPath[STATE.currentPath.length - 1];
   const dist = Math.hypot(STATE.smoothedCursor.x - lastPoint.x, STATE.smoothedCursor.y - lastPoint.y);
@@ -3019,6 +3051,45 @@ function onInputMove(e) {
   if (dist >= CONFIG.LINE_POINT_INTERVAL) {
     STATE.currentPath.push({ x: STATE.smoothedCursor.x, y: STATE.smoothedCursor.y });
   }
+}
+
+// While actively drawing and zoomed in enough that the world doesn't
+// already fit on screen (same gate as the empty-space pan drag in
+// onInputStart), holding the draw gesture near a screen edge auto-scrolls
+// the camera toward it -- otherwise, with one finger already committed to
+// drawing, there's no way to reach a dot that's currently off-screen at
+// the player's current zoom level. Runs every frame (not just on move
+// events) so it keeps scrolling even while the finger/cursor is
+// physically still, held right at the edge.
+const EDGE_PAN_CONFIG = {
+  MARGIN_PX: 70,             // screen-space distance from an edge that starts pulling the camera
+  MAX_SPEED_PX_PER_FRAME: 14, // camera pan speed once at/past the very edge, ~60fps like the rest of the game's per-frame constants
+};
+
+function updateEdgePan() {
+  if (!STATE.isDrawing || !STATE.lastDrawScreenPos) return;
+  if (STATE.camera.baseZoom * STATE.camera.userZoom <= 1) return; // nothing off-screen to reveal
+
+  const { x, y } = STATE.lastDrawScreenPos;
+  const m = EDGE_PAN_CONFIG.MARGIN_PX;
+  const maxV = EDGE_PAN_CONFIG.MAX_SPEED_PX_PER_FRAME;
+  let vx = 0, vy = 0;
+  if (x < m) vx = -maxV * Math.min(1, (m - x) / m);
+  else if (x > canvas.width - m) vx = maxV * Math.min(1, (x - (canvas.width - m)) / m);
+  if (y < m) vy = -maxV * Math.min(1, (m - y) / m);
+  else if (y > canvas.height - m) vy = maxV * Math.min(1, (y - (canvas.height - m)) / m);
+
+  if (vx === 0 && vy === 0) return;
+
+  const s = STATE.camera.scale || 1;
+  STATE.camera.centerX += vx / s;
+  STATE.camera.centerY += vy / s;
+  clampCameraCenter();
+
+  // The screen point itself hasn't moved, but the world point underneath
+  // it just did (the camera moved) -- re-derive it fresh and keep
+  // extending the line toward it, exactly as a real move event would.
+  advanceDrawingTo(screenToWorld(x, y));
 }
 
 function onInputEnd(e) {
@@ -3035,6 +3106,7 @@ function onInputEnd(e) {
   if (!STATE.isDrawing || !STATE.activeDot) return;
 
   STATE.isDrawing = false;
+  STATE.lastDrawScreenPos = null;
 
   let pos = getEventPos(e);
   if (e.changedTouches && e.changedTouches.length > 0) {
@@ -3187,12 +3259,14 @@ function rejectConnection() {
   STATE.activeDot = null;
   STATE.currentPath = [];
   STATE.isDrawing = false;
+  STATE.lastDrawScreenPos = null;
 }
 
 function cancelActiveLine() {
   STATE.activeDot = null;
   STATE.currentPath = [];
   STATE.isDrawing = false;
+  STATE.lastDrawScreenPos = null;
 }
 
 function pathToSegments(path) {
@@ -3521,6 +3595,7 @@ function startWave(waveNumber) {
   STATE.camera.centerY = STATE.world.h / 2;
   STATE.pinch = null;
   STATE.panDrag = null;
+  STATE.lastDrawScreenPos = null;
 
   STATE.dotUnion = {};
   for (const dot of STATE.dots) STATE.dotUnion[dot.id] = dot.id;
@@ -5484,6 +5559,7 @@ function updateWaveDisplay() {
 // ============================================================
 function update() {
   enforceTutorialHintInvariant();
+  updateEdgePan();
 
   for (const dot of STATE.dots) {
     dot.pulsePhase += CONFIG.DOT_PULSE_SPEED;
