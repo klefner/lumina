@@ -2149,9 +2149,16 @@ function resizeCanvas() {
     // dimensions (analogous to baseW/H for growWorldToMatchAspect) --
     // otherwise an orientation change mid-wide-wave would leave the
     // comfortable zoom's meaning stuck at whatever the screen used to be.
-    if (STATE.world.comfortW) {
+    // Skipped during WAVE_COMPLETE: checkWaveComplete deliberately resets
+    // baseZoom to 1 (full-world fit) so the reveal shows everything the
+    // player just connected -- recomputing the wide-wave "comfortable"
+    // zoom here on a resize/rotation would silently re-zoom in and clip
+    // part of that reveal.
+    if (STATE.world.comfortW && STATE.phase !== 'WAVE_COMPLETE') {
       const comfortScale = Math.min(1, Math.min(canvas.width / STATE.world.comfortW, canvas.height / STATE.world.comfortH));
       STATE.camera.baseZoom = comfortScale / STATE.camera.autoScale;
+    } else if (STATE.phase === 'WAVE_COMPLETE') {
+      STATE.camera.baseZoom = 1;
     }
     // A wide wave's intro hold (see startWave/CAMERA_CONFIG.WIDE_INTRO_HOLD_MS)
     // pins targetScale at the full-world fit until wideIntroHoldUntil

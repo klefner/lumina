@@ -1833,3 +1833,44 @@ test('finishing the last connection resets the camera to see the whole board, re
   expect(result.centerY).toBe(result.worldCenterY);
   expect(errors).toEqual([]);
 });
+
+test('resizing/rotating during the wave-complete reveal does not restore a wide wave\'s zoomed-in comfort view', async ({ page }) => {
+  // Flagged by Codex review on #23: resizeCanvas unconditionally
+  // recomputes baseZoom from the wave's wide-world "comfortable zoom"
+  // (see WIDE_WORLD_START_WAVE) on every resize/rotation, with no
+  // awareness of game phase -- rotating a device while sitting on the
+  // WAVE_COMPLETE screen would silently re-zoom in and clip part of the
+  // reveal checkWaveComplete just reset the camera to show in full.
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.setViewportSize({ width: 400, height: 800 });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+
+  await page.evaluate(() => {
+    startWave(WIDE_WORLD_START_WAVE); // sets STATE.world.comfortW/H, the wide-wave comfort ratio
+    STATE.camera.wideIntroHoldUntil = 0; // past the intro hold, the normal case by wave completion
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete();
+  });
+  const beforeResize = await page.evaluate(() => ({
+    baseZoom: STATE.camera.baseZoom,
+    targetScale: STATE.camera.targetScale,
+    autoScale: STATE.camera.autoScale,
+  }));
+  expect(beforeResize.baseZoom).toBe(1);
+  expect(beforeResize.targetScale).toBeCloseTo(beforeResize.autoScale, 5);
+
+  await page.setViewportSize({ width: 800, height: 400 }); // real resize event -> resizeCanvas()
+  await page.waitForTimeout(50);
+  const afterResize = await page.evaluate(() => ({
+    baseZoom: STATE.camera.baseZoom,
+    targetScale: STATE.camera.targetScale,
+    autoScale: STATE.camera.autoScale, // re-derived against the new viewport by resizeCanvas
+  }));
+  expect(afterResize.baseZoom).toBe(1); // still the full-board fit, not recomputed to the wide-wave comfort ratio
+  expect(afterResize.targetScale).toBeCloseTo(afterResize.autoScale, 5);
+  expect(errors).toEqual([]);
+});
