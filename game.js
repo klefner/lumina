@@ -2866,6 +2866,26 @@ canvas.addEventListener('mousemove', onInputMove, { passive: false });
 canvas.addEventListener('mouseup', onInputEnd, { passive: false });
 canvas.addEventListener('wheel', onWheelZoom, { passive: false });
 
+// Safety net for a draw gesture whose end event never reaches canvas at
+// all -- a mouse released over the page background outside canvas (no
+// mouseup target there to bubble from), or the browser window losing
+// focus entirely mid-drag (dragged out of the viewport and released
+// somewhere else), or iOS interrupting an in-progress touch. Without
+// this, STATE.isDrawing would stick true forever: previously that just
+// left one static stale line on screen, but now that updateEdgePan runs
+// every frame regardless of new input events (see its own comment), a
+// stuck gesture left near a screen edge would pan the camera and grow
+// the path indefinitely instead. A window-level 'mouseup' still fires
+// after canvas's own bubble-phase handler for any release that DID land
+// on canvas, so this is a no-op for a normal connection -- onInputEnd
+// has already cleared isDrawing by the time it runs.
+function cancelStaleDrawGesture() {
+  if (STATE.isDrawing) cancelActiveLine();
+}
+window.addEventListener('mouseup', cancelStaleDrawGesture);
+window.addEventListener('blur', cancelStaleDrawGesture);
+canvas.addEventListener('touchcancel', cancelStaleDrawGesture, { passive: false });
+
 // A key press also advances past the WAVE_COMPLETE screen, same as a tap.
 window.addEventListener('keydown', () => {
   if (STATE.phase === 'WAVE_COMPLETE' && STATE.waveCompleteAdvanceFn) {
