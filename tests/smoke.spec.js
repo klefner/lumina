@@ -1779,3 +1779,57 @@ test('a draw gesture whose end event never reaches canvas is cleared by window-l
   expect(result.clearedByWindowMouseup.lastPos).toBeNull();
   expect(errors).toEqual([]);
 });
+
+test('finishing the last connection resets the camera to see the whole board, regardless of the zoom/pan used to get there', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.world = { w: 2000, h: 2000 };
+    STATE.dots = [
+      { id: 0, pairId: 0, colorIndex: 0, x: 500, y: 500, connected: true },
+      { id: 1, pairId: 0, colorIndex: 0, x: 1500, y: 1500, connected: true },
+    ];
+    STATE.wave = 3;
+    STATE.waveStartScore = 0;
+    STATE.score = 0;
+    STATE.song = { genre: { bpm: 100 } };
+
+    // Simulate having been zoomed way in and panned off into a far
+    // corner right as the final connection landed -- exactly the
+    // "stuck looking at whatever was on screen" scenario reported.
+    STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
+    STATE.camera.userZoom = 3;
+    STATE.camera.baseZoom = 1;
+    STATE.camera.scale = STATE.camera.autoScale * STATE.camera.userZoom;
+    STATE.camera.targetScale = STATE.camera.scale;
+    STATE.camera.centerX = 1900; STATE.camera.centerY = 1900;
+
+    checkWaveComplete();
+
+    return {
+      phase: STATE.phase,
+      targetScale: STATE.camera.targetScale,
+      autoScale: STATE.camera.autoScale,
+      userZoom: STATE.camera.userZoom,
+      baseZoom: STATE.camera.baseZoom,
+      centerX: STATE.camera.centerX,
+      centerY: STATE.camera.centerY,
+      worldCenterX: STATE.world.w / 2,
+      worldCenterY: STATE.world.h / 2,
+    };
+  });
+
+  expect(result.phase).toBe('WAVE_COMPLETE');
+  // targetScale resets to the full-world fit -- camera.scale itself eases
+  // toward it via the ordinary per-frame lerp, not asserted here since
+  // that's already covered by the existing zoom-lerp/wide-intro tests.
+  expect(result.targetScale).toBeCloseTo(result.autoScale, 5);
+  expect(result.userZoom).toBe(1);
+  expect(result.baseZoom).toBe(1);
+  expect(result.centerX).toBe(result.worldCenterX);
+  expect(result.centerY).toBe(result.worldCenterY);
+  expect(errors).toEqual([]);
+});
