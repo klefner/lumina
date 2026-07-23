@@ -46,18 +46,34 @@ Not one monolithic backend — five separately deployable, separately scalable p
    Stateless.
 2. **Webhook Handler** — receives Stripe's "payment confirmed" event, writes the entitlement record.
    Isolated so a burst of purchases never touches anything else.
-3. **Entitlement Service** — what the game client calls: "what does this player own?" The hottest, most
-   frequently called module (checked on every load) — kept separate so it can get its own caching/scaling
-   treatment later without touching the other four.
+3. **Entitlement & Paid Content Service** — what the game client calls: "what does this player own, and give
+   me the bytes." The hottest, most frequently called module (checked on every load) — kept separate so it
+   can get its own caching/scaling treatment later without touching the other four.
+
+   **Correction (flagged by Codex review on #27, P1):** the first draft of this record described the client
+   caching a yes/no entitlement result and self-gating rendering against it. That's not real enforcement —
+   with the game staying a static GitHub Pages site, anyone can alter the cached result or the downloaded
+   JS, and if the paid asset files themselves (audio, cosmetic definitions) were published as part of the
+   public site bundle, they could just be fetched directly by URL regardless of what the client-side check
+   says. Every paid item would have been unlockable without ever completing Checkout.
+
+   **Fix:** paid asset bytes are never published to GitHub Pages at all — only the free base game and free
+   assets live there, exactly as today. Paid content lives in Cloudflare R2 (object storage) and is only
+   ever returned by this Worker, which checks the entitlement record server-side *before* returning any
+   bytes. The client doesn't trust a cached flag; it asks the Worker for the actual content and either gets
+   it or gets a 403. This stops the realistic threat for a small indie game (skip Checkout by opening dev
+   tools or guessing a URL) — it does not, and cannot, stop a paying customer from redistributing a file
+   they legitimately obtained. That's the same honor-system tradeoff already accepted in the "should we
+   have a server" conversation this record follows from, just precisely scoped now instead of vague.
 4. **Identity Service** — lightweight email magic-link auth. Issues a session tying a browser to a player
    record. No passwords to secure, no account-recovery flow to build.
 5. **Save-Sync Service** — the free (not paid) multi-save-slots feature lives here, on the same identity
    system as entitlements. Building it alongside identity is far cheaper than solving "how is a player
    identified" twice.
 
-**Client side:** one new isolated module in the game (not woven through `game.js`) calls the Entitlement
-Service once on load, caches the result, and gates every cosmetic behind it — the "does the player own this"
-question lives in exactly one place.
+**Client side:** one new isolated module in the game (not woven through `game.js`) requests paid content
+(not just a yes/no flag) from the Entitlement & Paid Content Service on load — enforcement happens at that
+server boundary, not in the client's own logic.
 
 **Why Cloudflare specifically, over Vercel/AWS Lambda/Supabase, etc.:**
 - Workers run at the edge (low latency worldwide — matters for module 3, checked on every load)
@@ -72,12 +88,13 @@ question lives in exactly one place.
 - D1: 5 GB storage, 5M row reads/day, 100K row writes/day
 - Total fixed cost of the entire stack before a single sale: **$0**
 
-## Design note: built shareable, not shared (yet)
+## Design note: built shareable, confirmed for reuse by Downtown Devour
 
-The five backend modules are generic enough that Holesy (or any future game) could use the same
-entitlement/payment system rather than each game growing its own — that sharing was not built in, since it
-isn't needed yet, but the module boundaries were chosen with it in mind. Same spirit as `studio-ops`: build
-what's needed now, shaped so it doesn't have to be redone later if a second consumer shows up.
+The five backend modules are generic enough that Downtown Devour (launching after Lumina) will use the same
+entitlement/payment system rather than growing its own — confirmed 2026-07-23, not just a hypothetical. That
+sharing isn't built in yet, since it isn't needed until Downtown Devour actually ships, but the module
+boundaries were chosen with it in mind. Same spirit as `studio-ops`: build what's needed now, shaped so it
+doesn't have to be redone later when the second consumer shows up.
 
 ## Open, not yet decided
 
