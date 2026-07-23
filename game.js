@@ -2149,9 +2149,16 @@ function resizeCanvas() {
     // dimensions (analogous to baseW/H for growWorldToMatchAspect) --
     // otherwise an orientation change mid-wide-wave would leave the
     // comfortable zoom's meaning stuck at whatever the screen used to be.
-    if (STATE.world.comfortW) {
+    // Skipped during WAVE_COMPLETE: checkWaveComplete deliberately resets
+    // baseZoom to 1 (full-world fit) so the reveal shows everything the
+    // player just connected -- recomputing the wide-wave "comfortable"
+    // zoom here on a resize/rotation would silently re-zoom in and clip
+    // part of that reveal.
+    if (STATE.world.comfortW && STATE.phase !== 'WAVE_COMPLETE') {
       const comfortScale = Math.min(1, Math.min(canvas.width / STATE.world.comfortW, canvas.height / STATE.world.comfortH));
       STATE.camera.baseZoom = comfortScale / STATE.camera.autoScale;
+    } else if (STATE.phase === 'WAVE_COMPLETE') {
+      STATE.camera.baseZoom = 1;
     }
     // A wide wave's intro hold (see startWave/CAMERA_CONFIG.WIDE_INTRO_HOLD_MS)
     // pins targetScale at the full-world fit until wideIntroHoldUntil
@@ -3509,6 +3516,22 @@ function checkWaveComplete() {
 
   STATE.phase = 'WAVE_COMPLETE';
   STATE.waveCompleteAdvancing = false;
+
+  // Whatever zoom/pan the player was using to land the final connection
+  // is exactly what they'd otherwise be stuck looking at for the reveal
+  // below -- the payoff moment (the full starfield, every connected line
+  // visible at once) deserves to actually be seen, not just whatever
+  // close-in corner happened to be on screen. Recenters immediately and
+  // resets targetScale back to the full-world fit; camera.scale eases
+  // toward it via the same per-frame lerp every other scale change
+  // already uses (see update()), so this reads as the camera pulling
+  // back to reveal everything rather than a hard cut.
+  STATE.camera.userZoom = 1;
+  STATE.camera.baseZoom = 1;
+  STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
+  STATE.camera.targetScale = STATE.camera.autoScale;
+  STATE.camera.centerX = STATE.world.w / 2;
+  STATE.camera.centerY = STATE.world.h / 2;
 
   // The full song is already playing at this point — every pair's chunk
   // was unmuted as it connected, so the last connection simply completes

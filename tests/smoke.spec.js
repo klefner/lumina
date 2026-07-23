@@ -1779,3 +1779,98 @@ test('a draw gesture whose end event never reaches canvas is cleared by window-l
   expect(result.clearedByWindowMouseup.lastPos).toBeNull();
   expect(errors).toEqual([]);
 });
+
+test('finishing the last connection resets the camera to see the whole board, regardless of the zoom/pan used to get there', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.world = { w: 2000, h: 2000 };
+    STATE.dots = [
+      { id: 0, pairId: 0, colorIndex: 0, x: 500, y: 500, connected: true },
+      { id: 1, pairId: 0, colorIndex: 0, x: 1500, y: 1500, connected: true },
+    ];
+    STATE.wave = 3;
+    STATE.waveStartScore = 0;
+    STATE.score = 0;
+    STATE.song = { genre: { bpm: 100 } };
+
+    // Simulate having been zoomed way in and panned off into a far
+    // corner right as the final connection landed -- exactly the
+    // "stuck looking at whatever was on screen" scenario reported.
+    STATE.camera.autoScale = Math.min(1, Math.min(canvas.width / STATE.world.w, canvas.height / STATE.world.h));
+    STATE.camera.userZoom = 3;
+    STATE.camera.baseZoom = 1;
+    STATE.camera.scale = STATE.camera.autoScale * STATE.camera.userZoom;
+    STATE.camera.targetScale = STATE.camera.scale;
+    STATE.camera.centerX = 1900; STATE.camera.centerY = 1900;
+
+    checkWaveComplete();
+
+    return {
+      phase: STATE.phase,
+      targetScale: STATE.camera.targetScale,
+      autoScale: STATE.camera.autoScale,
+      userZoom: STATE.camera.userZoom,
+      baseZoom: STATE.camera.baseZoom,
+      centerX: STATE.camera.centerX,
+      centerY: STATE.camera.centerY,
+      worldCenterX: STATE.world.w / 2,
+      worldCenterY: STATE.world.h / 2,
+    };
+  });
+
+  expect(result.phase).toBe('WAVE_COMPLETE');
+  // targetScale resets to the full-world fit -- camera.scale itself eases
+  // toward it via the ordinary per-frame lerp, not asserted here since
+  // that's already covered by the existing zoom-lerp/wide-intro tests.
+  expect(result.targetScale).toBeCloseTo(result.autoScale, 5);
+  expect(result.userZoom).toBe(1);
+  expect(result.baseZoom).toBe(1);
+  expect(result.centerX).toBe(result.worldCenterX);
+  expect(result.centerY).toBe(result.worldCenterY);
+  expect(errors).toEqual([]);
+});
+
+test('resizing/rotating during the wave-complete reveal does not restore a wide wave\'s zoomed-in comfort view', async ({ page }) => {
+  // Flagged by Codex review on #23: resizeCanvas unconditionally
+  // recomputes baseZoom from the wave's wide-world "comfortable zoom"
+  // (see WIDE_WORLD_START_WAVE) on every resize/rotation, with no
+  // awareness of game phase -- rotating a device while sitting on the
+  // WAVE_COMPLETE screen would silently re-zoom in and clip part of the
+  // reveal checkWaveComplete just reset the camera to show in full.
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.setViewportSize({ width: 400, height: 800 });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+
+  await page.evaluate(() => {
+    startWave(WIDE_WORLD_START_WAVE); // sets STATE.world.comfortW/H, the wide-wave comfort ratio
+    STATE.camera.wideIntroHoldUntil = 0; // past the intro hold, the normal case by wave completion
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete();
+  });
+  const beforeResize = await page.evaluate(() => ({
+    baseZoom: STATE.camera.baseZoom,
+    targetScale: STATE.camera.targetScale,
+    autoScale: STATE.camera.autoScale,
+  }));
+  expect(beforeResize.baseZoom).toBe(1);
+  expect(beforeResize.targetScale).toBeCloseTo(beforeResize.autoScale, 5);
+
+  await page.setViewportSize({ width: 800, height: 400 }); // real resize event -> resizeCanvas()
+  await page.waitForTimeout(50);
+  const afterResize = await page.evaluate(() => ({
+    baseZoom: STATE.camera.baseZoom,
+    targetScale: STATE.camera.targetScale,
+    autoScale: STATE.camera.autoScale, // re-derived against the new viewport by resizeCanvas
+  }));
+  expect(afterResize.baseZoom).toBe(1); // still the full-board fit, not recomputed to the wide-wave comfort ratio
+  expect(afterResize.targetScale).toBeCloseTo(afterResize.autoScale, 5);
+  expect(errors).toEqual([]);
+});
