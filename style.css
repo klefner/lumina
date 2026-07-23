@@ -561,3 +561,62 @@ html, body {
   60%  { transform: scale(1.15); opacity: 1; }
   100% { transform: scale(1); opacity: 1; }
 }
+
+/* Connection praise: a small "crowd reaction" popup anchored to a dot's
+   world position (see updateConnectionPraise in game.js, which repositions
+   left/top every frame via worldToScreen so it tracks pan/zoom) but with a
+   fixed font-size here -- it must read the same size at any zoom level,
+   never scaled with the camera. The reveal is a clip-path sweep rather
+   than an actual position change or scale transform, so it reads as the
+   box "unfurling" in place -- like a flag unrolling -- without ever
+   distorting the text; closing plays the same transition in reverse by
+   simply removing the class that opened it. */
+#connection-praise-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 16;
+}
+.connection-praise {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.97);
+  color: #16161f;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-family: Georgia, 'Palatino Linotype', 'Times New Roman', serif;
+  font-weight: 700;
+  font-size: 15px;
+  white-space: nowrap;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+  clip-path: inset(0 100% 0 0); /* fully hidden, revealing left-to-right when opened */
+  transition: clip-path 260ms ease-out;
+}
+.connection-praise.praise-flip {
+  clip-path: inset(0 0 0 100%); /* mirrored: fully hidden, reveals right-to-left */
+}
+.connection-praise.open {
+  clip-path: inset(0 0 0 0); /* fully revealed -- removing .open plays this transition backward */
+}
+.connection-praise-emoji {
+  font-size: 1.15em;
+  line-height: 1;
+}
+/* Tier 0 (the common case, unstyled beyond the base above) is deliberately
+   the plainest -- tiers 1 and 2 escalate size and add a colored glow, the
+   same "crowd gets more excited" progression the achievement/riff side
+   also follows (see CONNECTION_PRAISE_CONFIG in game.js). */
+.connection-praise.praise-tier-1 {
+  font-size: 17px;
+  border: 2px solid #ffd700;
+  box-shadow: 0 4px 20px rgba(255, 215, 0, 0.5), 0 4px 18px rgba(0, 0, 0, 0.35);
+}
+.connection-praise.praise-tier-2 {
+  font-size: 20px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border: 2px solid #ff5e57;
+  box-shadow: 0 4px 26px rgba(255, 94, 87, 0.6), 0 4px 18px rgba(0, 0, 0, 0.4);
+}

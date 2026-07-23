@@ -1055,6 +1055,7 @@ const STATE = {
   stats: loadStats(),    // persisted personal bests (see loadStats/saveStats) — survives across visits
   achievementQueue: [],  // pending {glyph, bg, glow, label} toasts, shown one at a time
   achievementToastActive: false,
+  connectionPraise: [],  // active { el, worldX, worldY, flip, spawnedAt, closing } popups -- see spawnConnectionPraise/updateConnectionPraise
 
   paused: false,           // freezes update()/input while the pause menu is open (see pauseGame/resumeGame)
   pauseFactHistory: [],    // last few pause-menu fact/tip strings shown, so the rotation never repeats too soon
@@ -3222,16 +3223,262 @@ function markGroupIfFullySolved(pairId) {
   if (allLinked) for (const d of groupDots) d.connected = true;
 }
 
+// ------------------------------------------------------------
+// Connection praise: a small "crowd reaction" popup for a connection that
+// meets one of a few well-defined criteria -- see evaluateConnectionPraise.
+// Escalates through three tiers (easy/great/incredible) per criterion, like
+// a crowd getting more excited the better the play is, rather than a flat
+// binary "good job" that either fires constantly or almost never.
+// ------------------------------------------------------------
+const CONNECTION_PRAISE_CONFIG = {
+  // "Tight squeeze": minimum clearance (world px) from the drawn path to
+  // the nearest barrier or other connection, excluding any point still
+  // near either endpoint dot (being close to your own destination isn't a
+  // squeeze). Lower clearance = tighter = more impressive; thresholds are
+  // MAXIMUMS, checked tightest-first.
+  SQUEEZE_EXCLUDE_RADIUS: 20, // added to CONFIG.DOT_RADIUS_CONNECTED_MAX
+  SQUEEZE_TIERS: [48, 28, 14], // [easy, great, incredible] px
+
+  // "Efficient despite complexity": path-length / straight-line-distance
+  // ratio, only counted when the straight line between the two dots would
+  // itself have been illegal (crosses a barrier or another connection) --
+  // otherwise a short ratio just means nothing was in the way. Lower ratio
+  // (closer to the theoretical minimum of 1) = more impressive; thresholds
+  // are MAXIMUMS.
+  EFFICIENT_TIERS: [1.6, 1.35, 1.15],
+
+  // "Went the distance": the same ratio, the other direction -- a
+  // deliberately long/winding route. Needs an absolute floor too (a
+  // multiple of the game's own minimum dot spacing) so a trivially short
+  // pair can't qualify on ratio alone. Thresholds are MINIMUMS.
+  LONG_ABS_MIN_FACTOR: 2.5,
+  LONG_TIERS: [1.8, 2.6, 3.6],
+};
+
+// thresholds = [easy, great, incredible] in the direction that gets
+// progressively harder to satisfy. Returns the highest tier index (0-2)
+// value actually clears, checked hardest-first, or -1 if none.
+function tierIndexFor(value, thresholds, higherIsBetter) {
+  for (let i = thresholds.length - 1; i >= 0; i--) {
+    const passes = higherIsBetter ? value >= thresholds[i] : value <= thresholds[i];
+    if (passes) return i;
+  }
+  return -1;
+}
+
+// Minimum distance between two line segments, plus the point where that
+// minimum is achieved. Assumes they don't actually intersect (guaranteed
+// here -- a crossing connection is already rejected before
+// completeConnection ever runs), in which case the minimum distance is
+// always at one of the four endpoints.
+function closestApproach(a, b) {
+  const candidates = [
+    { d: distPointToSegment(a.x1, a.y1, b.x1, b.y1, b.x2, b.y2), x: a.x1, y: a.y1 },
+    { d: distPointToSegment(a.x2, a.y2, b.x1, b.y1, b.x2, b.y2), x: a.x2, y: a.y2 },
+    { d: distPointToSegment(b.x1, b.y1, a.x1, a.y1, a.x2, a.y2), x: b.x1, y: b.y1 },
+    { d: distPointToSegment(b.x2, b.y2, a.x1, a.y1, a.x2, a.y2), x: b.x2, y: b.y2 },
+  ];
+  let best = candidates[0];
+  for (const c of candidates) if (c.d < best.d) best = c;
+  return best;
+}
+
+function straightLineBlocked(dotA, dotB) {
+  const straight = { x1: dotA.x, y1: dotA.y, x2: dotB.x, y2: dotB.y };
+  for (const b of STATE.barriers) {
+    for (const bSeg of segmentsOfBarrier(b)) {
+      if (segmentsIntersect(straight, bSeg)) return true;
+    }
+  }
+  for (const c of STATE.connections) {
+    for (const cSeg of c.segments) {
+      if (segmentsIntersect(straight, cSeg)) return true;
+    }
+  }
+  return false;
+}
+
+// Checked in priority order (squeeze, then efficient, then long) so only
+// one fires per connection -- a connection that happens to qualify for
+// more than one criterion shows whichever is checked first, not a stack
+// of popups. newSegments/actualLen are passed in rather than recomputed
+// since completeConnection already needs both for other reasons.
+function evaluateConnectionPraise(dotA, dotB, newSegments, actualLen) {
+  const straightDist = Math.hypot(dotB.x - dotA.x, dotB.y - dotA.y);
+  if (straightDist < 1) return null; // guards a divide-by-zero that MIN_DOT_DISTANCE should already prevent
+
+  // Excluding by the *closest-approach point* between the two segments,
+  // not by the drawn segment's own midpoint -- a long segment (e.g. a
+  // direct second connection from a dot that's already got one, in a
+  // 3+-dot group) can have its midpoint far from either dot while still
+  // touching an existing line right at their shared dot. Checking the
+  // actual near-point catches that; checking the segment's midpoint
+  // doesn't (flagged by Codex review on #24: this was misreading an
+  // ordinary shared-dot spoke as an "incredible squeeze").
+  const excludeR = CONFIG.DOT_RADIUS_CONNECTED_MAX + CONNECTION_PRAISE_CONFIG.SQUEEZE_EXCLUDE_RADIUS;
+  let minClearance = Infinity;
+  for (const seg of newSegments) {
+    for (const b of STATE.barriers) {
+      for (const bSeg of segmentsOfBarrier(b)) {
+        const approach = closestApproach(seg, bSeg);
+        if (Math.hypot(approach.x - dotA.x, approach.y - dotA.y) < excludeR) continue;
+        if (Math.hypot(approach.x - dotB.x, approach.y - dotB.y) < excludeR) continue;
+        minClearance = Math.min(minClearance, approach.d);
+      }
+    }
+    for (const c of STATE.connections) {
+      for (const cSeg of c.segments) {
+        const approach = closestApproach(seg, cSeg);
+        if (Math.hypot(approach.x - dotA.x, approach.y - dotA.y) < excludeR) continue;
+        if (Math.hypot(approach.x - dotB.x, approach.y - dotB.y) < excludeR) continue;
+        minClearance = Math.min(minClearance, approach.d);
+      }
+    }
+  }
+  const squeezeTier = tierIndexFor(minClearance, CONNECTION_PRAISE_CONFIG.SQUEEZE_TIERS, false);
+  if (squeezeTier >= 0) return { criterion: 'squeeze', tier: squeezeTier };
+
+  const ratio = actualLen / straightDist;
+  if (straightLineBlocked(dotA, dotB)) {
+    const efficientTier = tierIndexFor(ratio, CONNECTION_PRAISE_CONFIG.EFFICIENT_TIERS, false);
+    if (efficientTier >= 0) return { criterion: 'efficient', tier: efficientTier };
+  }
+
+  if (actualLen >= CONFIG.MIN_DOT_DISTANCE * CONNECTION_PRAISE_CONFIG.LONG_ABS_MIN_FACTOR) {
+    const longTier = tierIndexFor(ratio, CONNECTION_PRAISE_CONFIG.LONG_TIERS, true);
+    if (longTier >= 0) return { criterion: 'long', tier: longTier };
+  }
+
+  return null;
+}
+
+const CONNECTION_PRAISE_COPY = {
+  squeeze: [
+    ['Nice squeeze!', 'Threaded it!', 'Snug fit!'],
+    ['Great squeeze!', 'Razor close!', 'Right through the gap!'],
+    ['INCREDIBLE SQUEEZE!', 'UNREAL PRECISION!', 'THREADED THE NEEDLE!'],
+  ],
+  efficient: [
+    ['Nice line!', 'Clean route!', 'Smart path!'],
+    ['Great line!', 'Sharp routing!', 'Beautifully efficient!'],
+    ['PERFECT LINE!', 'FLAWLESS ROUTE!', 'MASTERCLASS!'],
+  ],
+  long: [
+    ['Nice reach!', 'Going the distance!', 'Nice stretch!'],
+    ['Great reach!', 'What a journey!', 'Epic route!'],
+    ['INCREDIBLE REACH!', 'LEGENDARY LINE!', 'EPIC JOURNEY!'],
+  ],
+};
+const CONNECTION_PRAISE_EMOJI = ['👍', '⭐', '🔥'];
+const CONNECTION_PRAISE_VISIBLE_MS = 4000;
+const CONNECTION_PRAISE_TRANSITION_MS = 260;
+
+// Escalates note count with tier, like a crowd's reaction growing with the
+// play -- tier 0 is a light two-note nudge, tier 2 adds a rising flourish.
+function playConnectionPraiseRiff(tier) {
+  if (!STATE.audioCtx || !STATE.masterBus) return;
+  const instrument = STATE.sampleBuffers.vibraphone ? 'vibraphone' : 'piano';
+  const root = STATE.song ? STATE.song.genre.rootMidi : 60;
+  const RIFFS = [
+    [root + 12, root + 16],
+    [root + 12, root + 16, root + 19],
+    [root + 12, root + 16, root + 19, root + 24, root + 28],
+  ];
+  const notes = RIFFS[tier] || RIFFS[0];
+  const t0 = STATE.audioCtx.currentTime + 0.02;
+  notes.forEach((midi, i) => {
+    playSample(instrument, midi, t0 + i * 0.08, 0.45, STATE.masterBus);
+  });
+}
+
+// Anchored to dotB (the dot the connection just completed at) in world
+// space -- updateConnectionPraise re-derives its screen position every
+// frame via worldToScreen, so it tracks pan/zoom (including the wave's own
+// end-of-wave camera reset) without needing to move itself. Flips to
+// unfurl leftward instead of rightward when the dot is on the right side
+// of the screen, so the popup doesn't habitually run off-screen there.
+function spawnConnectionPraise(dotB, result) {
+  const variants = CONNECTION_PRAISE_COPY[result.criterion][result.tier];
+  const text = variants[Math.floor(Math.random() * variants.length)];
+  const emoji = CONNECTION_PRAISE_EMOJI[result.tier];
+
+  const el = document.createElement('div');
+  el.className = `connection-praise praise-tier-${result.tier}`;
+  const screenPos = worldToScreen(dotB.x, dotB.y);
+  const flip = screenPos.x > canvas.width * 0.6;
+  if (flip) el.classList.add('praise-flip');
+  const textEl = document.createElement('span');
+  textEl.className = 'connection-praise-text';
+  textEl.textContent = text;
+  const emojiEl = document.createElement('span');
+  emojiEl.className = 'connection-praise-emoji';
+  emojiEl.textContent = emoji;
+  el.appendChild(textEl);
+  el.appendChild(emojiEl);
+  document.getElementById('connection-praise-layer').appendChild(el);
+
+  STATE.connectionPraise.push({
+    el, worldX: dotB.x, worldY: dotB.y, flip,
+    spawnedAt: performance.now(),
+    closing: false,
+  });
+
+  // Force a reflow before adding .open so the clip-path transition
+  // actually plays instead of jumping straight to its open state (same
+  // trick showAchievementToast already uses for its own pop animation).
+  void el.offsetWidth;
+  el.classList.add('open');
+
+  playConnectionPraiseRiff(result.tier);
+}
+
+function updateConnectionPraise() {
+  const now = performance.now();
+  const GAP = 14, VERTICAL_OFFSET = 46;
+  for (let i = STATE.connectionPraise.length - 1; i >= 0; i--) {
+    const entry = STATE.connectionPraise[i];
+    const elapsed = now - entry.spawnedAt;
+    if (elapsed >= CONNECTION_PRAISE_VISIBLE_MS) {
+      entry.el.remove();
+      STATE.connectionPraise.splice(i, 1);
+      continue;
+    }
+    if (!entry.closing && elapsed >= CONNECTION_PRAISE_VISIBLE_MS - CONNECTION_PRAISE_TRANSITION_MS) {
+      entry.closing = true;
+      entry.el.classList.remove('open'); // reverses the same clip-path transition that opened it
+    }
+    const screenPos = worldToScreen(entry.worldX, entry.worldY);
+    entry.el.style.top = (screenPos.y - VERTICAL_OFFSET) + 'px';
+    if (entry.flip) {
+      entry.el.style.right = (canvas.width - screenPos.x + GAP) + 'px';
+      entry.el.style.left = 'auto';
+    } else {
+      entry.el.style.left = (screenPos.x + GAP) + 'px';
+      entry.el.style.right = 'auto';
+    }
+  }
+}
+
 function completeConnection(dotA, dotB) {
   ufUnion(dotA.id, dotB.id);
   markGroupIfFullySolved(dotA.pairId);
+
+  const newSegments = smoothedCurveSegments(STATE.currentPath);
+  const actualLen = pathLength(STATE.currentPath);
+  // Same rule fact boxes already follow (see FACT_BOX_CONFIG/isTutorialWave
+  // in generateBarriersSafely): never coexist with the tutorial hint. A
+  // praise popup positions itself at whatever dot the connection just
+  // completed at, with no awareness of the hint's own reserved zone, so it
+  // could otherwise land squarely on top of the tutorial text a player is
+  // still reading.
+  const praise = STATE.tutorialWave ? null : evaluateConnectionPraise(dotA, dotB, newSegments, actualLen);
 
   STATE.connections.push({
     dotA: dotA.id,
     dotB: dotB.id,
     colorIndex: dotA.colorIndex,
     pairId: dotA.pairId,
-    segments: smoothedCurveSegments(STATE.currentPath),
+    segments: newSegments,
   });
 
   const fadingLine = {
@@ -3247,10 +3494,11 @@ function completeConnection(dotA, dotB) {
 
   unmuteChunk(dotA.pairId);
   playConnectionChime(dotA.pairId);
+  if (praise) spawnConnectionPraise(dotB, praise);
 
   haptic('connect');
 
-  STATE.score += Math.round(pathLength(STATE.currentPath) * SCORE_PER_LINE_PIXEL);
+  STATE.score += Math.round(actualLen * SCORE_PER_LINE_PIXEL);
   updateWaveDisplay();
 
   checkTutorialDismiss();
@@ -3627,6 +3875,8 @@ function startWave(waveNumber) {
   STATE.activeDot = null;
   STATE.currentPath = [];
   STATE.isDrawing = false;
+  for (const entry of STATE.connectionPraise) entry.el.remove();
+  STATE.connectionPraise = [];
   STATE.spaceObjects = [];
   STATE.spaceSpawnTimer = 0;
   STATE.celestialBodies = [];
@@ -5583,6 +5833,7 @@ function updateWaveDisplay() {
 function update() {
   enforceTutorialHintInvariant();
   updateEdgePan();
+  updateConnectionPraise();
 
   for (const dot of STATE.dots) {
     dot.pulsePhase += CONFIG.DOT_PULSE_SPEED;
