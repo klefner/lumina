@@ -16,6 +16,13 @@ concurrency:
 
 jobs:
   deploy:
+    # workflow_dispatch can be run against any branch from the Actions UI;
+    # without this guard, a manual dispatch from a feature branch would stage
+    # that branch's unreviewed content and still push it to Cloudflare as the
+    # canonical `main` deployment (the wrangler command below hardcodes
+    # --branch=main). Restrict the whole job to the actual main branch so
+    # only a real push to (or dispatch against) main can ever go live.
+    if: github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
