@@ -4,7 +4,7 @@ Instantiated from [studio-ops/templates/SOURCE_OF_TRUTH_TEMPLATE.md](https://git
 See [studio-ops/AGENTS.md](https://github.com/klefner/studio-ops/blob/main/AGENTS.md) for the shared rules
 this file exists to support.
 
-## Current State As Of 2026-07-23
+## Current State As Of 2026-07-24
 
 | Layer | Current value | Meaning |
 | --- | --- | --- |
@@ -12,9 +12,10 @@ this file exists to support.
 | Active development branch | `claude/lumina-game-build-dupma4` (or a fresh branch cut from current `main` for each unit of work) | Feature/fix work lands here, then merges to `main` via PR. |
 | Is `main` current? | Yes | Every merged PR this project has shipped went through squash-merge into `main`; `main` is always the real state. |
 | Current build/version label | Short commit hash of the latest squash-merge commit on `main` | e.g. `932d6f1` |
-| Live deploy URL | `https://klefner.github.io/lumina/` | |
-| Live deploy verification method | `curl https://klefner.github.io/lumina/version.json` and compare the `build` field to the latest commit hash on `main` | GitHub Pages deploys straight from `main` on every push; this is a direct, mechanical check anyone (human or AI) can run themselves. |
-| Deploy source (branch / folder) | `main`, staged into `_site` by the "Stage site files" step in `.github/workflows/deploy-pages.yml` | Not the whole repo root — that step copies an explicit allowlist (`index.html`, `game.js`, `style.css`, `manifest.json`, `version.json`, `icons/`, `sounds/`) into `_site`, and only `_site` gets deployed via `upload-pages-artifact`. A file being on `main` is **not** enough on its own to make it live — check the copy list. |
+| Live deploy URL (canonical) | `https://lumina-8f0.pages.dev/` | Cloudflare Pages — the link to actually share (Reddit/X/itch.io/etc). No personal name in it, unlike the GitHub Pages URL below. |
+| Live deploy URL (secondary mirror) | `https://klefner.github.io/lumina/` | GitHub Pages. Kept running alongside Cloudflare Pages as a free fallback — not the link to promote, but useful if Cloudflare ever has an outage. |
+| Live deploy verification method | `curl https://lumina-8f0.pages.dev/version.json` (or the github.io URL for the mirror) and compare the `build` field to the latest commit hash on `main` | Both hosts deploy straight from `main` on every push; this is a direct, mechanical check anyone (human or AI) can run themselves. |
+| Deploy source (branch / folder) | `main`, staged into `_site` by the "Stage site files" step in `.github/workflows/deploy-pages.yml`, then pushed to **both** GitHub Pages and Cloudflare Pages (project name `lumina`) from that same job | Not the whole repo root — that step copies an explicit allowlist (`index.html`, `game.js`, `style.css`, `manifest.json`, `version.json`, `icons/`, `sounds/`) into `_site`, and only `_site` gets deployed. A file being on `main` is **not** enough on its own to make it live — check the copy list. The Cloudflare Pages deploy step is gated to `github.ref == 'refs/heads/main'` so a manual `workflow_dispatch` from any other branch can never overwrite production (see PR #28). |
 
 ## Non-Negotiable Distinctions
 
