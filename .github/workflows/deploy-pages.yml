@@ -47,3 +47,12 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+      # Cloudflare Pages is the canonical player-facing URL (no personal name
+      # in it, unlike the klefner.github.io one above). Same staged _site
+      # directory, so there is exactly one build output, not two.
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy _site --project-name=lumina --branch=main
