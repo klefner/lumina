@@ -4542,13 +4542,27 @@ function drawBarriers() {
       ctx.clip();
       ctx.setLineDash([]);
       ctx.shadowBlur = 0;
-      ctx.fillStyle = 'rgba(255,255,255,0.82)';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      const { lines, lineHeight } = fitFactText(b.text, b.size - 24, b.size - 16);
-      const startY = b.cy - ((lines.length - 1) * lineHeight) / 2;
+
+      // A dimmer, smaller title above the fact itself -- reserve its own
+      // space up front so fitFactText's shrink-to-fit sizes the fact text to
+      // what's actually left, rather than the title fighting the fact for
+      // room after the fact.
+      const titleFontPx = 11, titleLineHeight = titleFontPx * 1.25, titleGap = 5;
+      const { lines, lineHeight } = fitFactText(b.text, b.size - 24, b.size - 16 - titleLineHeight - titleGap);
+
+      const contentHeight = titleLineHeight + titleGap + lines.length * lineHeight;
+      const titleCenterY = b.cy - contentHeight / 2 + titleLineHeight / 2;
+      ctx.font = `700 ${titleFontPx}px "Segoe UI", Arial, sans-serif`;
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.fillText('DID YOU KNOW?', b.cx, titleCenterY);
+
+      const bodyStartY = titleCenterY + titleLineHeight / 2 + titleGap + lineHeight / 2;
+      ctx.font = factBoxFont(lineHeight / 1.25);
+      ctx.fillStyle = 'rgba(255,255,255,0.82)';
       for (let i = 0; i < lines.length; i++) {
-        ctx.fillText(lines[i], b.cx, startY + i * lineHeight);
+        ctx.fillText(lines[i], b.cx, bodyStartY + i * lineHeight);
       }
       ctx.restore();
     }
