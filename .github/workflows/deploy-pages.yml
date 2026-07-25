@@ -27,6 +27,12 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    env:
+      # `if:` conditionals can't reference the `secrets` context directly
+      # ("Unrecognized named-value: 'secrets'") -- surface it through `env`
+      # first, which IS allowed there, so the itch.io steps can gate on
+      # whether the key has been configured yet.
+      BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,13 +75,11 @@ jobs:
       # third-party action needed). Skipped entirely if the secret isn't
       # configured yet, so this workflow still succeeds before it's set up.
       - name: Install butler
-        if: ${{ secrets.BUTLER_API_KEY != '' }}
+        if: ${{ env.BUTLER_API_KEY != '' }}
         run: |
           curl -L -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
           unzip -q butler.zip -d butler
           chmod +x butler/butler
       - name: Push to itch.io
-        if: ${{ secrets.BUTLER_API_KEY != '' }}
-        env:
-          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        if: ${{ env.BUTLER_API_KEY != '' }}
         run: ./butler/butler push _site draclif/lumina:html5 --userversion "${{ steps.stamp.outputs.build }}"
