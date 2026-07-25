@@ -2558,3 +2558,93 @@ test('the ERASE tutorial message only shows in Relaxed difficulty, and is skippe
   expect(result.onRelaxed.text).toMatch(/ERASE/);
   expect(errors).toEqual([]);
 });
+
+// Flagged by Codex review on #34: ERASE is entirely player-controlled and
+// repeatable (unlike a rotating barrier snap), so if the score a connection
+// awarded weren't reversed on erase, a player could draw one long line,
+// erase it, redraw it, and farm unlimited score/best-wave-score credit.
+test('erasing a connection reverses the score it awarded, so redrawing the same line does not farm points', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
+  await page.reload();
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const dots = await page.evaluate(() => window.__lumina.getDots());
+  const byPair = {};
+  for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+  const [a, b] = Object.values(byPair)[0];
+
+  async function drawConnection() {
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await page.mouse.move(b.x, b.y, { steps: 12 });
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+  }
+
+  const scoreBeforeFirstDraw = await page.evaluate(() => window.__lumina.getState().score);
+  await drawConnection();
+  const scoreAfterFirstDraw = await page.evaluate(() => window.__lumina.getState().score);
+  expect(scoreAfterFirstDraw).toBeGreaterThan(scoreBeforeFirstDraw);
+
+  await page.locator('#erase-button').click();
+  await page.mouse.click((a.x + b.x) / 2, (a.y + b.y) / 2);
+  await page.waitForTimeout(200);
+  const scoreAfterErase = await page.evaluate(() => window.__lumina.getState().score);
+  expect(scoreAfterErase).toBe(scoreBeforeFirstDraw);
+
+  // Erase mode stays on after one erase (multi-erase) -- toggle it back off
+  // so the next drag draws a line instead of hunting for another to erase.
+  await page.locator('#erase-button').click();
+
+  // Redrawing the identical line a second time must award exactly the same
+  // points again, not stack on top of a stale earlier award.
+  await drawConnection();
+  const scoreAfterRedraw = await page.evaluate(() => window.__lumina.getState().score);
+  expect(scoreAfterRedraw).toBe(scoreAfterFirstDraw);
+
+  expect(errors).toEqual([]);
+});
+
+// Flagged by Codex review on #34: the button was visible any time the
+// phase wasn't TITLE, including WAVE_COMPLETE, where canvas taps advance
+// the wave before ever reaching the erase-mode branch -- a lit button that
+// can't do anything. Also confirms startWave's reset is a real safety net
+// (clears the DOM class itself), not just relying on toggleEraseMode's own
+// click handler to keep the two in sync.
+test('the ERASE button hides during WAVE_COMPLETE (even in Relaxed) and its active class can never survive into the next wave', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.difficulty = 'relaxed';
+    STATE.phase = 'PLAYING';
+    updateWaveDisplay();
+    const visibleWhilePlaying = document.getElementById('erase-button').classList.contains('visible');
+
+    STATE.phase = 'WAVE_COMPLETE';
+    updateWaveDisplay();
+    const visibleAtWaveComplete = document.getElementById('erase-button').classList.contains('visible');
+
+    // Simulate the button having been left lit somehow going into a new
+    // wave -- startWave's own reset must independently clear it.
+    document.getElementById('erase-button').classList.add('active');
+    STATE.eraseMode = true;
+    startWave(1);
+    const activeAfterNewWave = document.getElementById('erase-button').classList.contains('active');
+    const eraseModeAfterNewWave = STATE.eraseMode;
+
+    return { visibleWhilePlaying, visibleAtWaveComplete, activeAfterNewWave, eraseModeAfterNewWave };
+  });
+
+  expect(result.visibleWhilePlaying).toBe(true);
+  expect(result.visibleAtWaveComplete).toBe(false);
+  expect(result.activeAfterNewWave).toBe(false);
+  expect(result.eraseModeAfterNewWave).toBe(false);
+  expect(errors).toEqual([]);
+});

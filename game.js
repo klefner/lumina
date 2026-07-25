@@ -3535,12 +3535,15 @@ function completeConnection(dotA, dotB) {
   const offCooldown = performance.now() - STATE.lastPraiseAt >= CONNECTION_PRAISE_COOLDOWN_MS;
   const praise = (STATE.tutorialWave || !offCooldown) ? null : evaluateConnectionPraise(dotA, dotB, newSegments, actualLen);
 
+  const scoreAwarded = Math.round(actualLen * SCORE_PER_LINE_PIXEL);
+
   STATE.connections.push({
     dotA: dotA.id,
     dotB: dotB.id,
     colorIndex: dotA.colorIndex,
     pairId: dotA.pairId,
     segments: newSegments,
+    scoreAwarded, // reversed in resetPairConnections if this edge is ever broken or erased
   });
 
   const fadingLine = {
@@ -3563,7 +3566,7 @@ function completeConnection(dotA, dotB) {
 
   haptic('connect');
 
-  STATE.score += Math.round(actualLen * SCORE_PER_LINE_PIXEL);
+  STATE.score += scoreAwarded;
   updateWaveDisplay();
 
   checkTutorialDismiss();
@@ -3941,6 +3944,7 @@ function startWave(waveNumber) {
   STATE.currentPath = [];
   STATE.isDrawing = false;
   STATE.eraseMode = false;
+  document.getElementById('erase-button').classList.remove('active');
   for (const entry of STATE.connectionPraise) entry.el.remove();
   STATE.connectionPraise = [];
   STATE.spaceObjects = [];
@@ -4509,9 +4513,23 @@ function resetPairConnections(pairId) {
     STATE.dotUnion[d.id] = d.id;
   }
 
+  // Reverse whatever score these edges awarded, too -- otherwise erasing and
+  // redrawing the same connection (Relaxed's ERASE is entirely
+  // player-controlled and repeatable, unlike a barrier strike) would let a
+  // player farm unlimited score, and inflate the best-wave-score
+  // achievement, from a single line.
+  let reversedScore = 0;
   for (let i = STATE.connections.length - 1; i >= 0; i--) {
-    if (STATE.connections[i].pairId === pairId) STATE.connections.splice(i, 1);
+    if (STATE.connections[i].pairId === pairId) {
+      reversedScore += STATE.connections[i].scoreAwarded;
+      STATE.connections.splice(i, 1);
+    }
   }
+  if (reversedScore > 0) {
+    STATE.score = Math.max(0, STATE.score - reversedScore);
+    updateWaveDisplay();
+  }
+
   STATE.lines = STATE.lines.filter(l => l.pairId !== pairId);
   // Otherwise this pair's star halo — the one lasting sign a connection
   // ever existed, now that its line no longer fades to nothing either —
@@ -5951,7 +5969,11 @@ function updateWaveDisplay() {
   // every phase transition already runs through.
   document.getElementById('pause-button').classList.toggle('visible', STATE.phase !== 'TITLE');
   document.getElementById('hint-button').classList.toggle('visible', STATE.phase !== 'TITLE');
-  document.getElementById('erase-button').classList.toggle('visible', STATE.phase !== 'TITLE' && STATE.difficulty === 'relaxed');
+  // Unlike HINT/pause, gated to PLAYING specifically, not just "not TITLE"
+  // -- during WAVE_COMPLETE, canvas taps advance to the next wave before
+  // ever reaching the erase-mode branch in onInputStart, so a lit ERASE
+  // button there would toggle a mode that can't actually do anything.
+  document.getElementById('erase-button').classList.toggle('visible', STATE.phase === 'PLAYING' && STATE.difficulty === 'relaxed');
 }
 
 // ============================================================
