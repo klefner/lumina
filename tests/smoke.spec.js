@@ -2316,3 +2316,31 @@ test('on a short viewport, the pause panel scrolls internally instead of pushing
   expect(result.resumeFullyVisible).toBe(true); // reachable regardless of whether the panel content overflowed
   expect(errors).toEqual([]);
 });
+
+test('the "New Highest Wave" achievement toast never fires before wave 10, even though every early wave is technically a new best', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.stats.bestWave = 0;
+    const perWave = [];
+    for (let wave = 1; wave <= 12; wave++) {
+      STATE.wave = wave;
+      STATE.achievementQueue = [];
+      checkAchievements(0); // 0 waveScore -- never exceeds bestWaveScore, isolates this achievement
+      perWave.push({
+        wave,
+        fired: STATE.achievementQueue.some(e => e.label === 'New Highest Wave'),
+        bestWaveNow: STATE.stats.bestWave,
+      });
+    }
+    return perWave;
+  });
+
+  for (const entry of result) {
+    expect(entry.bestWaveNow).toBe(entry.wave); // stat tracking itself is never suppressed, only the toast
+    expect(entry.fired).toBe(entry.wave >= 10);
+  }
+  expect(errors).toEqual([]);
+});
