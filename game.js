@@ -112,6 +112,7 @@ const TUTORIAL_MESSAGES = [
   // whichever wave this entry ends up on, even if messages are added or
   // reordered above it later.
   { text: 'This board is bigger than your screen — drag to pan, pinch or scroll to zoom, and find every dot.', dismissWhen: 'connect', unlocksWideWorld: true },
+  { text: 'Tap the pause button any time to save your progress.', dismissWhen: 'connect' },
   { text: 'Connect the dots, make music. Relax and Enjoy!', dismissWhen: 'connect' },
 ];
 
