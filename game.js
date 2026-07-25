@@ -5329,7 +5329,22 @@ function haptic(type) {
 // ============================================================
 function closePauseMenuUI() {
   document.getElementById('pause-overlay').classList.remove('visible');
+  document.getElementById('save-tip').classList.remove('visible');
+  document.getElementById('pause-save').classList.remove('save-tip-pulse');
   stopPauseFactRotation();
+}
+
+// A rare nudge toward Save Game for a player who might not have noticed it
+// -- only worth showing to someone who's genuinely never used it (see
+// loadSave) and only once a run has gone on long enough (wave 10+) that
+// losing all progress would actually sting. Rolled fresh, and independently,
+// on every pause rather than latched once true, so most pauses still show
+// nothing at all.
+const SAVE_TIP_CONFIG = { START_WAVE: 10, PROBABILITY: 0.1 };
+function maybeShowSaveTip() {
+  const shouldShow = STATE.wave >= SAVE_TIP_CONFIG.START_WAVE && !loadSave() && Math.random() < SAVE_TIP_CONFIG.PROBABILITY;
+  document.getElementById('save-tip').classList.toggle('visible', shouldShow);
+  document.getElementById('pause-save').classList.toggle('save-tip-pulse', shouldShow);
 }
 
 function pauseGame() {
@@ -5344,6 +5359,7 @@ function pauseGame() {
   document.getElementById('pause-save-toast').classList.remove('visible');
   document.getElementById('pause-overlay').classList.add('visible');
   startPauseFactRotation();
+  maybeShowSaveTip();
 }
 
 function resumeGame() {
@@ -5384,6 +5400,9 @@ function handleSaveGame() {
   toast.textContent = ok ? 'Game Saved' : 'Could Not Save';
   toast.classList.add('visible');
   setTimeout(() => toast.classList.remove('visible'), 1800);
+  // The tip's whole job was to get them to do exactly this -- job done.
+  document.getElementById('save-tip').classList.remove('visible');
+  document.getElementById('pause-save').classList.remove('save-tip-pulse');
 }
 
 // Loads whatever was last written by Save Game (or resumed from the title

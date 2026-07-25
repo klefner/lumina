@@ -175,6 +175,39 @@ html, body {
   border-color: rgba(120, 200, 255, 0.4);
 }
 
+/* A rare nudge toward Save Game for a player who's never used it (see
+   maybeShowSaveTip) -- collapsed out of flow by default so it never
+   reserves space in the menu on the vast majority of opens where it
+   doesn't show. */
+#save-tip {
+  display: none;
+  margin-top: -2px;
+  font-family: 'Courier New', monospace;
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  text-align: center;
+  color: rgba(120, 200, 255, 0.9);
+  background: rgba(120, 200, 255, 0.08);
+  border: 1px solid rgba(120, 200, 255, 0.35);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+#save-tip.visible {
+  display: block;
+}
+
+/* Expanding ring around the Save Game button itself while the tip above is
+   showing, so the explanation and the thing it's explaining are visually
+   tied together at a glance. */
+#pause-save.save-tip-pulse {
+  animation: save-tip-pulse 1.4s ease-in-out infinite;
+}
+@keyframes save-tip-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(120, 200, 255, 0.55); border-color: rgba(120, 200, 255, 0.7); }
+  50% { box-shadow: 0 0 0 8px rgba(120, 200, 255, 0); border-color: rgba(120, 200, 255, 0.7); }
+}
+
 /* The rotating fact/tip — fades in and out on its own timer (see
    startPauseFactRotation), never touching the menu buttons above it. */
 #pause-fact {

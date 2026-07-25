@@ -2189,3 +2189,96 @@ test('connection praise: an ordinary direct connection sharing a dot with an exi
   expect(result).toBeNull();
   expect(errors).toEqual([]);
 });
+
+test('the Save Game tip only ever appears at wave 10+, for a player who has never saved, and only on the rolls that win its 10% chance', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const readTipState = () => page.evaluate(() => ({
+    tipVisible: document.getElementById('save-tip').classList.contains('visible'),
+    pulsing: document.getElementById('pause-save').classList.contains('save-tip-pulse'),
+  }));
+
+  // Below the wave threshold: never shows, even with a guaranteed-win roll
+  // and no save on file.
+  await page.evaluate(() => {
+    clearSave();
+    STATE.phase = 'PLAYING';
+    STATE.wave = 9;
+    Math.random = () => 0.01; // would win the 10% roll if it were even attempted
+    pauseGame();
+  });
+  expect(await readTipState()).toEqual({ tipVisible: false, pulsing: false });
+  await page.evaluate(() => resumeGame());
+
+  // At/above the threshold, never saved, losing roll: still hidden.
+  await page.evaluate(() => {
+    clearSave();
+    STATE.phase = 'PLAYING';
+    STATE.wave = 10;
+    Math.random = () => 0.99;
+    pauseGame();
+  });
+  expect(await readTipState()).toEqual({ tipVisible: false, pulsing: false });
+  await page.evaluate(() => resumeGame());
+
+  // At/above the threshold, never saved, winning roll: shows, with the
+  // pulse tied to the exact same button the tip is explaining.
+  await page.evaluate(() => {
+    clearSave();
+    STATE.phase = 'PLAYING';
+    STATE.wave = 10;
+    Math.random = () => 0.01;
+    pauseGame();
+  });
+  expect(await readTipState()).toEqual({ tipVisible: true, pulsing: true });
+
+  // Resuming clears both, even mid-display.
+  await page.evaluate(() => resumeGame());
+  expect(await readTipState()).toEqual({ tipVisible: false, pulsing: false });
+
+  // A player who has already saved at least once is never shown the tip
+  // again, regardless of wave or how favorable the roll is -- they already
+  // know the feature exists.
+  await page.evaluate(() => {
+    STATE.phase = 'PLAYING';
+    STATE.wave = 25;
+    saveGame(); // now there IS a save on file
+    Math.random = () => 0.01;
+    pauseGame();
+  });
+  expect(await readTipState()).toEqual({ tipVisible: false, pulsing: false });
+
+  expect(errors).toEqual([]);
+});
+
+test('clicking Save Game immediately dismisses its own tip and pulse, on top of the usual "Game Saved" toast', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await page.evaluate(() => {
+    clearSave();
+    STATE.phase = 'PLAYING';
+    STATE.wave = 12;
+    Math.random = () => 0.01; // guarantee the tip is showing beforehand
+    pauseGame();
+  });
+  const before = await page.evaluate(() => ({
+    tipVisible: document.getElementById('save-tip').classList.contains('visible'),
+    pulsing: document.getElementById('pause-save').classList.contains('save-tip-pulse'),
+  }));
+  expect(before).toEqual({ tipVisible: true, pulsing: true });
+
+  await page.click('#pause-save');
+  const after = await page.evaluate(() => ({
+    tipVisible: document.getElementById('save-tip').classList.contains('visible'),
+    pulsing: document.getElementById('pause-save').classList.contains('save-tip-pulse'),
+    toastVisible: document.getElementById('pause-save-toast').classList.contains('visible'),
+    toastText: document.getElementById('pause-save-toast').textContent,
+  }));
+  expect(after).toEqual({ tipVisible: false, pulsing: false, toastVisible: true, toastText: 'Game Saved' });
+
+  expect(errors).toEqual([]);
+});
