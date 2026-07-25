@@ -300,7 +300,11 @@ function queueAchievement(entry) {
   maybeShowNextAchievement();
 }
 
-const NEW_HIGHEST_WAVE_ACHIEVEMENT_START_WAVE = 10;
+// Shared by both progress-based achievements below (New Highest Wave, Best
+// Wave Score) -- their underlying stats always track from wave 1, but the
+// celebratory toast+sound wait until it's meaningful. Same wave-10
+// threshold the Save Game tip uses.
+const EARLY_ACHIEVEMENT_GATE_WAVE = 10;
 
 // Checks all three milestone types against this wave's result and queues
 // a toast for each one earned. Called once per completed wave.
@@ -312,11 +316,7 @@ function checkAchievements(waveScore) {
   if (STATE.wave > STATE.stats.bestWave) {
     STATE.stats.bestWave = STATE.wave;
     saveStats(STATE.stats);
-    // Every wave up through 9 is a "new" highest wave for anyone on a fresh
-    // save -- celebrating each one back-to-back reads as noise, not an
-    // achievement. Wait until it's actually meaningful (same wave-10
-    // threshold the Save Game tip uses) before the toast+sound fire.
-    if (STATE.wave >= NEW_HIGHEST_WAVE_ACHIEVEMENT_START_WAVE) {
+    if (STATE.wave >= EARLY_ACHIEVEMENT_GATE_WAVE) {
       queueAchievement({
         glyph: '🏆', // 🏆
         bg: 'radial-gradient(circle at 35% 30%, #ffe9a8, #d4a017)',
@@ -328,12 +328,14 @@ function checkAchievements(waveScore) {
   if (waveScore > STATE.stats.bestWaveScore) {
     STATE.stats.bestWaveScore = waveScore;
     saveStats(STATE.stats);
-    queueAchievement({
-      glyph: '⭐', // ⭐
-      bg: 'radial-gradient(circle at 35% 30%, #cfe8ff, #5b8def)',
-      glow: 'rgba(91,141,239,0.65)',
-      label: 'Best Wave Score',
-    });
+    if (STATE.wave >= EARLY_ACHIEVEMENT_GATE_WAVE) {
+      queueAchievement({
+        glyph: '⭐', // ⭐
+        bg: 'radial-gradient(circle at 35% 30%, #cfe8ff, #5b8def)',
+        glow: 'rgba(91,141,239,0.65)',
+        label: 'Best Wave Score',
+      });
+    }
   }
 }
 

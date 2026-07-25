@@ -2317,30 +2317,36 @@ test('on a short viewport, the pause panel scrolls internally instead of pushing
   expect(errors).toEqual([]);
 });
 
-test('the "New Highest Wave" achievement toast never fires before wave 10, even though every early wave is technically a new best', async ({ page }) => {
+test('the "New Highest Wave" and "Best Wave Score" achievement toasts never fire before wave 10, even though every early wave is technically a new best on both counts', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
 
   const result = await page.evaluate(() => {
     STATE.stats.bestWave = 0;
+    STATE.stats.bestWaveScore = 0;
     const perWave = [];
     for (let wave = 1; wave <= 12; wave++) {
       STATE.wave = wave;
       STATE.achievementQueue = [];
-      checkAchievements(0); // 0 waveScore -- never exceeds bestWaveScore, isolates this achievement
+      checkAchievements(wave * 100); // strictly increasing -- always a new best score too
       perWave.push({
         wave,
-        fired: STATE.achievementQueue.some(e => e.label === 'New Highest Wave'),
+        waveFired: STATE.achievementQueue.some(e => e.label === 'New Highest Wave'),
+        scoreFired: STATE.achievementQueue.some(e => e.label === 'Best Wave Score'),
         bestWaveNow: STATE.stats.bestWave,
+        bestScoreNow: STATE.stats.bestWaveScore,
       });
     }
     return perWave;
   });
 
   for (const entry of result) {
-    expect(entry.bestWaveNow).toBe(entry.wave); // stat tracking itself is never suppressed, only the toast
-    expect(entry.fired).toBe(entry.wave >= 10);
+    // Stat tracking itself is never suppressed, only the toasts.
+    expect(entry.bestWaveNow).toBe(entry.wave);
+    expect(entry.bestScoreNow).toBe(entry.wave * 100);
+    expect(entry.waveFired).toBe(entry.wave >= 10);
+    expect(entry.scoreFired).toBe(entry.wave >= 10);
   }
   expect(errors).toEqual([]);
 });
