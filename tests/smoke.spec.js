@@ -2350,3 +2350,46 @@ test('the "New Highest Wave" and "Best Wave Score" achievement toasts never fire
   }
   expect(errors).toEqual([]);
 });
+
+test('connection praise respects a cooldown between popups, even for back-to-back qualifying connections', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    startWave(20); // past tutorial, plenty of distinct pairs to work with
+    const byPair = {};
+    for (const d of STATE.dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+    const pairs = Object.values(byPair).filter(g => g.length >= 2).slice(0, 3);
+    if (pairs.length < 3) throw new Error('need at least 3 distinct pairs on this generated wave');
+
+    // Same shape as the existing tutorial-wave praise test: a long, winding
+    // path that easily clears the "long" criterion regardless of how far
+    // apart the two dots actually are.
+    function qualify([a, b]) {
+      const straightDist = Math.hypot(b.x - a.x, b.y - a.y);
+      STATE.currentPath = [
+        { x: a.x, y: a.y },
+        { x: a.x, y: a.y - straightDist },
+        { x: b.x, y: b.y + straightDist },
+        { x: b.x, y: b.y },
+      ];
+      completeConnection(a, b);
+      return STATE.connectionPraise.length;
+    }
+
+    const before = STATE.connectionPraise.length;
+    const first = qualify(pairs[0]); // cooldown starts at -Infinity -- should fire
+    const second = qualify(pairs[1]); // qualifies too, but still well within cooldown -- should NOT fire
+    STATE.lastPraiseAt = performance.now() - CONNECTION_PRAISE_COOLDOWN_MS; // simulate the cooldown having elapsed
+    const third = qualify(pairs[2]); // cooldown elapsed -- should fire again
+
+    return { before, first, second, third };
+  });
+
+  expect(result.before).toBe(0);
+  expect(result.first).toBe(1);
+  expect(result.second).toBe(1); // unchanged -- blocked by cooldown despite qualifying
+  expect(result.third).toBe(2);
+  expect(errors).toEqual([]);
+});

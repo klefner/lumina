@@ -1067,6 +1067,7 @@ const STATE = {
   achievementQueue: [],  // pending {glyph, bg, glow, label} toasts, shown one at a time
   achievementToastActive: false,
   connectionPraise: [],  // active { el, worldX, worldY, flip, spawnedAt, closing } popups -- see spawnConnectionPraise/updateConnectionPraise
+  lastPraiseAt: -Infinity, // performance.now() of the last one actually shown -- see CONNECTION_PRAISE_COOLDOWN_MS
 
   paused: false,           // freezes update()/input while the pause menu is open (see pauseGame/resumeGame)
   pauseFactHistory: [],    // last few pause-menu fact/tip strings shown, so the rotation never repeats too soon
@@ -3383,6 +3384,12 @@ const CONNECTION_PRAISE_COPY = {
 const CONNECTION_PRAISE_EMOJI = ['👍', '⭐', '🔥'];
 const CONNECTION_PRAISE_VISIBLE_MS = 4000;
 const CONNECTION_PRAISE_TRANSITION_MS = 260;
+// A qualifying connection is common enough on a busy board that, without a
+// cooldown, popups could fire back-to-back or even stack -- reported as
+// annoying/obtrusive rather than rewarding. This caps it to at most one
+// every 12 seconds real time, regardless of how many connections in that
+// window would otherwise have qualified.
+const CONNECTION_PRAISE_COOLDOWN_MS = 12000;
 
 // Escalates note count with tier, like a crowd's reaction growing with the
 // play -- tier 0 is a light two-note nudge, tier 2 adds a rising flourish.
@@ -3481,8 +3488,12 @@ function completeConnection(dotA, dotB) {
   // praise popup positions itself at whatever dot the connection just
   // completed at, with no awareness of the hint's own reserved zone, so it
   // could otherwise land squarely on top of the tutorial text a player is
-  // still reading.
-  const praise = STATE.tutorialWave ? null : evaluateConnectionPraise(dotA, dotB, newSegments, actualLen);
+  // still reading. Also skipped entirely while still in cooldown from the
+  // last one shown (see CONNECTION_PRAISE_COOLDOWN_MS) -- a genuinely
+  // praise-worthy connection made mid-cooldown just doesn't get one, rather
+  // than queuing or stacking.
+  const offCooldown = performance.now() - STATE.lastPraiseAt >= CONNECTION_PRAISE_COOLDOWN_MS;
+  const praise = (STATE.tutorialWave || !offCooldown) ? null : evaluateConnectionPraise(dotA, dotB, newSegments, actualLen);
 
   STATE.connections.push({
     dotA: dotA.id,
@@ -3505,7 +3516,10 @@ function completeConnection(dotA, dotB) {
 
   unmuteChunk(dotA.pairId);
   playConnectionChime(dotA.pairId);
-  if (praise) spawnConnectionPraise(dotB, praise);
+  if (praise) {
+    spawnConnectionPraise(dotB, praise);
+    STATE.lastPraiseAt = performance.now();
+  }
 
   haptic('connect');
 
