@@ -2393,3 +2393,258 @@ test('connection praise respects a cooldown between popups, even for back-to-bac
   expect(result.third).toBe(2);
   expect(errors).toEqual([]);
 });
+
+test('the ERASE button only appears while playing on Relaxed difficulty', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'normal'));
+  await page.reload();
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(500);
+  await expect(page.locator('#erase-button')).toBeHidden();
+
+  await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
+  await page.reload();
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(500);
+  await expect(page.locator('#erase-button')).toBeVisible();
+
+  expect(errors).toEqual([]);
+});
+
+test('in Relaxed difficulty, toggling ERASE then tapping a drawn line erases it and stays in erase mode for further taps', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
+  await page.reload();
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const dots = await page.evaluate(() => window.__lumina.getDots());
+  const byPair = {};
+  for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+  const [a, b] = Object.values(byPair)[0];
+
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  await page.mouse.move(b.x, b.y, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+
+  const before = await page.evaluate((pairId) => ({
+    connections: window.__lumina.getState().connections.filter(c => c.pairId === pairId).length,
+    anyConnected: window.__lumina.getDots().filter(d => d.pairId === pairId).some(d => d.connected),
+  }), a.pairId);
+  expect(before.connections).toBe(1);
+  expect(before.anyConnected).toBe(true);
+
+  await page.locator('#erase-button').click();
+  await expect(page.locator('#erase-button')).toHaveClass(/active/);
+
+  // Tap the midpoint of the line just drawn -- CONFIG.ERASE_HIT_RADIUS
+  // (30px) is generous enough that this straight-ish drag lands well
+  // within tolerance.
+  await page.mouse.click((a.x + b.x) / 2, (a.y + b.y) / 2);
+  await page.waitForTimeout(200);
+
+  const after = await page.evaluate((pairId) => ({
+    connections: window.__lumina.getState().connections.filter(c => c.pairId === pairId).length,
+    anyConnected: window.__lumina.getDots().filter(d => d.pairId === pairId).some(d => d.connected),
+    eraseModeStillOn: window.__lumina.getState().eraseMode,
+  }), a.pairId);
+  expect(after.connections).toBe(0);
+  expect(after.anyConnected).toBe(false);
+  expect(after.eraseModeStillOn).toBe(true); // multi-erase: stays on until explicitly toggled off
+
+  await page.locator('#erase-button').click();
+  await expect(page.locator('#erase-button')).not.toHaveClass(/active/);
+
+  expect(errors).toEqual([]);
+});
+
+test('findConnectionAt hits a tap within ERASE_HIT_RADIUS of an existing line and misses one outside it', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const conn = { dotA: 0, dotB: 1, colorIndex: 0, pairId: 0, segments: [{ x1: 100, y1: 100, x2: 300, y2: 100 }] };
+    STATE.connections = [conn];
+
+    return {
+      hitDeadCenter: findConnectionAt(200, 100) === conn,
+      hitJustInsideTolerance: findConnectionAt(200, 100 + CONFIG.ERASE_HIT_RADIUS - 2) === conn,
+      missWellOutsideTolerance: findConnectionAt(200, 100 + CONFIG.ERASE_HIT_RADIUS + 20),
+      missEntirelyElsewhere: findConnectionAt(1000, 1000),
+    };
+  });
+
+  expect(result.hitDeadCenter).toBe(true);
+  expect(result.hitJustInsideTolerance).toBe(true);
+  expect(result.missWellOutsideTolerance).toBeNull();
+  expect(result.missEntirelyElsewhere).toBeNull();
+  expect(errors).toEqual([]);
+});
+
+// Mirrors breakConnection's own established rule (see resetPairConnections):
+// once a color has 3+ dots, a single edge can't be cleanly un-linked from
+// the rest without re-deriving connectivity, so erasing any one edge resets
+// the whole network, not just the tapped edge.
+test('erasing one edge of a 3+-dot group resets the whole group', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const A = { id: 10, pairId: 5, colorIndex: 0, x: 100, y: 100, connected: true, pulsePhase: 0 };
+    const B = { id: 11, pairId: 5, colorIndex: 0, x: 300, y: 100, connected: true, pulsePhase: 0 };
+    const C = { id: 12, pairId: 5, colorIndex: 0, x: 300, y: 300, connected: true, pulsePhase: 0 };
+    STATE.dots = [A, B, C];
+    STATE.dotUnion = { 10: 10, 11: 10, 12: 10 }; // all three already unioned into one network
+    const connAB = { dotA: A.id, dotB: B.id, colorIndex: 0, pairId: 5, segments: [{ x1: A.x, y1: A.y, x2: B.x, y2: B.y }] };
+    const connBC = { dotA: B.id, dotB: C.id, colorIndex: 0, pairId: 5, segments: [{ x1: B.x, y1: B.y, x2: C.x, y2: C.y }] };
+    STATE.connections = [connAB, connBC];
+    STATE.lines = [{ pairId: 5 }, { pairId: 5 }];
+    STATE.stars = [{ pairId: 5 }, { pairId: 5 }];
+
+    eraseConnection(connAB); // only tap the A-B edge
+
+    return {
+      connectionsLeft: STATE.connections.length,
+      linesLeft: STATE.lines.length,
+      starsLeft: STATE.stars.length,
+      anyStillConnected: STATE.dots.some(d => d.connected),
+      unionReset: STATE.dotUnion[10] === 10 && STATE.dotUnion[11] === 11 && STATE.dotUnion[12] === 12,
+    };
+  });
+
+  expect(result.connectionsLeft).toBe(0); // both edges gone, not just the tapped one
+  expect(result.linesLeft).toBe(0);
+  expect(result.starsLeft).toBe(0);
+  expect(result.anyStillConnected).toBe(false);
+  expect(result.unionReset).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('the ERASE tutorial message only shows in Relaxed difficulty, and is skipped (not blank) otherwise', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const eraseWave = TUTORIAL_MESSAGES.findIndex(m => m.relaxedOnly) + 1;
+
+    STATE.difficulty = 'normal';
+    showTutorialHint(eraseWave);
+    const onNormal = { tutorialWave: STATE.tutorialWave, dismissWhen: STATE.tutorialDismissWhen };
+
+    STATE.difficulty = 'relaxed';
+    showTutorialHint(eraseWave);
+    const onRelaxed = { tutorialWave: STATE.tutorialWave, text: document.getElementById('tutorial-hint').textContent };
+
+    return { eraseWave, onNormal, onRelaxed };
+  });
+
+  expect(result.eraseWave).toBeGreaterThan(0);
+  expect(result.onNormal.tutorialWave).toBeNull();
+  expect(result.onNormal.dismissWhen).toBeNull();
+  expect(result.onRelaxed.tutorialWave).toBe(result.eraseWave);
+  expect(result.onRelaxed.text).toMatch(/ERASE/);
+  expect(errors).toEqual([]);
+});
+
+// Flagged by Codex review on #34: ERASE is entirely player-controlled and
+// repeatable (unlike a rotating barrier snap), so if the score a connection
+// awarded weren't reversed on erase, a player could draw one long line,
+// erase it, redraw it, and farm unlimited score/best-wave-score credit.
+test('erasing a connection reverses the score it awarded, so redrawing the same line does not farm points', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
+  await page.reload();
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const dots = await page.evaluate(() => window.__lumina.getDots());
+  const byPair = {};
+  for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+  const [a, b] = Object.values(byPair)[0];
+
+  async function drawConnection() {
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await page.mouse.move(b.x, b.y, { steps: 12 });
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+  }
+
+  const scoreBeforeFirstDraw = await page.evaluate(() => window.__lumina.getState().score);
+  await drawConnection();
+  const scoreAfterFirstDraw = await page.evaluate(() => window.__lumina.getState().score);
+  expect(scoreAfterFirstDraw).toBeGreaterThan(scoreBeforeFirstDraw);
+
+  await page.locator('#erase-button').click();
+  await page.mouse.click((a.x + b.x) / 2, (a.y + b.y) / 2);
+  await page.waitForTimeout(200);
+  const scoreAfterErase = await page.evaluate(() => window.__lumina.getState().score);
+  expect(scoreAfterErase).toBe(scoreBeforeFirstDraw);
+
+  // Erase mode stays on after one erase (multi-erase) -- toggle it back off
+  // so the next drag draws a line instead of hunting for another to erase.
+  await page.locator('#erase-button').click();
+
+  // Redrawing the identical line a second time must award exactly the same
+  // points again, not stack on top of a stale earlier award.
+  await drawConnection();
+  const scoreAfterRedraw = await page.evaluate(() => window.__lumina.getState().score);
+  expect(scoreAfterRedraw).toBe(scoreAfterFirstDraw);
+
+  expect(errors).toEqual([]);
+});
+
+// Flagged by Codex review on #34: the button was visible any time the
+// phase wasn't TITLE, including WAVE_COMPLETE, where canvas taps advance
+// the wave before ever reaching the erase-mode branch -- a lit button that
+// can't do anything. Also confirms startWave's reset is a real safety net
+// (clears the DOM class itself), not just relying on toggleEraseMode's own
+// click handler to keep the two in sync.
+test('the ERASE button hides during WAVE_COMPLETE (even in Relaxed) and its active class can never survive into the next wave', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.difficulty = 'relaxed';
+    STATE.phase = 'PLAYING';
+    updateWaveDisplay();
+    const visibleWhilePlaying = document.getElementById('erase-button').classList.contains('visible');
+
+    STATE.phase = 'WAVE_COMPLETE';
+    updateWaveDisplay();
+    const visibleAtWaveComplete = document.getElementById('erase-button').classList.contains('visible');
+
+    // Simulate the button having been left lit somehow going into a new
+    // wave -- startWave's own reset must independently clear it.
+    document.getElementById('erase-button').classList.add('active');
+    STATE.eraseMode = true;
+    startWave(1);
+    const activeAfterNewWave = document.getElementById('erase-button').classList.contains('active');
+    const eraseModeAfterNewWave = STATE.eraseMode;
+
+    return { visibleWhilePlaying, visibleAtWaveComplete, activeAfterNewWave, eraseModeAfterNewWave };
+  });
+
+  expect(result.visibleWhilePlaying).toBe(true);
+  expect(result.visibleAtWaveComplete).toBe(false);
+  expect(result.activeAfterNewWave).toBe(false);
+  expect(result.eraseModeAfterNewWave).toBe(false);
+  expect(errors).toEqual([]);
+});

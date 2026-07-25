@@ -12,6 +12,7 @@ const CONFIG = {
   DOT_RADIUS_CONNECTED_MAX: 30, // Max radius during connected pulse
   DOT_HIT_RADIUS: 44,        // Touch detection radius (larger than visual for ease of use)
   DOT_PULSE_SPEED: 0.04,     // Phase increment per frame
+  ERASE_HIT_RADIUS: 30,      // Touch detection radius for tapping an existing line in erase mode
 
   // Lines
   // The single width used everywhere a connection line is drawn -- while
@@ -99,6 +100,9 @@ const FADE_CONFIG = {
 // does the thing it describes, then fades out and never reappears for that
 // wave. `dismissWhen: 'connect'` clears it on the wave's first completed
 // connection; `'complete'` waits for the whole wave to be finished.
+// `relaxedOnly: true` skips the entry entirely outside Relaxed difficulty
+// (see showTutorialHint) rather than showing a tip about a button that
+// wave's player doesn't have.
 const TUTORIAL_MESSAGES = [
   { text: 'Tap/Click hold to draw a line from one colored dot to its pair.', dismissWhen: 'connect' },
   { text: 'Lines break when they cross other lines.', dismissWhen: 'connect' },
@@ -113,6 +117,7 @@ const TUTORIAL_MESSAGES = [
   // reordered above it later.
   { text: 'This board is bigger than your screen — drag to pan, pinch or scroll to zoom, and find every dot.', dismissWhen: 'connect', unlocksWideWorld: true },
   { text: 'Tap the pause button any time to save your progress.', dismissWhen: 'connect' },
+  { text: 'In Relaxed mode, tap ERASE, then tap a line to remove it and redraw.', dismissWhen: 'connect', relaxedOnly: true },
   { text: 'Connect the dots, make music. Relax and Enjoy!', dismissWhen: 'connect' },
 ];
 
@@ -1022,6 +1027,8 @@ const STATE = {
   panDrag: null,        // { startScreenX, startScreenY, startCenterX, startCenterY } while panning
   lastDrawScreenPos: null, // { x, y } screen-space, last known position of an in-progress draw gesture -- see updateEdgePan
   hintPulse: null,      // { startTime } while the hint button's "flash every unconnected dot" is playing
+  eraseMode: false,     // Relaxed-difficulty only: while true, a tap targets an existing connection
+                         // to erase instead of starting a new line (see ERASE_HIT_RADIUS/toggleEraseMode)
 
   activeDot: null,     // The dot currently being dragged from
   currentPath: [],     // Points being drawn right now [{x, y}]
@@ -2343,6 +2350,15 @@ function triggerHintPulse() {
   STATE.hintPulse = { startTime: performance.now() };
 }
 
+// Relaxed-difficulty only (see updateWaveDisplay for the button's own
+// visibility). Stays on across multiple erases -- rather than a one-shot
+// action -- so redoing several lines in a row doesn't mean re-tapping ERASE
+// each time; toggling it off, pausing, or leaving the wave all clear it.
+function toggleEraseMode() {
+  STATE.eraseMode = !STATE.eraseMode;
+  document.getElementById('erase-button').classList.toggle('active', STATE.eraseMode);
+}
+
 // 0 at the very start/end/between flashes, 1 at each flash's peak -- same
 // shape for every unconnected dot, so they all flash in unison. Raising
 // the underlying cosine wave to a power sharpens each cycle into a brief
@@ -2998,6 +3014,17 @@ function onInputStart(e) {
 
   const pos = getEventPos(e);
 
+  // Erase mode takes over the tap entirely -- a hit on an existing line
+  // erases it, and a miss (empty space or a dot) is just a no-op rather
+  // than falling through to start a new line or a pan, which would let a
+  // player accidentally draw or scroll while they're clearly trying to
+  // remove something instead.
+  if (STATE.eraseMode) {
+    const conn = findConnectionAt(pos.x, pos.y);
+    if (conn) eraseConnection(conn);
+    return;
+  }
+
   const dot = findDotAt(pos.x, pos.y, false);
   if (!dot) {
     // Dragging empty board space was always a no-op before panning
@@ -3191,6 +3218,19 @@ function findDotAt(x, y, includeConnected) {
     if (!includeConnected && dot.connected) continue;
     const dist = Math.hypot(dot.x - x, dot.y - y);
     if (dist <= CONFIG.DOT_HIT_RADIUS) return dot;
+  }
+  return null;
+}
+
+// Erase-mode counterpart to findDotAt -- hit-tests against the same
+// finely-sampled curve segments completeConnection stored (see
+// smoothedCurveSegments), so a tap registers against exactly what the
+// player sees drawn, not a coarser straight-line approximation of it.
+function findConnectionAt(x, y) {
+  for (const conn of STATE.connections) {
+    for (const seg of conn.segments) {
+      if (distPointToSegment(x, y, seg.x1, seg.y1, seg.x2, seg.y2) <= CONFIG.ERASE_HIT_RADIUS) return conn;
+    }
   }
   return null;
 }
@@ -3495,12 +3535,15 @@ function completeConnection(dotA, dotB) {
   const offCooldown = performance.now() - STATE.lastPraiseAt >= CONNECTION_PRAISE_COOLDOWN_MS;
   const praise = (STATE.tutorialWave || !offCooldown) ? null : evaluateConnectionPraise(dotA, dotB, newSegments, actualLen);
 
+  const scoreAwarded = Math.round(actualLen * SCORE_PER_LINE_PIXEL);
+
   STATE.connections.push({
     dotA: dotA.id,
     dotB: dotB.id,
     colorIndex: dotA.colorIndex,
     pairId: dotA.pairId,
     segments: newSegments,
+    scoreAwarded, // reversed in resetPairConnections if this edge is ever broken or erased
   });
 
   const fadingLine = {
@@ -3523,7 +3566,7 @@ function completeConnection(dotA, dotB) {
 
   haptic('connect');
 
-  STATE.score += Math.round(actualLen * SCORE_PER_LINE_PIXEL);
+  STATE.score += scoreAwarded;
   updateWaveDisplay();
 
   checkTutorialDismiss();
@@ -3900,6 +3943,8 @@ function startWave(waveNumber) {
   STATE.activeDot = null;
   STATE.currentPath = [];
   STATE.isDrawing = false;
+  STATE.eraseMode = false;
+  document.getElementById('erase-button').classList.remove('active');
   for (const entry of STATE.connectionPraise) entry.el.remove();
   STATE.connectionPraise = [];
   STATE.spaceObjects = [];
@@ -4454,31 +4499,63 @@ function checkRotatingBarrierBreaks() {
   for (const [pairId, hit] of hits) breakConnection(pairId, hit.colorIndex, hit.sparkX, hit.sparkY);
 }
 
-// Resets a color's WHOLE network, not just the one edge the barrier swept
-// through — once a group has 3+ dots (see GROUP_CONFIG), a single edge
-// can't be cleanly un-linked from the rest without re-deriving connectivity
-// from the remaining edges, so a barrier strike sends that color back to
-// square one instead. Simpler rule, and an honest one: if a barrier cuts
-// through any part of a color's network, that color's progress resets.
-function breakConnection(pairId, colorIndex, sparkX, sparkY) {
+// Resets a color's WHOLE network, not just one edge — once a group has 3+
+// dots (see GROUP_CONFIG), a single edge can't be cleanly un-linked from the
+// rest without re-deriving connectivity from the remaining edges, so both
+// callers below (a barrier strike, or a player erasing a line in Relaxed
+// mode) send that color back to square one instead. Simpler rule, and an
+// honest one: if any part of a color's network goes away, its whole
+// progress resets.
+function resetPairConnections(pairId) {
   const groupDots = STATE.dots.filter(d => d.pairId === pairId);
   for (const d of groupDots) {
     d.connected = false;
     STATE.dotUnion[d.id] = d.id;
   }
 
+  // Reverse whatever score these edges awarded, too -- otherwise erasing and
+  // redrawing the same connection (Relaxed's ERASE is entirely
+  // player-controlled and repeatable, unlike a barrier strike) would let a
+  // player farm unlimited score, and inflate the best-wave-score
+  // achievement, from a single line.
+  let reversedScore = 0;
   for (let i = STATE.connections.length - 1; i >= 0; i--) {
-    if (STATE.connections[i].pairId === pairId) STATE.connections.splice(i, 1);
+    if (STATE.connections[i].pairId === pairId) {
+      reversedScore += STATE.connections[i].scoreAwarded;
+      STATE.connections.splice(i, 1);
+    }
   }
+  if (reversedScore > 0) {
+    STATE.score = Math.max(0, STATE.score - reversedScore);
+    updateWaveDisplay();
+  }
+
   STATE.lines = STATE.lines.filter(l => l.pairId !== pairId);
   // Otherwise this pair's star halo — the one lasting sign a connection
   // ever existed, now that its line no longer fades to nothing either —
-  // would keep implying "still connected" long after a rotating barrier
-  // reset it, which is exactly the stale signal that made a broken
-  // connection read as a mystery instead of a break.
+  // would keep implying "still connected" long after it reset, which is
+  // exactly the stale signal that made a broken connection read as a
+  // mystery instead of a break.
   STATE.stars = STATE.stars.filter(s => s.pairId !== pairId);
-  spawnBreakSparks(sparkX, sparkY, colorIndex);
   remuteChunk(pairId);
+}
+
+function breakConnection(pairId, colorIndex, sparkX, sparkY) {
+  resetPairConnections(pairId);
+  spawnBreakSparks(sparkX, sparkY, colorIndex);
+  haptic('break');
+}
+
+// Relaxed-mode-only player action (see toggleEraseMode/findConnectionAt):
+// undoes one of the player's own lines on request, rather than only ever
+// happening to them via a rotating barrier. Deliberately reuses the same
+// break spark/haptic feedback as breakConnection -- the underlying state
+// change is identical, and the feedback already reads clearly as "this
+// connection just came undone" regardless of what caused it.
+function eraseConnection(conn) {
+  const midSeg = conn.segments[Math.floor(conn.segments.length / 2)];
+  resetPairConnections(conn.pairId);
+  spawnBreakSparks(midSeg.x1, midSeg.y1, conn.colorIndex);
   haptic('break');
 }
 
@@ -5357,6 +5434,10 @@ function closePauseMenuUI() {
   document.getElementById('save-tip').classList.remove('visible');
   document.getElementById('pause-save').classList.remove('save-tip-pulse');
   stopPauseFactRotation();
+  // Resuming always lands back in normal draw mode -- otherwise the ERASE
+  // toggle could stay lit with no visible cue why taps aren't drawing lines.
+  STATE.eraseMode = false;
+  document.getElementById('erase-button').classList.remove('active');
 }
 
 // A rare nudge toward Save Game for a player who might not have noticed it
@@ -5513,6 +5594,8 @@ function exitToTitle() {
   STATE.celestialBodies = [];
   STATE.beatSync = null;
   STATE.song = null;
+  STATE.eraseMode = false;
+  document.getElementById('erase-button').classList.remove('active');
   hideTutorialHint(true); // in-wave UI must never linger over the title screen
   document.getElementById('achievement-toast').classList.remove('visible');
   STATE.achievementQueue = [];
@@ -5606,6 +5689,7 @@ function maybeFetchOnlineFacts() {
 function setupPauseMenuListeners() {
   document.getElementById('pause-button').addEventListener('click', togglePause);
   document.getElementById('hint-button').addEventListener('click', triggerHintPulse);
+  document.getElementById('erase-button').addEventListener('click', toggleEraseMode);
   document.getElementById('help-button').addEventListener('click', openHelp);
   document.getElementById('help-close').addEventListener('click', closeHelp);
   document.getElementById('help-overlay').addEventListener('click', (e) => {
@@ -5652,7 +5736,9 @@ function hideMessage() {
 
 function showTutorialHint(waveNumber) {
   const entry = TUTORIAL_MESSAGES[waveNumber - 1];
-  if (!entry) { STATE.tutorialWave = null; STATE.tutorialDismissWhen = null; return; }
+  if (!entry || (entry.relaxedOnly && STATE.difficulty !== 'relaxed')) {
+    STATE.tutorialWave = null; STATE.tutorialDismissWhen = null; return;
+  }
   STATE.tutorialWave = waveNumber;
   STATE.tutorialDismissWhen = entry.dismissWhen;
   layoutTutorialHint(entry.text);
@@ -5883,6 +5969,11 @@ function updateWaveDisplay() {
   // every phase transition already runs through.
   document.getElementById('pause-button').classList.toggle('visible', STATE.phase !== 'TITLE');
   document.getElementById('hint-button').classList.toggle('visible', STATE.phase !== 'TITLE');
+  // Unlike HINT/pause, gated to PLAYING specifically, not just "not TITLE"
+  // -- during WAVE_COMPLETE, canvas taps advance to the next wave before
+  // ever reaching the erase-mode branch in onInputStart, so a lit ERASE
+  // button there would toggle a mode that can't actually do anything.
+  document.getElementById('erase-button').classList.toggle('visible', STATE.phase === 'PLAYING' && STATE.difficulty === 'relaxed');
 }
 
 // ============================================================

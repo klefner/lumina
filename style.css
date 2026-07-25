@@ -56,8 +56,9 @@ html, body {
    togglePause() is a deliberate no-op on the title screen, and a visible
    button that does nothing on tap reads as broken rather than absent.
    #help-button is deliberately not part of that display:none rule below —
-   it's meaningful on the title screen too, so it's always visible. */
-#pause-button, #hint-button, #help-button {
+   it's meaningful on the title screen too, so it's always visible.
+   #erase-button additionally only ever shows in Relaxed difficulty. */
+#pause-button, #hint-button, #erase-button, #help-button {
   pointer-events: auto;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.2);
@@ -69,10 +70,10 @@ html, body {
   cursor: pointer;
   transition: background 0.2s ease, color 0.2s ease;
 }
-#pause-button, #hint-button {
+#pause-button, #hint-button, #erase-button {
   display: none;
 }
-#pause-button.visible, #hint-button.visible {
+#pause-button.visible, #hint-button.visible, #erase-button.visible {
   display: block;
 }
 #pause-button, #help-button {
@@ -80,10 +81,10 @@ html, body {
   width: 30px;
   height: 30px;
 }
-/* HINT reads as a label, not a glyph, so it needs a pill wide enough for
-   the word -- the shared circular sizing above was built for a single
-   character (the old "?") and clipped "HINT" badly. */
-#hint-button {
+/* HINT/ERASE read as labels, not glyphs, so they need a pill wide enough
+   for the word -- the shared circular sizing above was built for a single
+   character (the old "?") and clipped a word badly. */
+#hint-button, #erase-button {
   border-radius: 15px;
   padding: 0 12px;
   height: 30px;
@@ -91,9 +92,18 @@ html, body {
 }
 #pause-button:hover, #pause-button:active,
 #hint-button:hover, #hint-button:active,
+#erase-button:hover, #erase-button:active,
 #help-button:hover, #help-button:active {
   background: rgba(255, 255, 255, 0.18);
   color: rgba(255, 255, 255, 0.95);
+}
+/* Lit while erase mode is engaged (see toggleEraseMode) -- a warm,
+   attention-getting fill rather than the neutral hover state above, so
+   it's obvious taps are currently erasing lines instead of drawing them. */
+#erase-button.active {
+  background: rgba(255, 120, 90, 0.85);
+  border-color: rgba(255, 150, 120, 0.9);
+  color: #1a0a05;
 }
 
 /* Live points for the line currently being drawn — counts up in real time
