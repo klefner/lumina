@@ -1425,7 +1425,7 @@ test('WIDE_WORLD_START_WAVE is derived from the flagged tutorial entry, not a ha
     return {
       flaggedIndex,
       wideWorldStartWave: WIDE_WORLD_START_WAVE,
-      isSecondToLast: flaggedIndex === TUTORIAL_MESSAGES.length - 2,
+      notTheLastMessage: flaggedIndex < TUTORIAL_MESSAGES.length - 1, // "relax and enjoy" always keeps that spot
       onlyOneFlagged: TUTORIAL_MESSAGES.filter(m => m.unlocksWideWorld).length,
     };
   });
@@ -1433,7 +1433,7 @@ test('WIDE_WORLD_START_WAVE is derived from the flagged tutorial entry, not a ha
   // WIDE_WORLD_START_WAVE is 1-indexed (wave numbers start at 1), so it
   // should equal the flagged entry's 0-indexed array position + 1.
   expect(result.wideWorldStartWave).toBe(result.flaggedIndex + 1);
-  expect(result.isSecondToLast).toBe(true);
+  expect(result.notTheLastMessage).toBe(true);
   expect(result.onlyOneFlagged).toBe(1);
   expect(errors).toEqual([]);
 });
@@ -1504,13 +1504,12 @@ test('a wide wave holds the camera at the full-world view before easing to a com
   expect(afterEase.holding).toBe(false); // hold has released
   expect(afterEase.scale).toBeGreaterThan(afterEase.autoScale); // eased in, no longer at the full-world view
 
-  // Two waves later is past every tutorial message (the wide-world
-  // explainer's own wave, then the final "Relax and Enjoy!" wave right
-  // after it) -- still a wide wave, but with no tutorial hint left to
-  // show at all. The zoom hold-then-ease beat should still replay here,
-  // proving it's tied to being a wide wave, not to the one-time explainer.
+  // The first wave past every remaining tutorial message -- still a wide
+  // wave, but with no tutorial hint left to show at all. The zoom
+  // hold-then-ease beat should still replay here, proving it's tied to
+  // being a wide wave, not to the one-time explainer.
   const second = await page.evaluate(() => {
-    const laterWave = STATE.wave + 2;
+    const laterWave = TUTORIAL_MESSAGES.length + 1;
     startWave(laterWave);
     return {
       scaleAtStart: STATE.camera.scale,
@@ -2144,7 +2143,7 @@ test('connection praise never appears on a tutorial wave, even for a connection 
     startWave(1); // a real tutorial wave (TUTORIAL_MESSAGES[0])
     const onTutorialWave = { tutorialWave: STATE.tutorialWave, praiseCount: forceQualifyingLongConnection() };
 
-    startWave(9); // past every tutorial message (TUTORIAL_MESSAGES.length === 8)
+    startWave(TUTORIAL_MESSAGES.length + 1); // the first wave past every tutorial message
     const pastTutorial = { tutorialWave: STATE.tutorialWave, praiseCount: forceQualifyingLongConnection() };
 
     return { onTutorialWave, pastTutorial };
@@ -2187,5 +2186,133 @@ test('connection praise: an ordinary direct connection sharing a dot with an exi
   });
 
   expect(result).toBeNull();
+  expect(errors).toEqual([]);
+});
+
+test('the Save Game tip only ever appears at wave 10+, for a player who has never saved, and only on the rolls that win its 10% chance', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const readTipState = () => page.evaluate(() => ({
+    tipVisible: document.getElementById('save-tip').classList.contains('visible'),
+    pulsing: document.getElementById('pause-save').classList.contains('save-tip-pulse'),
+  }));
+
+  // Below the wave threshold: never shows, even with a guaranteed-win roll
+  // and no save on file.
+  await page.evaluate(() => {
+    clearSave();
+    STATE.phase = 'PLAYING';
+    STATE.wave = 9;
+    Math.random = () => 0.01; // would win the 10% roll if it were even attempted
+    pauseGame();
+  });
+  expect(await readTipState()).toEqual({ tipVisible: false, pulsing: false });
+  await page.evaluate(() => resumeGame());
+
+  // At/above the threshold, never saved, losing roll: still hidden.
+  await page.evaluate(() => {
+    clearSave();
+    STATE.phase = 'PLAYING';
+    STATE.wave = 10;
+    Math.random = () => 0.99;
+    pauseGame();
+  });
+  expect(await readTipState()).toEqual({ tipVisible: false, pulsing: false });
+  await page.evaluate(() => resumeGame());
+
+  // At/above the threshold, never saved, winning roll: shows, with the
+  // pulse tied to the exact same button the tip is explaining.
+  await page.evaluate(() => {
+    clearSave();
+    STATE.phase = 'PLAYING';
+    STATE.wave = 10;
+    Math.random = () => 0.01;
+    pauseGame();
+  });
+  expect(await readTipState()).toEqual({ tipVisible: true, pulsing: true });
+
+  // Resuming clears both, even mid-display.
+  await page.evaluate(() => resumeGame());
+  expect(await readTipState()).toEqual({ tipVisible: false, pulsing: false });
+
+  // A player who has already saved at least once is never shown the tip
+  // again, regardless of wave or how favorable the roll is -- they already
+  // know the feature exists.
+  await page.evaluate(() => {
+    STATE.phase = 'PLAYING';
+    STATE.wave = 25;
+    saveGame(); // now there IS a save on file
+    Math.random = () => 0.01;
+    pauseGame();
+  });
+  expect(await readTipState()).toEqual({ tipVisible: false, pulsing: false });
+
+  expect(errors).toEqual([]);
+});
+
+test('clicking Save Game immediately dismisses its own tip and pulse, on top of the usual "Game Saved" toast', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await page.evaluate(() => {
+    clearSave();
+    STATE.phase = 'PLAYING';
+    STATE.wave = 12;
+    Math.random = () => 0.01; // guarantee the tip is showing beforehand
+    pauseGame();
+  });
+  const before = await page.evaluate(() => ({
+    tipVisible: document.getElementById('save-tip').classList.contains('visible'),
+    pulsing: document.getElementById('pause-save').classList.contains('save-tip-pulse'),
+  }));
+  expect(before).toEqual({ tipVisible: true, pulsing: true });
+
+  await page.click('#pause-save');
+  const after = await page.evaluate(() => ({
+    tipVisible: document.getElementById('save-tip').classList.contains('visible'),
+    pulsing: document.getElementById('pause-save').classList.contains('save-tip-pulse'),
+    toastVisible: document.getElementById('pause-save-toast').classList.contains('visible'),
+    toastText: document.getElementById('pause-save-toast').textContent,
+  }));
+  expect(after).toEqual({ tipVisible: false, pulsing: false, toastVisible: true, toastText: 'Game Saved' });
+
+  expect(errors).toEqual([]);
+});
+
+test('on a short viewport, the pause panel scrolls internally instead of pushing Resume off-screen once the save tip adds an extra row', async ({ page }) => {
+  // Regression test for a real bug Codex caught on PR #31: #pause-panel had
+  // no height cap or scrolling, so the tip's extra in-flow row could grow
+  // the panel taller than a short landscape viewport and strand Resume
+  // above the visible area with no way back.
+  const errors = trackErrors(page);
+  await page.setViewportSize({ width: 640, height: 320 });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await page.evaluate(() => {
+    clearSave();
+    STATE.phase = 'PLAYING';
+    STATE.wave = 12;
+    Math.random = () => 0.01; // guarantee the tip is showing, worst case for panel height
+    pauseGame();
+  });
+
+  const result = await page.evaluate(() => {
+    const panel = document.getElementById('pause-panel');
+    const resumeRect = document.getElementById('pause-resume').getBoundingClientRect();
+    return {
+      tipVisible: document.getElementById('save-tip').classList.contains('visible'),
+      panelTallerThanViewport: panel.scrollHeight > window.innerHeight,
+      resumeFullyVisible: resumeRect.top >= 0 && resumeRect.bottom <= window.innerHeight,
+      panelOverflowY: getComputedStyle(panel).overflowY,
+    };
+  });
+
+  expect(result.tipVisible).toBe(true); // confirms this actually exercised the worst case
+  expect(result.panelOverflowY).toBe('auto');
+  expect(result.resumeFullyVisible).toBe(true); // reachable regardless of whether the panel content overflowed
   expect(errors).toEqual([]);
 });
