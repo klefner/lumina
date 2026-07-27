@@ -2467,6 +2467,63 @@ test('in Relaxed difficulty, toggling ERASE then tapping a drawn line erases it 
   expect(errors).toEqual([]);
 });
 
+// Flagged by review: on a touch device, a pinch's first finger lands as
+// its own touchstart before the second one arrives. Erasing immediately
+// on that first contact (the original implementation) could permanently
+// delete a line the player only grazed on their way into a two-finger
+// zoom gesture. The hit test now waits for onInputEnd (see STATE.eraseArmed),
+// and beginPinch clears it the instant a second finger confirms this is a
+// pinch, not a tap -- exercised here directly via the input handlers
+// (touch simulation isn't available through page.mouse) rather than through
+// window.__lumina, so this is real production code, not a re-implementation.
+test('a second finger landing mid-tap in erase mode cancels the pending erase instead of deleting whatever the first finger grazed', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const setup = await page.evaluate(() => {
+    STATE.eraseMode = true;
+    const dots = window.__lumina.getDots();
+    const byPair = {};
+    for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+    const [a, b] = Object.values(byPair)[0];
+    STATE.activeDot = a;
+    STATE.currentPath = [{ x: a.x, y: a.y }, { x: b.x, y: b.y }];
+    completeConnection(a, b);
+    const mid = STATE.connections[0].segments[Math.floor(STATE.connections[0].segments.length / 2)];
+    return { tapX: mid.x1, tapY: mid.y1, pairId: a.pairId };
+  });
+
+  // First finger lands on the line -- arms erase mode, but doesn't act yet.
+  const armedAfterFirstTouch = await page.evaluate(({ tapX, tapY }) => {
+    onInputStart({ preventDefault() {}, clientX: tapX, clientY: tapY });
+    return STATE.eraseArmed;
+  }, setup);
+  expect(armedAfterFirstTouch).toBe(true);
+
+  // A second finger lands before release -- this is a pinch starting, not
+  // a tap landing.
+  const armedAfterSecondTouch = await page.evaluate(({ tapX, tapY }) => {
+    onInputStart({
+      preventDefault() {},
+      touches: [{ clientX: tapX, clientY: tapY }, { clientX: tapX + 60, clientY: tapY + 60 }],
+    });
+    return STATE.eraseArmed;
+  }, setup);
+  expect(armedAfterSecondTouch).toBe(false); // beginPinch cleared it
+
+  const survived = await page.evaluate((pairId) => {
+    onInputEnd({ preventDefault() {} });
+    return STATE.connections.some(c => c.pairId === pairId);
+  }, setup.pairId);
+  expect(survived).toBe(true); // the line the first finger grazed must still be there
+
+  expect(errors).toEqual([]);
+});
+
 test('findConnectionAt hits a tap within ERASE_HIT_RADIUS of an existing line and misses one outside it', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
@@ -2488,6 +2545,31 @@ test('findConnectionAt hits a tap within ERASE_HIT_RADIUS of an existing line an
   expect(result.hitJustInsideTolerance).toBe(true);
   expect(result.missWellOutsideTolerance).toBeNull();
   expect(result.missEntirelyElsewhere).toBeNull();
+  expect(errors).toEqual([]);
+});
+
+// Flagged by review: close parallel routing (two valid, non-crossing
+// lines running near each other) is normal, legal gameplay, so a tap
+// between them has to resolve to whichever is actually closest -- not
+// just whichever happens to come first in STATE.connections' insertion
+// order, which would make erasing the wrong line depend on draw order
+// rather than proximity.
+test('findConnectionAt picks the closest eligible connection to the tap, not just the first one within range', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const farther = { dotA: 0, dotB: 1, colorIndex: 0, pairId: 0, segments: [{ x1: 100, y1: 100, x2: 300, y2: 100 }] };
+    const closer = { dotA: 2, dotB: 3, colorIndex: 1, pairId: 1, segments: [{ x1: 100, y1: 115, x2: 300, y2: 115 }] };
+    // Deliberately inserted farther-first -- a first-match implementation
+    // would pick `farther` even though `closer` is nearer the tap.
+    STATE.connections = [farther, closer];
+    const hit = findConnectionAt(200, 110); // 10px from `farther`, 5px from `closer`
+    return { pickedCloser: hit === closer };
+  });
+
+  expect(result.pickedCloser).toBe(true);
   expect(errors).toEqual([]);
 });
 
@@ -2540,36 +2622,81 @@ test('erasing one edge of a 3+-dot group resets the whole group', async ({ page 
 // never seen on desktop. fillBaseStarfield only ever ran once, sized to
 // whatever canvas.width/height were at that instant, so any newly-exposed
 // screen area after a resize stayed permanently starless.
-test('the WAVE_COMPLETE starfield reveal tops itself back up if the viewport grows afterward, but a resize mid-play does not enrich the deliberately sparse backdrop', async ({ page }) => {
+//
+// Also covers two gaps a naive "just re-run fillBaseStarfield()" fix would
+// have (flagged in review): its target count depends only on total area,
+// so an area-preserving orientation flip computes the same target as
+// before and silently adds nothing; and even a genuine area increase
+// scatters the new stars over the WHOLE canvas rather than the
+// newly-exposed part, under-filling that part whenever the pre-existing
+// area is large relative to the growth. Both are asserted with exact,
+// deterministic counts (topUpStarfieldForResize's region math has no
+// randomness in *how many* stars get added, only where within their
+// region each one lands) -- a naive fix would fail the rotation count
+// outright (would stay flat), and would very likely fail the "stars
+// actually in the new strip" count even when the grand total happened to
+// match.
+test('the WAVE_COMPLETE starfield reveal tops itself back up precisely for both a viewport growth and an area-preserving rotation, but a resize mid-play does not enrich the deliberately sparse backdrop', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.setViewportSize({ width: 400, height: 700 });
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
 
+  // --- Growth: mobile address bar collapsing, width unchanged ---
   await page.evaluate(() => {
     startWave(1);
     for (const dot of STATE.dots) dot.connected = true;
     checkWaveComplete();
   });
-  const before = await page.evaluate(() => STATE.stars.length);
-  expect(before).toBeGreaterThan(0);
+  const baseline = await page.evaluate(() => STATE.stars.length);
+  expect(baseline).toBe(Math.round((400 * 700) / 2600)); // 108 -- matches AREA_PER_BASE_STAR exactly
 
-  // Simulate a mobile address bar collapsing mid-reveal -- a real resize
-  // event, same as window.innerHeight growing on an actual device.
   await page.setViewportSize({ width: 400, height: 850 });
   await page.waitForTimeout(50);
-  const afterGrowWhileComplete = await page.evaluate(() => STATE.stars.length);
-  expect(afterGrowWhileComplete).toBeGreaterThan(before); // topped up to match the larger area's density
+  const afterGrowth = await page.evaluate(() => ({
+    total: STATE.stars.length,
+    inNewStrip: STATE.stars.filter(s => s.y >= 700).length, // only the newly-exposed 400x150 strip
+  }));
+  const expectedNewStripCount = Math.round((400 * 150) / 2600); // 23
+  expect(afterGrowth.total).toBe(baseline + expectedNewStripCount);
+  expect(afterGrowth.inNewStrip).toBe(expectedNewStripCount); // every added star actually landed in the new strip
 
-  // Back to actively playing: a further resize must NOT enrich the sparse
-  // during-play backdrop -- that richness is deliberately held back for
-  // the reveal (see fillBaseStarfield's own comment), not a residual bug.
+  // --- Area-preserving rotation: a naive whole-canvas top-up adds zero ---
+  await page.setViewportSize({ width: 400, height: 800 });
+  await page.waitForTimeout(50);
+  await page.evaluate(() => {
+    startWave(1);
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete();
+  });
+  const rotationBaseline = await page.evaluate(() => STATE.stars.length);
+  expect(rotationBaseline).toBe(Math.round((400 * 800) / 2600)); // 123, all placed with x in [0,400)
+
+  await page.setViewportSize({ width: 800, height: 400 }); // same total area, 320000px^2
+  await page.waitForTimeout(50);
+  const afterRotation = await page.evaluate(() => ({
+    // Every surviving pre-rotation star has x < 400 (fillBaseStarfield
+    // placed them there originally) -- so any star now at x >= 400 must
+    // be one topUpStarfieldForResize just added to the newly-exposed
+    // right strip, making this an exact, deterministic count regardless
+    // of how many of the original 123 randomly survived the height
+    // shrinking out from under them (untestable precisely, since that
+    // depends on where fillBaseStarfield's own randomness happened to
+    // place each one).
+    inNewRightStrip: STATE.stars.filter(s => s.x >= 400).length,
+    allInBounds: STATE.stars.every(s => s.x < 800 && s.y < 400),
+  }));
+  const expectedRotationStripCount = Math.round((400 * 400) / 2600); // 62 -- the newly-exposed right strip
+  expect(afterRotation.inNewRightStrip).toBe(expectedRotationStripCount); // a naive whole-canvas top-up would give 0 here
+  expect(afterRotation.allInBounds).toBe(true);
+
+  // --- Back to actively playing: must NOT enrich the sparse backdrop ---
   const beforePlayingResize = await page.evaluate(() => {
     STATE.phase = 'PLAYING';
     return STATE.stars.length;
   });
-  await page.setViewportSize({ width: 400, height: 900 });
+  await page.setViewportSize({ width: 800, height: 500 });
   await page.waitForTimeout(50);
   const afterPlayingResize = await page.evaluate(() => STATE.stars.length);
   expect(afterPlayingResize).toBe(beforePlayingResize);
@@ -2691,5 +2818,133 @@ test('the ERASE button hides during WAVE_COMPLETE (even in Relaxed) and its acti
   expect(result.visibleAtWaveComplete).toBe(false);
   expect(result.activeAfterNewWave).toBe(false);
   expect(result.eraseModeAfterNewWave).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+// Regression guard for a real user-reported defect: "sound is lost after
+// switching back to the game from another app, requires a refresh." A
+// real app switch can suspend the whole audio session on mobile far more
+// aggressively than same-app backgrounding -- the existing gesture-
+// triggered self-heal in initAudio() only ever ran on the player's *next*
+// tap, and even then only rebuilt the context, never re-scheduling the
+// wave already in progress (only startWave/scheduleCurrentSongOnceReady
+// does that) -- which is exactly why only a full reload (which always
+// re-enters through startWave) actually brought the music back.
+test('recoverAudioAfterVisible does nothing when the audio context was never actually suspended', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const result = await page.evaluate(() => {
+    const stateBefore = STATE.audioCtx.state;
+    const songStartBefore = STATE.songStartTime;
+    recoverAudioAfterVisible();
+    return { stateBefore, unchanged: STATE.songStartTime === songStartBefore };
+  });
+
+  expect(result.stateBefore).toBe('running'); // never suspended -- confirms this is a real no-op check, not vacuous
+  expect(result.unchanged).toBe(true); // no reschedule triggered
+  expect(errors).toEqual([]);
+});
+
+test('recoverAudioAfterVisible resumes a genuinely suspended context and reschedules the current song, keeping already-connected pairs unmuted', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const dots = await page.evaluate(() => window.__lumina.getDots());
+  const byPair = {};
+  for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+  const [a, b] = Object.values(byPair)[0];
+
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  await page.mouse.move(b.x, b.y, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+
+  // Not gain.value here -- unmuteChunk deliberately ramps in on this
+  // pair's next clean musical onset rather than instantly, so the actual
+  // gain right after connecting depends on where the song happens to be
+  // in its beat, not a fixed value. dot.connected is the real,
+  // ramp-independent signal scheduleLoopingSong itself reads to decide
+  // which pairs start already-unmuted after a rebuild.
+  const before = await page.evaluate((pairId) => STATE.dots.some(d => d.pairId === pairId && d.connected), a.pairId);
+  expect(before).toBe(true);
+
+  const result = await page.evaluate(async (pairId) => {
+    await STATE.audioCtx.suspend(); // a real, genuine suspend -- not a mock
+    const stateWhileSuspended = STATE.audioCtx.state;
+    recoverAudioAfterVisible();
+    // recoverAudioAfterVisible's own resume().then() chain is async;
+    // give it a moment to actually settle and reschedule.
+    await new Promise(r => setTimeout(r, 200));
+    return {
+      stateWhileSuspended,
+      stateAfter: STATE.audioCtx.state,
+      gainAfter: STATE.chunkGains[pairId].gain.value,
+    };
+  }, a.pairId);
+
+  expect(result.stateWhileSuspended).toBe('suspended');
+  expect(result.stateAfter).toBe('running');
+  expect(result.gainAfter).toBeCloseTo(1, 1); // still unmuted after the rebuild -- nothing already earned went quiet
+  expect(errors).toEqual([]);
+});
+
+test('recoverAudioAfterVisible discards a context that stays wedged after resume, matching the existing gesture-triggered self-heal', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    const fakeCtx = {
+      state: 'suspended',
+      currentTime: 0,
+      resume() { return Promise.resolve(); }, // resolves, but never actually flips to 'running' -- a real wedge
+    };
+    STATE.audioCtx = fakeCtx;
+    STATE.song = null; // isolate this test from any real scheduling attempt
+    recoverAudioAfterVisible();
+    await new Promise(r => setTimeout(r, 50));
+    return { audioCtxDropped: STATE.audioCtx === null };
+  });
+
+  expect(result.audioCtxDropped).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('a mid-wave audio context rebuild (initAudio after a wedge) reschedules the current song instead of leaving it silent until the next wave', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const before = await page.evaluate(() => STATE.songStartTime);
+  expect(before).not.toBeNull();
+
+  await page.evaluate(() => {
+    STATE.audioCtx = null; // simulate a wedge already confirmed dead (see initAudio's own self-heal)
+    STATE.songStartTime = null; // as if nothing were scheduled at all right now
+  });
+
+  await page.evaluate(() => { initAudio(); }); // the next tap's gesture
+  await page.waitForTimeout(300); // let the async decode-then-schedule chain settle
+
+  const after = await page.evaluate(() => ({
+    hasContext: !!STATE.audioCtx,
+    songRescheduled: STATE.songStartTime !== null,
+  }));
+  expect(after.hasContext).toBe(true);
+  expect(after.songRescheduled).toBe(true); // previously stayed null until the *next* wave transition
+
   expect(errors).toEqual([]);
 });
