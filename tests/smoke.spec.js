@@ -2532,6 +2532,51 @@ test('erasing one edge of a 3+-dot group resets the whole group', async ({ page 
   expect(errors).toEqual([]);
 });
 
+// Regression guard for a real user-reported defect: mobile browser chrome
+// (address bar collapsing/reappearing on scroll or tap, orientation change)
+// resizes the viewport out from under an already-showing WAVE_COMPLETE
+// starfield reveal far more often than a desktop window ever resizes
+// mid-session -- reported as "patches of space with no stars" on mobile,
+// never seen on desktop. fillBaseStarfield only ever ran once, sized to
+// whatever canvas.width/height were at that instant, so any newly-exposed
+// screen area after a resize stayed permanently starless.
+test('the WAVE_COMPLETE starfield reveal tops itself back up if the viewport grows afterward, but a resize mid-play does not enrich the deliberately sparse backdrop', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.setViewportSize({ width: 400, height: 700 });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await page.evaluate(() => {
+    startWave(1);
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete();
+  });
+  const before = await page.evaluate(() => STATE.stars.length);
+  expect(before).toBeGreaterThan(0);
+
+  // Simulate a mobile address bar collapsing mid-reveal -- a real resize
+  // event, same as window.innerHeight growing on an actual device.
+  await page.setViewportSize({ width: 400, height: 850 });
+  await page.waitForTimeout(50);
+  const afterGrowWhileComplete = await page.evaluate(() => STATE.stars.length);
+  expect(afterGrowWhileComplete).toBeGreaterThan(before); // topped up to match the larger area's density
+
+  // Back to actively playing: a further resize must NOT enrich the sparse
+  // during-play backdrop -- that richness is deliberately held back for
+  // the reveal (see fillBaseStarfield's own comment), not a residual bug.
+  const beforePlayingResize = await page.evaluate(() => {
+    STATE.phase = 'PLAYING';
+    return STATE.stars.length;
+  });
+  await page.setViewportSize({ width: 400, height: 900 });
+  await page.waitForTimeout(50);
+  const afterPlayingResize = await page.evaluate(() => STATE.stars.length);
+  expect(afterPlayingResize).toBe(beforePlayingResize);
+
+  expect(errors).toEqual([]);
+});
+
 test('the ERASE tutorial message only shows in Relaxed difficulty, and is skipped (not blank) otherwise', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');

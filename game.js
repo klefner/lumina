@@ -2156,8 +2156,20 @@ function growWorldToMatchAspect() {
 }
 
 function resizeCanvas() {
+  const oldWidth = canvas.width, oldHeight = canvas.height;
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
+  // The WAVE_COMPLETE starfield reveal (see fillBaseStarfield) fills
+  // screen-space stars once, sized to the canvas at that exact moment.
+  // Mobile browser chrome (address bar collapsing/reappearing on
+  // scroll/tap, orientation change) resizes the viewport out from under
+  // an already-showing reveal far more often than a desktop window ever
+  // does mid-session -- without topping the starfield back up here, any
+  // newly-exposed strip of screen would stay permanently starless
+  // instead of matching the rest of the sky's density.
+  if (STATE.phase === 'WAVE_COMPLETE' && (canvas.width !== oldWidth || canvas.height !== oldHeight)) {
+    fillBaseStarfield();
+  }
   // Keep the camera's fit scale correct if the viewport changes mid-wave
   // (orientation change, desktop window resize). world.w is 0 until the
   // first wave starts, so this is a no-op at the initial page-load call.
