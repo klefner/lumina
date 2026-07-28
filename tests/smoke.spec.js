@@ -2948,3 +2948,162 @@ test('a mid-wave audio context rebuild (initAudio after a wedge) reschedules the
 
   expect(errors).toEqual([]);
 });
+
+// ------------------------------------------------------------
+// Social share: a plain link from the title screen, and a composited
+// wave postcard offered only when a completed wave actually earned an
+// achievement.
+// ------------------------------------------------------------
+
+test('the title-screen Share button uses the Web Share API when available', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => {
+    navigator.vibrate = () => true;
+    window.__shareCalls = [];
+    navigator.share = (data) => { window.__shareCalls.push(data); return Promise.resolve(); };
+  });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await expect(page.locator('#share-row')).toBeVisible();
+  await page.locator('#share-game-button').click();
+  await page.waitForTimeout(100);
+
+  const calls = await page.evaluate(() => window.__shareCalls);
+  expect(calls.length).toBe(1);
+  expect(calls[0].url).toBe('https://lumina-8f0.pages.dev/');
+  expect(calls[0].title).toBe('Lumina');
+  expect(errors).toEqual([]);
+});
+
+test('the title-screen Share button falls back to a clipboard copy when Web Share is unavailable', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => {
+    navigator.vibrate = () => true;
+    navigator.share = undefined;
+    window.__clipboardText = null;
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: (t) => { window.__clipboardText = t; return Promise.resolve(); } },
+      configurable: true,
+    });
+  });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await page.locator('#share-game-button').click();
+  await page.waitForTimeout(100);
+
+  const clipboardText = await page.evaluate(() => window.__clipboardText);
+  expect(clipboardText).toBe('https://lumina-8f0.pages.dev/');
+  await expect(page.locator('#share-toast')).toHaveText('Link Copied');
+  expect(errors).toEqual([]);
+});
+
+test('the postcard prompt only appears when the completed wave actually earned an achievement', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    startWave(9); // below EARLY_ACHIEVEMENT_GATE_WAVE -- no achievement possible yet
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete();
+    const hiddenBelowGate = document.getElementById('postcard-row').classList.contains('visible');
+
+    startWave(10); // at the gate -- a fresh save's bestWave/bestWaveScore both earn here
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete();
+    const visibleAtGate = document.getElementById('postcard-row').classList.contains('visible');
+    const labels = STATE.lastWavePostcardLabels.slice();
+
+    return { hiddenBelowGate, visibleAtGate, labels };
+  });
+
+  expect(result.hiddenBelowGate).toBe(false);
+  expect(result.visibleAtGate).toBe(true);
+  expect(result.labels.length).toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+});
+
+test('the Share row is title-screen only, and the postcard row never lingers into the next wave', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await expect(page.locator('#share-row')).toBeVisible();
+
+  await page.evaluate(() => {
+    startWave(10);
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete();
+  });
+  const duringWaveComplete = await page.evaluate(() => ({
+    shareRowVisible: document.getElementById('share-row').classList.contains('visible'),
+    postcardRowVisible: document.getElementById('postcard-row').classList.contains('visible'),
+  }));
+  expect(duringWaveComplete.shareRowVisible).toBe(false);
+  expect(duringWaveComplete.postcardRowVisible).toBe(true);
+
+  await page.evaluate(() => {
+    hideMessage();
+    startWave(11);
+  });
+  const afterAdvance = await page.evaluate(() => document.getElementById('postcard-row').classList.contains('visible'));
+  expect(afterAdvance).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('buildWavePostcard composites the game canvas with a banner sized to the canvas width', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.wave = 12;
+    STATE.score = 4200;
+    STATE.lastWavePostcardLabels = ['New Highest Wave'];
+    const pc = buildWavePostcard();
+    return {
+      width: pc.width,
+      canvasWidth: canvas.width,
+      tallerThanGameCanvas: pc.height > canvas.height,
+    };
+  });
+
+  expect(result.width).toBe(result.canvasWidth);
+  expect(result.tallerThanGameCanvas).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('shareOrSaveWavePostcard shares a file when the browser supports it, and falls back to a download otherwise', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const shareSupported = await page.evaluate(async () => {
+    navigator.share = (data) => { window.__lastShareData = data; return Promise.resolve(); };
+    navigator.canShare = () => true;
+    STATE.wave = 15;
+    STATE.score = 5000;
+    STATE.lastWavePostcardLabels = ['Best Wave Score'];
+    await shareOrSaveWavePostcard();
+    return {
+      toastText: document.getElementById('share-toast').textContent,
+      sharedFileType: window.__lastShareData && window.__lastShareData.files && window.__lastShareData.files[0].type,
+    };
+  });
+  expect(shareSupported.toastText).toBe('Shared!');
+  expect(shareSupported.sharedFileType).toBe('image/png');
+
+  const shareUnsupported = await page.evaluate(async () => {
+    navigator.share = undefined;
+    navigator.canShare = undefined;
+    await shareOrSaveWavePostcard();
+    return document.getElementById('share-toast').textContent;
+  });
+  expect(shareUnsupported).toBe('Postcard Saved');
+  expect(errors).toEqual([]);
+});

@@ -312,36 +312,49 @@ function queueAchievement(entry) {
 const EARLY_ACHIEVEMENT_GATE_WAVE = 10;
 
 // Checks all three milestone types against this wave's result and queues
-// a toast for each one earned. Called once per completed wave.
+// a toast for each one earned. Called once per completed wave. Returns the
+// entries actually earned this call (queueAchievement's own shift-on-push
+// behavior means the queue array itself can't reliably be diffed
+// before/after -- see checkWaveComplete's postcard-eligibility check,
+// the one caller that needs to know what was earned, not just that
+// something was queued).
 function checkAchievements(waveScore) {
+  const earned = [];
   if (STATE.wave % 10 === 0) {
     const tier = milestoneTierForWave(STATE.wave);
-    queueAchievement({ glyph: tier.glyph, bg: tier.bg, glow: tier.glow, label: `Wave ${STATE.wave} Cleared` });
+    const entry = { glyph: tier.glyph, bg: tier.bg, glow: tier.glow, label: `Wave ${STATE.wave} Cleared` };
+    queueAchievement(entry);
+    earned.push(entry);
   }
   if (STATE.wave > STATE.stats.bestWave) {
     STATE.stats.bestWave = STATE.wave;
     saveStats(STATE.stats);
     if (STATE.wave >= EARLY_ACHIEVEMENT_GATE_WAVE) {
-      queueAchievement({
+      const entry = {
         glyph: '🏆', // 🏆
         bg: 'radial-gradient(circle at 35% 30%, #ffe9a8, #d4a017)',
         glow: 'rgba(255,215,0,0.65)',
         label: 'New Highest Wave',
-      });
+      };
+      queueAchievement(entry);
+      earned.push(entry);
     }
   }
   if (waveScore > STATE.stats.bestWaveScore) {
     STATE.stats.bestWaveScore = waveScore;
     saveStats(STATE.stats);
     if (STATE.wave >= EARLY_ACHIEVEMENT_GATE_WAVE) {
-      queueAchievement({
+      const entry = {
         glyph: '⭐', // ⭐
         bg: 'radial-gradient(circle at 35% 30%, #cfe8ff, #5b8def)',
         glow: 'rgba(91,141,239,0.65)',
         label: 'Best Wave Score',
-      });
+      };
+      queueAchievement(entry);
+      earned.push(entry);
     }
   }
+  return earned;
 }
 
 function maybeShowNextAchievement() {
@@ -1076,6 +1089,9 @@ const STATE = {
   stats: loadStats(),    // persisted personal bests (see loadStats/saveStats) — survives across visits
   achievementQueue: [],  // pending {glyph, bg, glow, label} toasts, shown one at a time
   achievementToastActive: false,
+  lastWavePostcardLabels: [], // achievement label(s) earned by the most recently completed wave, if
+                              // any -- drives whether #postcard-row shows and what it prints (see
+                              // checkWaveComplete/buildWavePostcard)
   connectionPraise: [],  // active { el, worldX, worldY, flip, spawnedAt, closing } popups -- see spawnConnectionPraise/updateConnectionPraise
   lastPraiseAt: -Infinity, // performance.now() of the last one actually shown -- see CONNECTION_PRAISE_COOLDOWN_MS
 
@@ -3990,7 +4006,12 @@ function checkWaveComplete() {
   spawnCelestialBodies();
 
   STATE.score += STATE.wave * 100;
-  checkAchievements(STATE.score - STATE.waveStartScore);
+  const earnedThisWave = checkAchievements(STATE.score - STATE.waveStartScore);
+  // The postcard/share prompt is only offered on a wave that actually
+  // earned something -- a real "this one was good" signal already
+  // computed above, not a separate threshold to invent and keep in sync.
+  STATE.lastWavePostcardLabels = earnedThisWave.map(e => e.label);
+  document.getElementById('postcard-row').classList.toggle('visible', earnedThisWave.length > 0);
 
   // The song keeps looping (already playing in full) for as long as the
   // player lingers here — there's no auto-advance. Only a tap, click, or
@@ -5875,6 +5896,7 @@ function showMessage(title, subtitle, opts) {
   document.getElementById('sound-hint').classList.toggle('visible', isTitleScreen);
   document.getElementById('difficulty-selector').classList.toggle('visible', isTitleScreen);
   document.getElementById('title-load-row').classList.toggle('visible', isTitleScreen);
+  document.getElementById('share-row').classList.toggle('visible', isTitleScreen);
   if (isTitleScreen) {
     refreshDifficultyButtons();
     refreshTitleLoadRow();
@@ -5883,13 +5905,153 @@ function showMessage(title, subtitle, opts) {
 
 function hideMessage() {
   document.getElementById('message-overlay').style.opacity = '0';
-  // The difficulty selector and load row are the elements in here with
-  // real pointer-events — without explicitly clearing them too, they'd
+  // Every row in here with real pointer-events (title-only and
+  // WAVE_COMPLETE-only alike) needs explicit cleanup — without it, they'd
   // stay clickable (invisibly, opacity alone doesn't disable
   // pointer-events) over whatever dots happen to render underneath once
   // play starts.
   document.getElementById('difficulty-selector').classList.remove('visible');
   document.getElementById('title-load-row').classList.remove('visible');
+  document.getElementById('share-row').classList.remove('visible');
+  document.getElementById('postcard-row').classList.remove('visible');
+}
+
+// ------------------------------------------------------------
+// Sharing: a plain link from the title screen, and a composited
+// screenshot-postcard from a WAVE_COMPLETE that actually earned an
+// achievement (see checkWaveComplete). Both funnel through the Web Share
+// API where available (native share sheet, works with or without a file
+// attached) and fall back to something that still works everywhere else.
+// ------------------------------------------------------------
+
+// Cloudflare Pages is the canonical player-facing URL (see
+// SOURCE_OF_TRUTH.md) -- the one to actually hand someone, not the
+// personal-name github.io mirror.
+const CANONICAL_SHARE_URL = 'https://lumina-8f0.pages.dev/';
+
+function showShareToast(text) {
+  const toast = document.getElementById('share-toast');
+  toast.textContent = text;
+  toast.classList.add('visible');
+  setTimeout(() => toast.classList.remove('visible'), 1800);
+}
+
+async function shareGameLink() {
+  const shareData = { title: 'Lumina', text: 'Connect the dots. Make the music.', url: CANONICAL_SHARE_URL };
+  if (navigator.share) {
+    try {
+      await navigator.share(shareData);
+    } catch (e) {
+      // Includes the player just cancelling their own share sheet --
+      // not a failure worth reporting as one.
+    }
+    return;
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(CANONICAL_SHARE_URL);
+      showShareToast('Link Copied');
+      return;
+    } catch (e) { /* fall through to the generic failure message below */ }
+  }
+  showShareToast('Could Not Share');
+}
+
+const POSTCARD_CONFIG = {
+  BASE_BANNER_HEIGHT: 96, // at REFERENCE_WIDTH; scaled with the actual canvas below
+  REFERENCE_WIDTH: 500,
+  MIN_SCALE: 0.75,
+  MAX_SCALE: 1.7,
+};
+
+// Composites the just-completed board -- exactly as the player sees it at
+// the reveal, stars and all -- with a branded banner naming what was
+// earned. A raw canvas.toDataURL() screenshot alone would carry no
+// context once shared outside the game (no title, no score, nothing
+// saying what game this even is), which is the whole point of a postcard
+// over a plain screenshot.
+function buildWavePostcard() {
+  const scale = Math.max(POSTCARD_CONFIG.MIN_SCALE, Math.min(POSTCARD_CONFIG.MAX_SCALE, canvas.width / POSTCARD_CONFIG.REFERENCE_WIDTH));
+  const bannerHeight = Math.round(POSTCARD_CONFIG.BASE_BANNER_HEIGHT * scale);
+
+  const pc = document.createElement('canvas');
+  pc.width = canvas.width;
+  pc.height = canvas.height + bannerHeight;
+  const pctx = pc.getContext('2d');
+
+  pctx.fillStyle = '#000';
+  pctx.fillRect(0, 0, pc.width, pc.height);
+  pctx.drawImage(canvas, 0, 0);
+
+  const bannerY = canvas.height;
+  const fade = pctx.createLinearGradient(0, bannerY - 24 * scale, 0, bannerY);
+  fade.addColorStop(0, 'rgba(5,5,10,0)');
+  fade.addColorStop(1, 'rgba(5,5,10,0.92)');
+  pctx.fillStyle = fade;
+  pctx.fillRect(0, bannerY - 24 * scale, pc.width, 24 * scale);
+  pctx.fillStyle = 'rgba(5,5,10,0.92)';
+  pctx.fillRect(0, bannerY, pc.width, bannerHeight);
+
+  pctx.textAlign = 'center';
+  pctx.fillStyle = 'rgba(255,255,255,0.92)';
+  pctx.font = `700 ${Math.round(22 * scale)}px "Courier New", monospace`;
+  pctx.fillText('LUMINA', pc.width / 2, bannerY + 34 * scale);
+
+  const labels = STATE.lastWavePostcardLabels.length ? STATE.lastWavePostcardLabels.join('  •  ') : `Wave ${STATE.wave} Cleared`;
+  pctx.fillStyle = 'rgba(255,214,120,0.95)';
+  pctx.font = `${Math.round(13 * scale)}px "Courier New", monospace`;
+  pctx.fillText(`Wave ${STATE.wave} — ${labels}`, pc.width / 2, bannerY + 58 * scale);
+
+  pctx.fillStyle = 'rgba(255,255,255,0.4)';
+  pctx.font = `${Math.round(10 * scale)}px "Courier New", monospace`;
+  pctx.fillText(`${STATE.score} pts — play free at lumina-8f0.pages.dev`, pc.width / 2, bannerY + 80 * scale);
+
+  return pc;
+}
+
+// Attempts the Web Share API with an actual image file attached -- the
+// only way "share" reads as sharing THIS wave's postcard rather than just
+// the game's link. Returns false (never throws) for anything short of a
+// clean, completed share, including the player cancelling their own
+// share sheet, so the caller can fall back to a plain download.
+async function tryShareCanvasImage(canvasEl, filename, title, text) {
+  if (!navigator.share || !navigator.canShare) return false;
+  try {
+    const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
+    if (!blob) return false;
+    const file = new File([blob], filename, { type: 'image/png' });
+    if (!navigator.canShare({ files: [file] })) return false;
+    await navigator.share({ files: [file], title, text });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function downloadCanvasImage(canvasEl, filename) {
+  const link = document.createElement('a');
+  link.download = filename;
+  link.href = canvasEl.toDataURL('image/png');
+  link.click();
+}
+
+async function shareOrSaveWavePostcard() {
+  const pc = buildWavePostcard();
+  const filename = `lumina-wave-${STATE.wave}.png`;
+  const shareText = `I just hit Wave ${STATE.wave} in Lumina! ${STATE.lastWavePostcardLabels.join(', ')}`.trim();
+
+  const shared = await tryShareCanvasImage(pc, filename, 'Lumina', shareText);
+  if (shared) {
+    showShareToast('Shared!');
+    return;
+  }
+  downloadCanvasImage(pc, filename);
+  showShareToast('Postcard Saved');
+}
+
+function setupShareListeners() {
+  document.getElementById('share-game-button').addEventListener('click', shareGameLink);
+  document.getElementById('postcard-button').addEventListener('click', shareOrSaveWavePostcard);
 }
 
 function showTutorialHint(waveNumber) {
@@ -6336,6 +6498,7 @@ function init() {
   applyDifficulty(STATE.difficulty);
   setupDifficultySelectorListeners();
   setupTitleLoadListeners();
+  setupShareListeners();
   showMessage('LUMINA', titleSubtitleText(), { isTitleScreen: true });
   updateWaveDisplay();
 

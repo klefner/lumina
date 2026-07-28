@@ -503,6 +503,85 @@ html, body {
   accent-color: rgba(120, 200, 255, 0.85);
 }
 
+/* Title-screen-only share prompt (see showMessage's isTitleScreen option
+   and setupShareListeners) -- same pill styling as the load row above,
+   just its own row so it reads as a separate action, not part of loading
+   a save. */
+#share-row {
+  display: none;
+  margin-top: 4px;
+  pointer-events: auto;
+}
+#share-row.visible {
+  display: block;
+}
+#share-game-button {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+#share-game-button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* WAVE_COMPLETE-only, and only when this particular wave actually earned
+   an achievement (see checkWaveComplete) -- opposite condition from every
+   title-only row above, so it's toggled directly at that call site
+   instead of through showMessage's isTitleScreen option. Warm/gold to
+   read as "this one was special," matching the achievement toast's own
+   accent rather than the neutral title-screen buttons. */
+#postcard-row {
+  display: none;
+  margin-top: 4px;
+  pointer-events: auto;
+}
+#postcard-row.visible {
+  display: block;
+}
+#postcard-button {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 214, 120, 0.9);
+  background: rgba(255, 214, 120, 0.08);
+  border: 1px solid rgba(255, 214, 120, 0.35);
+  border-radius: 20px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+#postcard-button:hover {
+  background: rgba(255, 214, 120, 0.16);
+}
+
+/* Shared confirmation toast for both share actions above -- same styling
+   as #pause-save-toast, just reachable from the message overlay instead
+   of the pause panel. */
+#share-toast {
+  text-align: center;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: rgba(140, 255, 180, 0.85);
+  min-height: 1.2em;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+#share-toast.visible {
+  opacity: 1;
+}
+
 #version-display {
   position: fixed;
   bottom: 10px;
