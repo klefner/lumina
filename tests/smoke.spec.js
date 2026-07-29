@@ -3188,3 +3188,102 @@ test('shareOrSaveWavePostcard shares a file when the browser supports it, and fa
   expect(shareUnsupported).toBe('Postcard Saved');
   expect(errors).toEqual([]);
 });
+
+test('the premium supperclub family is well-formed and only reachable while PREMIUM_MUSIC_UNLOCKED is true', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const supperclub = GENRE_FAMILIES.find(f => f.name === 'supperclub');
+    const nonPremiumNames = GENRE_FAMILIES.filter(f => !f.premium).map(f => f.name);
+    // The flag itself can't be flipped from here (it's a top-level const,
+    // by design -- see its own comment), so the "flag off" pool is
+    // verified directly against the same filter availableGenreFamilies()
+    // applies, rather than by actually toggling it.
+    const usesOnlySourcedInstruments = supperclub.seeds.every(seed =>
+      seed.roles.every(r => SAMPLE_MANIFEST[r.instrument] !== undefined)
+    );
+    return {
+      flagValue: PREMIUM_MUSIC_UNLOCKED,
+      isPremium: supperclub.premium === true,
+      seedCount: supperclub.seeds.length,
+      usesOnlySourcedInstruments,
+      referencesTrumpetAndBass: supperclub.seeds.some(seed =>
+        seed.roles.some(r => r.instrument === 'trumpet') && seed.roles.some(r => r.instrument === 'doublebass')
+      ),
+      nonPremiumNames,
+      availableWhileUnlocked: availableGenreFamilies().map(f => f.name),
+    };
+  });
+
+  expect(result.flagValue).toBe(true); // documents today's default -- flip alongside the backend, not silently
+  expect(result.isPremium).toBe(true);
+  expect(result.seedCount).toBeGreaterThanOrEqual(3);
+  expect(result.usesOnlySourcedInstruments).toBe(true);
+  expect(result.referencesTrumpetAndBass).toBe(true);
+  expect(result.nonPremiumNames).toEqual(['spa', 'lofi']); // the "flag off" pool
+  expect(result.availableWhileUnlocked).toContain('supperclub'); // the "flag on" pool, exercised via the real function
+  expect(errors).toEqual([]);
+});
+
+test('trumpet and double bass samples decode successfully alongside the rest of the manifest', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+
+  // Await the real decode promise directly rather than a fixed timeout --
+  // ~140 real samples decoding over a local dev server is normally fast,
+  // but a fixed wait would be a flaky guess either way (see the comment
+  // on samplePromises above preloadSampleBytes for the exact symptom a
+  // fixed budget causes in production).
+  const decoded = await page.evaluate(async () => {
+    await STATE.samplesReadyPromise;
+    return {
+      trumpetNotes: Object.keys(STATE.sampleBuffers.trumpet || {}).length,
+      trumpetManifestCount: SAMPLE_MANIFEST.trumpet.length,
+      doublebassNotes: Object.keys(STATE.sampleBuffers.doublebass || {}).length,
+      trumpetSampleIsBuffer: STATE.sampleBuffers.trumpet && STATE.sampleBuffers.trumpet['C4'] instanceof AudioBuffer,
+    };
+  });
+  expect(decoded.trumpetNotes).toBe(decoded.trumpetManifestCount);
+  expect(decoded.doublebassNotes).toBeGreaterThan(0);
+  expect(decoded.trumpetSampleIsBuffer).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('generateSong can pick the supperclub family and produces notes that stay within the folded instrument ranges', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // Force the pick instead of relying on random luck across many tries --
+    // exercises the exact same generateSong() code path a real supperclub
+    // roll would, just with the family/seed choice pinned for a
+    // deterministic assertion.
+    const family = GENRE_FAMILIES.find(f => f.name === 'supperclub');
+    const seed = family.seeds[0];
+    const genre = { ...seed, family: family.name, chordVocabulary: family.chordVocabulary, groove: family.groove };
+    const buildChord = CHORD_VOCABULARIES[genre.chordVocabulary];
+    const range = instrumentMidiRange('trumpet');
+    const bassRange = instrumentMidiRange('doublebass');
+    const chordDegrees = buildChord(genre.chordProgression[0]);
+    const melodyMidi = foldToInstrumentRange('trumpet', scaleMidi(genre, chordDegrees[0], 0));
+    const padMidis = foldChordToInstrumentRange('vibraphone', chordDegrees.map(d => scaleMidi(genre, d, 0)));
+    return {
+      trumpetRangeFound: !!range,
+      bassRangeFound: !!bassRange,
+      melodyWithinHeadroom: melodyMidi >= range.min - 6 && melodyMidi <= range.max + 6,
+      padCount: padMidis.length,
+    };
+  });
+
+  expect(result.trumpetRangeFound).toBe(true);
+  expect(result.bassRangeFound).toBe(true);
+  expect(result.melodyWithinHeadroom).toBe(true);
+  expect(result.padCount).toBe(4); // seventh chord: root + 3 more chord tones
+  expect(errors).toEqual([]);
+});

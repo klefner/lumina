@@ -416,6 +416,16 @@ const INSTRUMENTS = [
   { hex: '#AA88FF', glow: 'rgba(170,136,255,', name: 'violet'  },
 ];
 
+// Single switch for every premium (paid-tier) music family, e.g.
+// 'supperclub' below. The content itself always ships in the build --
+// there's no separate paid download -- this just controls whether
+// generateSong() is allowed to draw from it. Hardcoded true for now: the
+// payment/entitlement backend (see MONETIZATION_ARCHITECTURE.md) doesn't
+// exist yet, so there's no real purchase to gate on, and the plan is to
+// let players hear the premium packs while they're new. Flip to false (or
+// wire up a real per-player entitlement check) once that backend lands.
+const PREMIUM_MUSIC_UNLOCKED = true;
+
 // Genre FAMILIES bundle everything that should stay consistent across an
 // entire style (which chord types it uses, its rhythmic feel) — SEEDS
 // within a family vary tempo/key/chord-progression-order/instrument-role
@@ -546,6 +556,60 @@ const GENRE_FAMILIES = [
       },
     ],
   },
+  // First premium (paid-tier) family -- see PREMIUM_MUSIC_UNLOCKED, which
+  // gates whether generateSong() may ever pick it. A brighter, more
+  // upbeat supper-club/swing feel to contrast with spa/lofi's calm:
+  // seventh chords, a swung eighth-note feel, trumpet lead over a walking
+  // double bass. Both are real recorded instruments already sourced
+  // alongside every other sample here (see SAMPLE_MANIFEST) that simply
+  // had no genre using them until now.
+  {
+    name: 'supperclub',
+    premium: true,
+    chordVocabulary: 'seventh',
+    groove: { swing: 0.18, hasDrumRole: false },
+    seeds: [
+      {
+        name: 'blue room', bpm: 108, rootMidi: 58,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 3, 4, 0],
+        roles: [
+          { kind: 'melody',   instrument: 'trumpet' },
+          { kind: 'arpeggio', instrument: 'piano' },
+          { kind: 'pad',      instrument: 'vibraphone' },
+          { kind: 'drone',    instrument: 'doublebass' },
+          { kind: 'accent',   instrument: 'marimba' },
+          { kind: 'accent',   instrument: 'piano' },
+        ],
+      },
+      {
+        name: 'uptown strut', bpm: 116, rootMidi: 55,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 5, 1, 4],
+        roles: [
+          { kind: 'melody',   instrument: 'trumpet' },
+          { kind: 'arpeggio', instrument: 'vibraphone' },
+          { kind: 'pad',      instrument: 'piano' },
+          { kind: 'drone',    instrument: 'doublebass' },
+          { kind: 'accent',   instrument: 'marimba' },
+          { kind: 'accent',   instrument: 'trumpet' },
+        ],
+      },
+      {
+        name: 'velvet curtain', bpm: 100, rootMidi: 60,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 4, 5, 3],
+        roles: [
+          { kind: 'melody',   instrument: 'trumpet' },
+          { kind: 'arpeggio', instrument: 'piano' },
+          { kind: 'pad',      instrument: 'marimba' },
+          { kind: 'drone',    instrument: 'doublebass' },
+          { kind: 'accent',   instrument: 'vibraphone' },
+          { kind: 'accent',   instrument: 'trumpet' },
+        ],
+      },
+    ],
+  },
 ];
 
 // Chord-tone degree offsets from the chord root, keyed by family-level
@@ -558,15 +622,18 @@ const CHORD_VOCABULARIES = {
   seventh: (root) => [root, root + 2, root + 4, root + 6],
 };
 
-// Note: trumpet and double bass sample files remain in sounds/ from an
-// earlier, more upbeat set of genres but are omitted here (and so never
-// fetched/decoded) since no active genre references them any more.
+// Trumpet and double bass (below) were sourced alongside the rest of this
+// manifest from the start but sat unused for years -- an earlier, more
+// upbeat set of genres never got past a draft. They're the basis for the
+// 'supperclub' premium family (see GENRE_FAMILIES/PREMIUM_MUSIC_UNLOCKED).
 const SAMPLE_MANIFEST = {
   piano: ['A3', 'C4', 'E4', 'Ab4', 'C5', 'E5', 'Ab5', 'C6'],
   flute: ['B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'C6', 'Db6', 'D6', 'Eb6', 'E6', 'F6', 'Gb6', 'G6', 'Ab6', 'A6', 'Bb6'],
   cello: ['D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4'],
   marimba: ['C3', 'Db3', 'D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6'],
   vibraphone: ['C3', 'Db3', 'D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6'],
+  trumpet: ['C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5'],
+  doublebass: ['E1', 'F1', 'Gb1', 'G1', 'Ab1', 'A1', 'Bb1', 'B1', 'C2', 'Db2', 'D2', 'Eb2', 'E2', 'F2', 'Gb2', 'G2', 'Ab2', 'A2', 'Bb2', 'B2'],
   // Synthesized, not recorded — see SYNTHESIZED_INSTRUMENTS below. No
   // sourcing/licensing dependency: these are generated in-browser at
   // decode time from oscillators/noise, not fetched from sounds/.
@@ -1788,8 +1855,17 @@ function stepBeat(step, groove) {
 // one coherent arrangement — the connection order doesn't matter, and each
 // stem is audible within a beat or two of being opened instead of waiting
 // for a private slot to come around in a shared timeline.
+// Recomputed per call, not cached -- PREMIUM_MUSIC_UNLOCKED is a plain
+// const today, but this is also where a real per-player entitlement
+// check will plug in once the backend exists, and that can change
+// mid-session (e.g. right after a purchase).
+function availableGenreFamilies() {
+  return PREMIUM_MUSIC_UNLOCKED ? GENRE_FAMILIES : GENRE_FAMILIES.filter(f => !f.premium);
+}
+
 function generateSong(pairCount) {
-  const family = GENRE_FAMILIES[Math.floor(Math.random() * GENRE_FAMILIES.length)];
+  const families = availableGenreFamilies();
+  const family = families[Math.floor(Math.random() * families.length)];
   const seed = family.seeds[Math.floor(Math.random() * family.seeds.length)];
   // Flattened so every existing call site (song.genre.bpm, song.genre.rootMidi,
   // etc.) keeps working unchanged — family-level rules just ride along as
