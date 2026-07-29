@@ -2491,6 +2491,15 @@ function toggleEraseMode() {
   document.getElementById('erase-button').classList.toggle('active', STATE.eraseMode);
 }
 
+// Relaxed-difficulty only (see updateWaveDisplay for the button's own
+// visibility). Stays on across multiple erases -- rather than a one-shot
+// action -- so redoing several lines in a row doesn't mean re-tapping ERASE
+// each time; toggling it off, pausing, or leaving the wave all clear it.
+function toggleEraseMode() {
+  STATE.eraseMode = !STATE.eraseMode;
+  document.getElementById('erase-button').classList.toggle('active', STATE.eraseMode);
+}
+
 // 0 at the very start/end/between flashes, 1 at each flash's peak -- same
 // shape for every unconnected dot, so they all flash in unison. Raising
 // the underlying cosine wave to a power sharpens each cycle into a brief
