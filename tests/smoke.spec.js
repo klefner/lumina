@@ -708,6 +708,35 @@ test('triggering a hint pulse in Relaxed plays a short confirmation chime', asyn
   expect(errors).toEqual([]);
 });
 
+// Regression guard for a Codex finding (#38): spelling out all four
+// controls as words (ERASE/HINT/PAUSE/HELP) widens the button row enough
+// that, on a narrow viewport with every control visible at once (Relaxed
+// difficulty, mid-wave), a fixed nowrap row overflowed past the viewport
+// edge -- silently clipped rather than erroring, since `body` has
+// overflow:hidden. #top-buttons-row now wraps instead of clipping.
+test('the top button row wraps instead of clipping on a narrow viewport with all four controls visible', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.setViewportSize({ width: 280, height: 700 });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.click('.difficulty-btn[data-difficulty="relaxed"]'); // only difficulty where ERASE is also visible
+  await page.mouse.click(140, 600);
+  await page.waitForTimeout(1000);
+
+  const layout = await page.evaluate(() => {
+    const rect = document.getElementById('top-buttons-row').getBoundingClientRect();
+    return {
+      rowRight: rect.right,
+      viewportWidth: window.innerWidth,
+      docScrollWidth: document.documentElement.scrollWidth,
+    };
+  });
+  expect(layout.rowRight).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(layout.docScrollWidth).toBeLessThanOrEqual(layout.viewportWidth);
+  expect(errors).toEqual([]);
+});
+
 test('the help button opens a how-to-play overlay on both the title screen and mid-game, closable via the X or the backdrop', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');

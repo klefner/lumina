@@ -47,8 +47,16 @@ html, body {
   gap: 6px;
 }
 
+/* wrap + right-align rather than a fixed no-wrap row: with all four
+   controls spelled out as words (see below), the row can exceed
+   available width on narrow viewports (flagged by review, ~300px CSS
+   width or narrower) -- `body` has overflow:hidden, so an overflowing
+   nowrap row silently clips its rightmost button instead of erroring.
+   Wrapping is a no-op on anything wide enough to fit on one line. */
 #top-buttons-row {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -57,12 +65,15 @@ html, body {
    button that does nothing on tap reads as broken rather than absent.
    #help-button is deliberately not part of that display:none rule below —
    it's meaningful on the title screen too, so it's always visible.
-   #erase-button additionally only ever shows in Relaxed difficulty. */
+   #erase-button additionally only ever shows in Relaxed difficulty. All
+   four share one text brightness (0.95 -- close to solid white) rather
+   than the original dim 0.7, matching the buttons' own hover state; a
+   busy starfield background made the dimmer version hard to read. */
 #pause-button, #hint-button, #erase-button, #help-button {
   pointer-events: auto;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.2);
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.95);
   font-family: 'Courier New', monospace;
   font-size: 11px;
   letter-spacing: 0.1em;
@@ -70,29 +81,15 @@ html, body {
   cursor: pointer;
   transition: background 0.2s ease, color 0.2s ease;
 }
-/* HINT and HELP read as text/glyph against a busy starfield background
-   more often than PAUSE/ERASE do (both sit lit and active for whole
-   waves at a time, not just a brief toggle), so the shared 0.7-opacity
-   label color above was hard to read there specifically -- brightened
-   close to solid white, matching the hover state's own brightness. */
-#hint-button, #help-button {
-  color: rgba(255, 255, 255, 0.95);
-}
 #pause-button, #hint-button, #erase-button {
   display: none;
 }
 #pause-button.visible, #hint-button.visible, #erase-button.visible {
   display: block;
 }
-#pause-button, #help-button {
-  border-radius: 50%;
-  width: 30px;
-  height: 30px;
-}
-/* HINT/ERASE read as labels, not glyphs, so they need a pill wide enough
-   for the word -- the shared circular sizing above was built for a single
-   character (the old "?") and clipped a word badly. */
-#hint-button, #erase-button {
+/* All four are word labels (PAUSE/HINT/ERASE/HELP), not single glyphs,
+   so they share one pill shape wide enough for a word. */
+#pause-button, #hint-button, #erase-button, #help-button {
   border-radius: 15px;
   padding: 0 12px;
   height: 30px;
@@ -612,13 +609,16 @@ html, body {
   opacity: 1;
 }
 
+/* Small and dim on purpose -- the build stamp is a reference for
+   support/debugging (us checking what a player is actually running),
+   not something a player needs to notice while playing. */
 #version-display {
   position: fixed;
   bottom: 10px;
   left: 14px;
   font-family: 'Courier New', monospace;
-  font-size: 20px;
-  color: #ffffff;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.35);
   letter-spacing: 0.1em;
   pointer-events: none;
   z-index: 10;
