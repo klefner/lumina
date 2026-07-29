@@ -70,6 +70,14 @@ html, body {
   cursor: pointer;
   transition: background 0.2s ease, color 0.2s ease;
 }
+/* HINT and HELP read as text/glyph against a busy starfield background
+   more often than PAUSE/ERASE do (both sit lit and active for whole
+   waves at a time, not just a brief toggle), so the shared 0.7-opacity
+   label color above was hard to read there specifically -- brightened
+   close to solid white, matching the hover state's own brightness. */
+#hint-button, #help-button {
+  color: rgba(255, 255, 255, 0.95);
+}
 #pause-button, #hint-button, #erase-button {
   display: none;
 }
@@ -115,7 +123,7 @@ html, body {
 }
 #hint-button.locked:hover, #hint-button.locked:active {
   background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.7);
+  color: rgba(255, 255, 255, 0.95);
 }
 
 /* Wave/score readout -- solid white and bold rather than the dim, small
