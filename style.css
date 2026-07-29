@@ -84,15 +84,17 @@ html, body {
 #pause-button.visible, #hint-button.visible, #erase-button.visible {
   display: block;
 }
-#pause-button, #help-button {
+#pause-button {
   border-radius: 50%;
   width: 30px;
   height: 30px;
 }
-/* HINT/ERASE read as labels, not glyphs, so they need a pill wide enough
-   for the word -- the shared circular sizing above was built for a single
-   character (the old "?") and clipped a word badly. */
-#hint-button, #erase-button {
+/* HINT/ERASE/HELP read as labels, not glyphs, so they need a pill wide
+   enough for the word -- the circular sizing above (still used by PAUSE)
+   was built for a single character and clipped a word badly. HELP used
+   to be that lone circular "?" glyph; spelling it out reads clearer but
+   needed the same pill treatment HINT/ERASE already use. */
+#hint-button, #erase-button, #help-button {
   border-radius: 15px;
   padding: 0 12px;
   height: 30px;
