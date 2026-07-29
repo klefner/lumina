@@ -9,10 +9,10 @@ https://theremin.music.uiowa.edu/mis.html
 These recordings have been freely available since 1997 and may be
 downloaded and used for any project without restriction.
 
-The game's active genres currently use piano, flute, cello, marimba, and
-vibraphone (a relaxing/spa-style palette). Trumpet and double bass remain
-in this directory from an earlier, more upbeat set of genres but aren't
-referenced by any genre right now.
+The 'spa' family uses piano, flute, cello, marimba, and vibraphone (a
+relaxing palette). Trumpet and double bass power the 'supperclub' premium
+family (see `PREMIUM_MUSIC_UNLOCKED` in game.js) — a brighter, upbeat
+swing feel.
 
 ## What was done to the source recordings
 

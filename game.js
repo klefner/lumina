@@ -312,36 +312,49 @@ function queueAchievement(entry) {
 const EARLY_ACHIEVEMENT_GATE_WAVE = 10;
 
 // Checks all three milestone types against this wave's result and queues
-// a toast for each one earned. Called once per completed wave.
+// a toast for each one earned. Called once per completed wave. Returns the
+// entries actually earned this call (queueAchievement's own shift-on-push
+// behavior means the queue array itself can't reliably be diffed
+// before/after -- see checkWaveComplete's postcard-eligibility check,
+// the one caller that needs to know what was earned, not just that
+// something was queued).
 function checkAchievements(waveScore) {
+  const earned = [];
   if (STATE.wave % 10 === 0) {
     const tier = milestoneTierForWave(STATE.wave);
-    queueAchievement({ glyph: tier.glyph, bg: tier.bg, glow: tier.glow, label: `Wave ${STATE.wave} Cleared` });
+    const entry = { glyph: tier.glyph, bg: tier.bg, glow: tier.glow, label: `Wave ${STATE.wave} Cleared` };
+    queueAchievement(entry);
+    earned.push(entry);
   }
   if (STATE.wave > STATE.stats.bestWave) {
     STATE.stats.bestWave = STATE.wave;
     saveStats(STATE.stats);
     if (STATE.wave >= EARLY_ACHIEVEMENT_GATE_WAVE) {
-      queueAchievement({
+      const entry = {
         glyph: '🏆', // 🏆
         bg: 'radial-gradient(circle at 35% 30%, #ffe9a8, #d4a017)',
         glow: 'rgba(255,215,0,0.65)',
         label: 'New Highest Wave',
-      });
+      };
+      queueAchievement(entry);
+      earned.push(entry);
     }
   }
   if (waveScore > STATE.stats.bestWaveScore) {
     STATE.stats.bestWaveScore = waveScore;
     saveStats(STATE.stats);
     if (STATE.wave >= EARLY_ACHIEVEMENT_GATE_WAVE) {
-      queueAchievement({
+      const entry = {
         glyph: '⭐', // ⭐
         bg: 'radial-gradient(circle at 35% 30%, #cfe8ff, #5b8def)',
         glow: 'rgba(91,141,239,0.65)',
         label: 'Best Wave Score',
-      });
+      };
+      queueAchievement(entry);
+      earned.push(entry);
     }
   }
+  return earned;
 }
 
 function maybeShowNextAchievement() {
@@ -402,6 +415,16 @@ const INSTRUMENTS = [
   { hex: '#FF6644', glow: 'rgba(255,102,68,',  name: 'ember'   },
   { hex: '#AA88FF', glow: 'rgba(170,136,255,', name: 'violet'  },
 ];
+
+// Single switch for every premium (paid-tier) music family, e.g.
+// 'supperclub' below. The content itself always ships in the build --
+// there's no separate paid download -- this just controls whether
+// generateSong() is allowed to draw from it. Hardcoded true for now: the
+// payment/entitlement backend (see MONETIZATION_ARCHITECTURE.md) doesn't
+// exist yet, so there's no real purchase to gate on, and the plan is to
+// let players hear the premium packs while they're new. Flip to false (or
+// wire up a real per-player entitlement check) once that backend lands.
+const PREMIUM_MUSIC_UNLOCKED = true;
 
 // Genre FAMILIES bundle everything that should stay consistent across an
 // entire style (which chord types it uses, its rhythmic feel) — SEEDS
@@ -533,6 +556,60 @@ const GENRE_FAMILIES = [
       },
     ],
   },
+  // First premium (paid-tier) family -- see PREMIUM_MUSIC_UNLOCKED, which
+  // gates whether generateSong() may ever pick it. A brighter, more
+  // upbeat supper-club/swing feel to contrast with spa/lofi's calm:
+  // seventh chords, a swung eighth-note feel, trumpet lead over a walking
+  // double bass. Both are real recorded instruments already sourced
+  // alongside every other sample here (see SAMPLE_MANIFEST) that simply
+  // had no genre using them until now.
+  {
+    name: 'supperclub',
+    premium: true,
+    chordVocabulary: 'seventh',
+    groove: { swing: 0.18, hasDrumRole: false },
+    seeds: [
+      {
+        name: 'blue room', bpm: 108, rootMidi: 58,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 3, 4, 0],
+        roles: [
+          { kind: 'melody',   instrument: 'trumpet' },
+          { kind: 'arpeggio', instrument: 'piano' },
+          { kind: 'pad',      instrument: 'vibraphone' },
+          { kind: 'drone',    instrument: 'doublebass' },
+          { kind: 'accent',   instrument: 'marimba' },
+          { kind: 'accent',   instrument: 'piano' },
+        ],
+      },
+      {
+        name: 'uptown strut', bpm: 116, rootMidi: 55,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 5, 1, 4],
+        roles: [
+          { kind: 'melody',   instrument: 'trumpet' },
+          { kind: 'arpeggio', instrument: 'vibraphone' },
+          { kind: 'pad',      instrument: 'piano' },
+          { kind: 'drone',    instrument: 'doublebass' },
+          { kind: 'accent',   instrument: 'marimba' },
+          { kind: 'accent',   instrument: 'trumpet' },
+        ],
+      },
+      {
+        name: 'velvet curtain', bpm: 100, rootMidi: 60,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 4, 5, 3],
+        roles: [
+          { kind: 'melody',   instrument: 'trumpet' },
+          { kind: 'arpeggio', instrument: 'piano' },
+          { kind: 'pad',      instrument: 'marimba' },
+          { kind: 'drone',    instrument: 'doublebass' },
+          { kind: 'accent',   instrument: 'vibraphone' },
+          { kind: 'accent',   instrument: 'trumpet' },
+        ],
+      },
+    ],
+  },
 ];
 
 // Chord-tone degree offsets from the chord root, keyed by family-level
@@ -545,15 +622,18 @@ const CHORD_VOCABULARIES = {
   seventh: (root) => [root, root + 2, root + 4, root + 6],
 };
 
-// Note: trumpet and double bass sample files remain in sounds/ from an
-// earlier, more upbeat set of genres but are omitted here (and so never
-// fetched/decoded) since no active genre references them any more.
+// Trumpet and double bass (below) were sourced alongside the rest of this
+// manifest from the start but sat unused for years -- an earlier, more
+// upbeat set of genres never got past a draft. They're the basis for the
+// 'supperclub' premium family (see GENRE_FAMILIES/PREMIUM_MUSIC_UNLOCKED).
 const SAMPLE_MANIFEST = {
   piano: ['A3', 'C4', 'E4', 'Ab4', 'C5', 'E5', 'Ab5', 'C6'],
   flute: ['B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'C6', 'Db6', 'D6', 'Eb6', 'E6', 'F6', 'Gb6', 'G6', 'Ab6', 'A6', 'Bb6'],
   cello: ['D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4'],
   marimba: ['C3', 'Db3', 'D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6'],
   vibraphone: ['C3', 'Db3', 'D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6'],
+  trumpet: ['C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5'],
+  doublebass: ['E1', 'F1', 'Gb1', 'G1', 'Ab1', 'A1', 'Bb1', 'B1', 'C2', 'Db2', 'D2', 'Eb2', 'E2', 'F2', 'Gb2', 'G2', 'Ab2', 'A2', 'Bb2', 'B2'],
   // Synthesized, not recorded — see SYNTHESIZED_INSTRUMENTS below. No
   // sourcing/licensing dependency: these are generated in-browser at
   // decode time from oscillators/noise, not fetched from sounds/.
@@ -1029,6 +1109,9 @@ const STATE = {
   hintPulse: null,      // { startTime } while the hint button's "flash every unconnected dot" is playing
   eraseMode: false,     // Relaxed-difficulty only: while true, a tap targets an existing connection
                          // to erase instead of starting a new line (see ERASE_HIT_RADIUS/toggleEraseMode)
+  eraseArmed: false,    // true between an erase-mode touchstart/mousedown and its matching release --
+                         // the hit test itself waits for onInputEnd so a pinch's first finger can't
+                         // erase a line it only grazed (see beginPinch)
 
   activeDot: null,     // The dot currently being dragged from
   currentPath: [],     // Points being drawn right now [{x, y}]
@@ -1073,6 +1156,9 @@ const STATE = {
   stats: loadStats(),    // persisted personal bests (see loadStats/saveStats) — survives across visits
   achievementQueue: [],  // pending {glyph, bg, glow, label} toasts, shown one at a time
   achievementToastActive: false,
+  lastWavePostcardLabels: [], // achievement label(s) earned by the most recently completed wave, if
+                              // any -- drives whether #postcard-row shows and what it prints (see
+                              // checkWaveComplete/buildWavePostcard)
   connectionPraise: [],  // active { el, worldX, worldY, flip, spawnedAt, closing } popups -- see spawnConnectionPraise/updateConnectionPraise
   lastPraiseAt: -Infinity, // performance.now() of the last one actually shown -- see CONNECTION_PRAISE_COOLDOWN_MS
 
@@ -1089,6 +1175,7 @@ const STATE = {
 // SECTION 3: MUSIC ENGINE (procedural song generation & playback)
 // ============================================================
 function initAudio() {
+  const hadNoContext = !STATE.audioCtx;
   if (!STATE.audioCtx) {
     // Wrapped in try/catch: if anything in graph setup ever throws (an
     // unexpected browser quirk, a missing Web Audio API), the
@@ -1134,7 +1221,73 @@ function initAudio() {
   unlockSource.buffer = unlockBuffer;
   unlockSource.connect(STATE.audioCtx.destination);
   unlockSource.start(0);
+
+  // A brand new context -- the very first one ever, or a rebuild after a
+  // wedged one got discarded above -- starts with no song scheduled at
+  // all. startWave is normally what schedules one, but if this context
+  // swap happens mid-wave (a wedge only confirmed on some later tap, or
+  // the visibilitychange recovery below), nothing would otherwise
+  // re-schedule the wave already in progress until the *next* wave
+  // transition -- exactly the "only a reload brings the music back"
+  // symptom this was built to fix. No-ops harmlessly if there's no
+  // current song yet (e.g. this is the very first tap, still on TITLE).
+  if (hadNoContext) scheduleCurrentSongOnceReady();
 }
+
+// Waits for sample decoding (async) before scheduling STATE.song onto
+// whatever STATE.audioCtx now is -- shared by startWave (a brand new
+// wave) and by the audio-recovery paths above/below (a wedged or
+// rebuilt context mid-wave), so both get the same "nothing already
+// connected gets silently skipped" guarantee scheduleLoopingSong provides.
+function scheduleCurrentSongOnceReady() {
+  if (!STATE.audioCtx || !STATE.song) return;
+  const songForThisCall = STATE.song;
+  Promise.resolve(STATE.samplesReadyPromise).then(() => {
+    if (STATE.song === songForThisCall && STATE.audioCtx) {
+      scheduleLoopingSong(songForThisCall);
+    }
+  });
+}
+
+// A real app switch (leaving the browser entirely, not just this tab
+// losing focus to another tab in the same browser) can suspend the whole
+// audio session on mobile far more aggressively than same-app
+// backgrounding -- reported as "sound is lost after switching back to the
+// game from another app, requires a refresh." The gesture-triggered
+// self-heal in initAudio() only ever runs on the player's *next* tap, and
+// even then only rebuilds the context -- it never re-schedules the wave
+// already in progress (only startWave does that), which is exactly why a
+// full reload was the only thing that actually brought music back (a
+// reload always re-enters through startWave). This tries to recover the
+// instant the game regains focus instead, without waiting for a tap.
+// Only acts if the context was actually found suspended -- an innocuous
+// visibility blip (opening Control Center, a quick app-switcher swipe
+// that never truly backgrounds this tab) leaves it 'running' the whole
+// time, and forcing a reschedule then would just be an audible glitch
+// for no reason.
+function recoverAudioAfterVisible() {
+  if (document.visibilityState !== 'visible') return;
+  const ctx = STATE.audioCtx;
+  if (!ctx || ctx.state !== 'suspended') return;
+  Promise.resolve(ctx.resume()).catch(() => {}).then(() => {
+    if (STATE.audioCtx !== ctx) return; // some other recovery already replaced it
+    if (ctx.state === 'running') {
+      // Even a context reporting healthy again can have silently dropped
+      // every note the song had scheduled before backgrounding -- always
+      // reschedule fresh from right now rather than trust old scheduling
+      // survived. scheduleLoopingSong immediately re-unmutes every pair
+      // already connected, so nothing the player already earned goes quiet.
+      stopAllScheduledAudio(ctx.currentTime);
+      scheduleCurrentSongOnceReady();
+    } else {
+      // Wedged -- drop it so the next tap (initAudio) builds a completely
+      // fresh context and reschedules onto it, same self-heal already
+      // used for a mid-session wedge.
+      STATE.audioCtx = null;
+    }
+  });
+}
+document.addEventListener('visibilitychange', recoverAudioAfterVisible);
 
 // One-time master bus + decode kickoff, split out of initAudio so it can
 // be wrapped in a single try/catch there.
@@ -1702,8 +1855,17 @@ function stepBeat(step, groove) {
 // one coherent arrangement — the connection order doesn't matter, and each
 // stem is audible within a beat or two of being opened instead of waiting
 // for a private slot to come around in a shared timeline.
+// Recomputed per call, not cached -- PREMIUM_MUSIC_UNLOCKED is a plain
+// const today, but this is also where a real per-player entitlement
+// check will plug in once the backend exists, and that can change
+// mid-session (e.g. right after a purchase).
+function availableGenreFamilies() {
+  return PREMIUM_MUSIC_UNLOCKED ? GENRE_FAMILIES : GENRE_FAMILIES.filter(f => !f.premium);
+}
+
 function generateSong(pairCount) {
-  const family = GENRE_FAMILIES[Math.floor(Math.random() * GENRE_FAMILIES.length)];
+  const families = availableGenreFamilies();
+  const family = families[Math.floor(Math.random() * families.length)];
   const seed = family.seeds[Math.floor(Math.random() * family.seeds.length)];
   // Flattened so every existing call site (song.genre.bpm, song.genre.rootMidi,
   // etc.) keeps working unchanged — family-level rules just ride along as
@@ -2106,9 +2268,10 @@ const ctx = canvas.getContext('2d');
 // inside a newly bigger [0, newW]) — without re-centering everything
 // already placed, the whole board would end up crammed into a corner of
 // the bigger world instead of staying where the player left it (caught in
-// review). Screen-space-only decorations (spaceObjects, celestialBodies —
-// see their own comments) are deliberately NOT included here, since
-// they're not part of the world coordinate system at all.
+// review). Screen-space-only decorations (spaceObjects, celestialBodies,
+// and the base ambient starfield in STATE.stars -- see drawStars' own
+// "stars live in screen space" comment) are deliberately NOT included
+// here, since they're not part of the world coordinate system at all.
 function shiftWorldEntities(dx, dy) {
   if (dx === 0 && dy === 0) return;
   for (const d of STATE.dots) { d.x += dx; d.y += dy; }
@@ -2126,7 +2289,6 @@ function shiftWorldEntities(dx, dy) {
       for (const seg of b.segments) { seg.x1 += dx; seg.y1 += dy; seg.x2 += dx; seg.y2 += dy; }
     }
   }
-  for (const s of STATE.stars) { s.x += dx; s.y += dy; }
   for (const spark of STATE.breakSparks) { spark.x += dx; spark.y += dy; }
   for (const p of STATE.currentPath) { p.x += dx; p.y += dy; }
   STATE.smoothedCursor.x += dx; STATE.smoothedCursor.y += dy;
@@ -2156,8 +2318,23 @@ function growWorldToMatchAspect() {
 }
 
 function resizeCanvas() {
+  const oldWidth = canvas.width, oldHeight = canvas.height;
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
+  // The WAVE_COMPLETE starfield reveal (see fillBaseStarfield) fills
+  // screen-space stars once, sized to the canvas at that exact moment.
+  // Mobile browser chrome (address bar collapsing/reappearing on
+  // scroll/tap, orientation change) resizes the viewport out from under
+  // an already-showing reveal far more often than a desktop window ever
+  // does mid-session -- without topping the starfield back up here, any
+  // newly-exposed area would stay permanently starless instead of
+  // matching the rest of the sky's density. topUpStarfieldForResize (not
+  // a plain fillBaseStarfield() call) handles this precisely, including
+  // an area-preserving orientation flip that a whole-canvas top-up would
+  // silently do nothing for.
+  if (STATE.phase === 'WAVE_COMPLETE' && (canvas.width !== oldWidth || canvas.height !== oldHeight)) {
+    topUpStarfieldForResize(oldWidth, oldHeight);
+  }
   // Keep the camera's fit scale correct if the viewport changes mid-wave
   // (orientation change, desktop window resize). world.w is 0 until the
   // first wave starts, so this is a no-op at the initial page-load call.
@@ -2346,8 +2523,48 @@ const HINT_PULSE_CONFIG = {
   CYCLES: 5,
 };
 
+// Free in Relaxed only (see updateWaveDisplay for the button's own
+// visible/locked states) -- Normal shows the button but locked, pending
+// a future ad-unlock; Intense hides it entirely, so there's nothing to
+// early-return for there in the first place. Guarded here too (not just
+// via the button's own disabled look) so nothing else that might call
+// this directly could bypass the gate.
 function triggerHintPulse() {
+  if (STATE.difficulty !== 'relaxed') return;
   STATE.hintPulse = { startTime: performance.now() };
+  playHintChime();
+}
+
+// A short, generic confirmation ping to go with the hint flash --
+// deliberately not tied to the current song/instrument the way
+// playConnectionChime is (a hint isn't part of the music, it's a UI
+// action), just a synthesized blip so the flash has an audible cue too.
+function playHintChime() {
+  if (!STATE.audioCtx || !STATE.masterBus) return;
+  const ctx = STATE.audioCtx;
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(880, t);
+  osc.frequency.exponentialRampToValueAtTime(1320, t + 0.09);
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(0.25, t + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+  osc.connect(gain);
+  gain.connect(STATE.masterBus);
+  osc.start(t);
+  osc.stop(t + 0.25);
+  trackSource(osc);
+}
+
+// Relaxed-difficulty only (see updateWaveDisplay for the button's own
+// visibility). Stays on across multiple erases -- rather than a one-shot
+// action -- so redoing several lines in a row doesn't mean re-tapping ERASE
+// each time; toggling it off, pausing, or leaving the wave all clear it.
+function toggleEraseMode() {
+  STATE.eraseMode = !STATE.eraseMode;
+  document.getElementById('erase-button').classList.toggle('active', STATE.eraseMode);
 }
 
 // Relaxed-difficulty only (see updateWaveDisplay for the button's own
@@ -2917,6 +3134,7 @@ canvas.addEventListener('wheel', onWheelZoom, { passive: false });
 // has already cleared isDrawing by the time it runs.
 function cancelStaleDrawGesture() {
   if (STATE.isDrawing) cancelActiveLine();
+  STATE.eraseArmed = false;
 }
 window.addEventListener('mouseup', cancelStaleDrawGesture);
 window.addEventListener('blur', cancelStaleDrawGesture);
@@ -2961,6 +3179,7 @@ function beginPinch(e) {
   // rather than completing/rejecting a connection they didn't intend.
   if (STATE.isDrawing) cancelActiveLine();
   STATE.panDrag = null; // a second finger landing mid-pan means a pinch is starting, not a continued drag
+  STATE.eraseArmed = false; // the first finger only grazed a line on its way into a pinch, not a tap on it
   STATE.pinch = { startDist: pinchDistance(e.touches), startZoom: STATE.camera.userZoom };
 }
 
@@ -3014,14 +3233,18 @@ function onInputStart(e) {
 
   const pos = getEventPos(e);
 
-  // Erase mode takes over the tap entirely -- a hit on an existing line
-  // erases it, and a miss (empty space or a dot) is just a no-op rather
-  // than falling through to start a new line or a pan, which would let a
-  // player accidentally draw or scroll while they're clearly trying to
-  // remove something instead.
+  // Erase mode takes over the tap entirely -- a miss (empty space or a
+  // dot) is just a no-op rather than falling through to start a new line
+  // or a pan, which would let a player accidentally draw or scroll while
+  // they're clearly trying to remove something instead. The actual hit
+  // test is deferred to onInputEnd (see STATE.eraseArmed), not resolved
+  // here on first contact: on a touch device, a pinch's first finger
+  // lands as its own touchstart before the second one arrives, so acting
+  // immediately here could permanently erase a line the player only
+  // grazed while starting to zoom. beginPinch() clears eraseArmed the
+  // moment a second finger confirms it's a pinch, not a tap.
   if (STATE.eraseMode) {
-    const conn = findConnectionAt(pos.x, pos.y);
-    if (conn) eraseConnection(conn);
+    STATE.eraseArmed = true;
     return;
   }
 
@@ -3150,6 +3373,25 @@ function onInputEnd(e) {
   if (STATE.pinch) { STATE.pinch = null; return; }
   if (STATE.panDrag) { STATE.panDrag = null; return; }
 
+  // Resolved here, not on the original touchstart/mousedown (see
+  // onInputStart) -- by the time a release actually lands, any pinch this
+  // gesture might have turned into has already cleared eraseArmed via
+  // beginPinch, so reaching here with it still true means this really was
+  // just a tap.
+  if (STATE.eraseMode) {
+    if (STATE.eraseArmed) {
+      STATE.eraseArmed = false;
+      let pos = getEventPos(e);
+      if (e.changedTouches && e.changedTouches.length > 0) {
+        const rect = canvas.getBoundingClientRect();
+        pos = screenToWorld(e.changedTouches[0].clientX - rect.left, e.changedTouches[0].clientY - rect.top);
+      }
+      const conn = findConnectionAt(pos.x, pos.y);
+      if (conn) eraseConnection(conn);
+    }
+    return;
+  }
+
   if (!STATE.isDrawing || !STATE.activeDot) return;
 
   STATE.isDrawing = false;
@@ -3226,13 +3468,25 @@ function findDotAt(x, y, includeConnected) {
 // finely-sampled curve segments completeConnection stored (see
 // smoothedCurveSegments), so a tap registers against exactly what the
 // player sees drawn, not a coarser straight-line approximation of it.
+// Returns whichever eligible connection is actually CLOSEST to the tap,
+// not just the first one found in STATE.connections' insertion order --
+// two valid, non-crossing lines can legitimately run within
+// ERASE_HIT_RADIUS of each other (close parallel routing is normal,
+// legal gameplay), and picking by draw order rather than proximity could
+// silently erase the wrong one of the two.
 function findConnectionAt(x, y) {
+  let closest = null;
+  let closestDist = CONFIG.ERASE_HIT_RADIUS;
   for (const conn of STATE.connections) {
     for (const seg of conn.segments) {
-      if (distPointToSegment(x, y, seg.x1, seg.y1, seg.x2, seg.y2) <= CONFIG.ERASE_HIT_RADIUS) return conn;
+      const dist = distPointToSegment(x, y, seg.x1, seg.y1, seg.x2, seg.y2);
+      if (dist <= closestDist) {
+        closest = conn;
+        closestDist = dist;
+      }
     }
   }
-  return null;
+  return closest;
 }
 
 // Union-find over STATE.dotUnion — tracks which same-color dots are
@@ -3868,7 +4122,12 @@ function checkWaveComplete() {
   spawnCelestialBodies();
 
   STATE.score += STATE.wave * 100;
-  checkAchievements(STATE.score - STATE.waveStartScore);
+  const earnedThisWave = checkAchievements(STATE.score - STATE.waveStartScore);
+  // The postcard/share prompt is only offered on a wave that actually
+  // earned something -- a real "this one was good" signal already
+  // computed above, not a separate threshold to invent and keep in sync.
+  STATE.lastWavePostcardLabels = earnedThisWave.map(e => e.label);
+  document.getElementById('postcard-row').classList.toggle('visible', earnedThisWave.length > 0);
 
   // The song keeps looping (already playing in full) for as long as the
   // player lingers here — there's no auto-advance. Only a tap, click, or
@@ -3944,6 +4203,7 @@ function startWave(waveNumber) {
   STATE.currentPath = [];
   STATE.isDrawing = false;
   STATE.eraseMode = false;
+  STATE.eraseArmed = false;
   document.getElementById('erase-button').classList.remove('active');
   for (const entry of STATE.connectionPraise) entry.el.remove();
   STATE.connectionPraise = [];
@@ -3971,17 +4231,11 @@ function startWave(waveNumber) {
   // Sample decoding is async; scheduleLoopingSong calls playSample
   // synchronously for every note up front, so it must wait for decoding
   // to finish or the whole wave's real-instrument notes would silently
-  // never play. The staleness guard skips scheduling if this wave was
-  // already superseded by the time decoding resolves (shouldn't normally
-  // happen — decode is fast — but keeps this safe regardless).
-  if (STATE.audioCtx) {
-    const songForThisWave = STATE.song;
-    Promise.resolve(STATE.samplesReadyPromise).then(() => {
-      if (STATE.song === songForThisWave) {
-        scheduleLoopingSong(songForThisWave);
-      }
-    });
-  }
+  // never play. scheduleCurrentSongOnceReady's own staleness guard skips
+  // scheduling if this wave was already superseded by the time decoding
+  // resolves (shouldn't normally happen — decode is fast — but keeps this
+  // safe regardless).
+  scheduleCurrentSongOnceReady();
 }
 
 // ============================================================
@@ -4808,6 +5062,45 @@ function fillBaseStarfield() {
   }
 }
 
+// Precise counterpart to fillBaseStarfield for a resize mid-reveal (see
+// resizeCanvas). A plain fillBaseStarfield() re-run has two real gaps:
+// (1) its target count depends only on total area, so an area-preserving
+// orientation flip (e.g. 400x800 -> 800x400) computes the same target as
+// before and adds nothing, even though the visible shape completely
+// changed; (2) even when the area does grow, it scatters the added stars
+// over the WHOLE canvas rather than just the newly-exposed part, which
+// under-fills that part whenever the pre-existing area is large relative
+// to the growth (most of the new stars land back in the already-covered
+// region purely by chance). This instead fills exactly the region(s) the
+// new canvas covers that the old one didn't, decomposed into up to two
+// non-overlapping rectangles sharing the same origin (0,0) both rects are
+// anchored at: a right strip if width grew, and a bottom strip -- capped
+// to the width already claimed by the right strip, so the shared corner
+// is never double-counted -- if height grew. Density stays uniform across
+// old and new area alike regardless of whether this is a grow, a shrink,
+// or a rotation.
+function topUpStarfieldForResize(oldWidth, oldHeight) {
+  // A star outside the new bounds no longer contributes any visible
+  // coverage, but still occupies budget under MAX_STARS -- prune it first
+  // so repeatedly resizing (e.g. rotating back and forth) can't slowly
+  // starve later top-ups of room to add real ones back.
+  STATE.stars = STATE.stars.filter(s => s.x < canvas.width && s.y < canvas.height);
+
+  const commonW = Math.min(oldWidth, canvas.width);
+  const commonH = Math.min(oldHeight, canvas.height);
+  const regions = [];
+  if (canvas.width > commonW) regions.push({ x: commonW, y: 0, w: canvas.width - commonW, h: canvas.height });
+  if (canvas.height > commonH) regions.push({ x: 0, y: commonH, w: commonW, h: canvas.height - commonH });
+
+  for (const r of regions) {
+    const count = Math.round((r.w * r.h) / STARFIELD_CONFIG.AREA_PER_BASE_STAR);
+    for (let i = 0; i < count; i++) {
+      if (STATE.stars.length >= STARFIELD_CONFIG.MAX_STARS) return;
+      STATE.stars.push(makeStar(r.x + Math.random() * r.w, r.y + Math.random() * r.h, STARFIELD_CONFIG.REVEAL_FADE_IN_SPEED));
+    }
+  }
+}
+
 function spawnStarsAroundDots(dotA, dotB) {
   const perDot = Math.round(STARFIELD_CONFIG.STARS_PER_CONNECTION / 2);
   // Stars live in screen space (drawStars runs outside the camera
@@ -5437,6 +5730,7 @@ function closePauseMenuUI() {
   // Resuming always lands back in normal draw mode -- otherwise the ERASE
   // toggle could stay lit with no visible cue why taps aren't drawing lines.
   STATE.eraseMode = false;
+  STATE.eraseArmed = false;
   document.getElementById('erase-button').classList.remove('active');
 }
 
@@ -5595,6 +5889,7 @@ function exitToTitle() {
   STATE.beatSync = null;
   STATE.song = null;
   STATE.eraseMode = false;
+  STATE.eraseArmed = false;
   document.getElementById('erase-button').classList.remove('active');
   hideTutorialHint(true); // in-wave UI must never linger over the title screen
   document.getElementById('achievement-toast').classList.remove('visible');
@@ -5717,6 +6012,7 @@ function showMessage(title, subtitle, opts) {
   document.getElementById('sound-hint').classList.toggle('visible', isTitleScreen);
   document.getElementById('difficulty-selector').classList.toggle('visible', isTitleScreen);
   document.getElementById('title-load-row').classList.toggle('visible', isTitleScreen);
+  document.getElementById('share-row').classList.toggle('visible', isTitleScreen);
   if (isTitleScreen) {
     refreshDifficultyButtons();
     refreshTitleLoadRow();
@@ -5725,13 +6021,153 @@ function showMessage(title, subtitle, opts) {
 
 function hideMessage() {
   document.getElementById('message-overlay').style.opacity = '0';
-  // The difficulty selector and load row are the elements in here with
-  // real pointer-events — without explicitly clearing them too, they'd
+  // Every row in here with real pointer-events (title-only and
+  // WAVE_COMPLETE-only alike) needs explicit cleanup — without it, they'd
   // stay clickable (invisibly, opacity alone doesn't disable
   // pointer-events) over whatever dots happen to render underneath once
   // play starts.
   document.getElementById('difficulty-selector').classList.remove('visible');
   document.getElementById('title-load-row').classList.remove('visible');
+  document.getElementById('share-row').classList.remove('visible');
+  document.getElementById('postcard-row').classList.remove('visible');
+}
+
+// ------------------------------------------------------------
+// Sharing: a plain link from the title screen, and a composited
+// screenshot-postcard from a WAVE_COMPLETE that actually earned an
+// achievement (see checkWaveComplete). Both funnel through the Web Share
+// API where available (native share sheet, works with or without a file
+// attached) and fall back to something that still works everywhere else.
+// ------------------------------------------------------------
+
+// Cloudflare Pages is the canonical player-facing URL (see
+// SOURCE_OF_TRUTH.md) -- the one to actually hand someone, not the
+// personal-name github.io mirror.
+const CANONICAL_SHARE_URL = 'https://lumina-8f0.pages.dev/';
+
+function showShareToast(text) {
+  const toast = document.getElementById('share-toast');
+  toast.textContent = text;
+  toast.classList.add('visible');
+  setTimeout(() => toast.classList.remove('visible'), 1800);
+}
+
+async function shareGameLink() {
+  const shareData = { title: 'Lumina', text: 'Connect the dots. Make the music.', url: CANONICAL_SHARE_URL };
+  if (navigator.share) {
+    try {
+      await navigator.share(shareData);
+    } catch (e) {
+      // Includes the player just cancelling their own share sheet --
+      // not a failure worth reporting as one.
+    }
+    return;
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(CANONICAL_SHARE_URL);
+      showShareToast('Link Copied');
+      return;
+    } catch (e) { /* fall through to the generic failure message below */ }
+  }
+  showShareToast('Could Not Share');
+}
+
+const POSTCARD_CONFIG = {
+  BASE_BANNER_HEIGHT: 96, // at REFERENCE_WIDTH; scaled with the actual canvas below
+  REFERENCE_WIDTH: 500,
+  MIN_SCALE: 0.75,
+  MAX_SCALE: 1.7,
+};
+
+// Composites the just-completed board -- exactly as the player sees it at
+// the reveal, stars and all -- with a branded banner naming what was
+// earned. A raw canvas.toDataURL() screenshot alone would carry no
+// context once shared outside the game (no title, no score, nothing
+// saying what game this even is), which is the whole point of a postcard
+// over a plain screenshot.
+function buildWavePostcard() {
+  const scale = Math.max(POSTCARD_CONFIG.MIN_SCALE, Math.min(POSTCARD_CONFIG.MAX_SCALE, canvas.width / POSTCARD_CONFIG.REFERENCE_WIDTH));
+  const bannerHeight = Math.round(POSTCARD_CONFIG.BASE_BANNER_HEIGHT * scale);
+
+  const pc = document.createElement('canvas');
+  pc.width = canvas.width;
+  pc.height = canvas.height + bannerHeight;
+  const pctx = pc.getContext('2d');
+
+  pctx.fillStyle = '#000';
+  pctx.fillRect(0, 0, pc.width, pc.height);
+  pctx.drawImage(canvas, 0, 0);
+
+  const bannerY = canvas.height;
+  const fade = pctx.createLinearGradient(0, bannerY - 24 * scale, 0, bannerY);
+  fade.addColorStop(0, 'rgba(5,5,10,0)');
+  fade.addColorStop(1, 'rgba(5,5,10,0.92)');
+  pctx.fillStyle = fade;
+  pctx.fillRect(0, bannerY - 24 * scale, pc.width, 24 * scale);
+  pctx.fillStyle = 'rgba(5,5,10,0.92)';
+  pctx.fillRect(0, bannerY, pc.width, bannerHeight);
+
+  pctx.textAlign = 'center';
+  pctx.fillStyle = 'rgba(255,255,255,0.92)';
+  pctx.font = `700 ${Math.round(22 * scale)}px "Courier New", monospace`;
+  pctx.fillText('LUMINA', pc.width / 2, bannerY + 34 * scale);
+
+  const labels = STATE.lastWavePostcardLabels.length ? STATE.lastWavePostcardLabels.join('  •  ') : `Wave ${STATE.wave} Cleared`;
+  pctx.fillStyle = 'rgba(255,214,120,0.95)';
+  pctx.font = `${Math.round(13 * scale)}px "Courier New", monospace`;
+  pctx.fillText(`Wave ${STATE.wave} — ${labels}`, pc.width / 2, bannerY + 58 * scale);
+
+  pctx.fillStyle = 'rgba(255,255,255,0.4)';
+  pctx.font = `${Math.round(10 * scale)}px "Courier New", monospace`;
+  pctx.fillText(`${STATE.score} pts — play free at lumina-8f0.pages.dev`, pc.width / 2, bannerY + 80 * scale);
+
+  return pc;
+}
+
+// Attempts the Web Share API with an actual image file attached -- the
+// only way "share" reads as sharing THIS wave's postcard rather than just
+// the game's link. Returns false (never throws) for anything short of a
+// clean, completed share, including the player cancelling their own
+// share sheet, so the caller can fall back to a plain download.
+async function tryShareCanvasImage(canvasEl, filename, title, text) {
+  if (!navigator.share || !navigator.canShare) return false;
+  try {
+    const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
+    if (!blob) return false;
+    const file = new File([blob], filename, { type: 'image/png' });
+    if (!navigator.canShare({ files: [file] })) return false;
+    await navigator.share({ files: [file], title, text });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function downloadCanvasImage(canvasEl, filename) {
+  const link = document.createElement('a');
+  link.download = filename;
+  link.href = canvasEl.toDataURL('image/png');
+  link.click();
+}
+
+async function shareOrSaveWavePostcard() {
+  const pc = buildWavePostcard();
+  const filename = `lumina-wave-${STATE.wave}.png`;
+  const shareText = `I just hit Wave ${STATE.wave} in Lumina! ${STATE.lastWavePostcardLabels.join(', ')}`.trim();
+
+  const shared = await tryShareCanvasImage(pc, filename, 'Lumina', shareText);
+  if (shared) {
+    showShareToast('Shared!');
+    return;
+  }
+  downloadCanvasImage(pc, filename);
+  showShareToast('Postcard Saved');
+}
+
+function setupShareListeners() {
+  document.getElementById('share-game-button').addEventListener('click', shareGameLink);
+  document.getElementById('postcard-button').addEventListener('click', shareOrSaveWavePostcard);
 }
 
 function showTutorialHint(waveNumber) {
@@ -5961,14 +6397,19 @@ function enforceTutorialHintInvariant() {
 
 function updateWaveDisplay() {
   document.getElementById('wave-display').textContent = 'wave ' + STATE.wave;
-  document.getElementById('score-display').textContent = STATE.score > 0 ? STATE.score : '';
+  document.getElementById('score-display').textContent = STATE.score > 0 ? `Score: ${STATE.score}` : '';
   // The button was always visible, including on the title screen, where
   // togglePause() is a deliberate no-op (nothing to pause before the game
   // has started) — that reads as a broken button rather than an
   // intentionally absent one. Hidden here instead, at the same place
   // every phase transition already runs through.
   document.getElementById('pause-button').classList.toggle('visible', STATE.phase !== 'TITLE');
-  document.getElementById('hint-button').classList.toggle('visible', STATE.phase !== 'TITLE');
+  // Free-and-functional in Relaxed, visible-but-locked in Normal (pending a
+  // future ad-unlock), hidden entirely in Intense -- see triggerHintPulse
+  // for the matching action-side guard.
+  const hintButton = document.getElementById('hint-button');
+  hintButton.classList.toggle('visible', STATE.phase !== 'TITLE' && STATE.difficulty !== 'intense');
+  hintButton.classList.toggle('locked', STATE.difficulty === 'normal');
   // Unlike HINT/pause, gated to PLAYING specifically, not just "not TITLE"
   // -- during WAVE_COMPLETE, canvas taps advance to the next wave before
   // ever reaching the erase-mode branch in onInputStart, so a lit ERASE
@@ -6178,6 +6619,7 @@ function init() {
   applyDifficulty(STATE.difficulty);
   setupDifficultySelectorListeners();
   setupTitleLoadListeners();
+  setupShareListeners();
   showMessage('LUMINA', titleSubtitleText(), { isTitleScreen: true });
   updateWaveDisplay();
 
