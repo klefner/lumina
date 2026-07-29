@@ -105,6 +105,28 @@ html, body {
   border-color: rgba(255, 150, 120, 0.9);
   color: #1a0a05;
 }
+/* Normal difficulty: HINT stays visible but reads as disabled (see
+   updateWaveDisplay/triggerHintPulse for the matching state + action gate)
+   -- dimmed and not clickable-looking, pending a future ad-unlock rather
+   than a free tap like in Relaxed. */
+#hint-button.locked {
+  opacity: 0.4;
+  cursor: default;
+}
+#hint-button.locked:hover, #hint-button.locked:active {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+/* Wave/score readout -- solid white and bold rather than the dim, small
+   uppercase label styling #ui-overlay uses for everything else, since these
+   two are the player's primary at-a-glance stats and were hard to read
+   against a busy starfield. */
+#wave-display, #score-display {
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 16px;
+}
 
 /* Live points for the line currently being drawn — counts up in real time
    while dragging, then clears the instant the connection lands (its value

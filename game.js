@@ -2447,8 +2447,39 @@ const HINT_PULSE_CONFIG = {
   CYCLES: 5,
 };
 
+// Free in Relaxed only (see updateWaveDisplay for the button's own
+// visible/locked states) -- Normal shows the button but locked, pending
+// a future ad-unlock; Intense hides it entirely, so there's nothing to
+// early-return for there in the first place. Guarded here too (not just
+// via the button's own disabled look) so nothing else that might call
+// this directly could bypass the gate.
 function triggerHintPulse() {
+  if (STATE.difficulty !== 'relaxed') return;
   STATE.hintPulse = { startTime: performance.now() };
+  playHintChime();
+}
+
+// A short, generic confirmation ping to go with the hint flash --
+// deliberately not tied to the current song/instrument the way
+// playConnectionChime is (a hint isn't part of the music, it's a UI
+// action), just a synthesized blip so the flash has an audible cue too.
+function playHintChime() {
+  if (!STATE.audioCtx || !STATE.masterBus) return;
+  const ctx = STATE.audioCtx;
+  const t = ctx.currentTime;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(880, t);
+  osc.frequency.exponentialRampToValueAtTime(1320, t + 0.09);
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(0.25, t + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+  osc.connect(gain);
+  gain.connect(STATE.masterBus);
+  osc.start(t);
+  osc.stop(t + 0.25);
+  trackSource(osc);
 }
 
 // Relaxed-difficulty only (see updateWaveDisplay for the button's own
@@ -6281,14 +6312,19 @@ function enforceTutorialHintInvariant() {
 
 function updateWaveDisplay() {
   document.getElementById('wave-display').textContent = 'wave ' + STATE.wave;
-  document.getElementById('score-display').textContent = STATE.score > 0 ? STATE.score : '';
+  document.getElementById('score-display').textContent = STATE.score > 0 ? `Score: ${STATE.score}` : '';
   // The button was always visible, including on the title screen, where
   // togglePause() is a deliberate no-op (nothing to pause before the game
   // has started) — that reads as a broken button rather than an
   // intentionally absent one. Hidden here instead, at the same place
   // every phase transition already runs through.
   document.getElementById('pause-button').classList.toggle('visible', STATE.phase !== 'TITLE');
-  document.getElementById('hint-button').classList.toggle('visible', STATE.phase !== 'TITLE');
+  // Free-and-functional in Relaxed, visible-but-locked in Normal (pending a
+  // future ad-unlock), hidden entirely in Intense -- see triggerHintPulse
+  // for the matching action-side guard.
+  const hintButton = document.getElementById('hint-button');
+  hintButton.classList.toggle('visible', STATE.phase !== 'TITLE' && STATE.difficulty !== 'intense');
+  hintButton.classList.toggle('locked', STATE.difficulty === 'normal');
   // Unlike HINT/pause, gated to PLAYING specifically, not just "not TITLE"
   // -- during WAVE_COMPLETE, canvas taps advance to the next wave before
   // ever reaching the erase-mode branch in onInputStart, so a lit ERASE

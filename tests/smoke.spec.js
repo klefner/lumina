@@ -74,6 +74,31 @@ test('connecting a dot pair registers and scores', async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+test('the score display reads "Score: <n>" once points are on the board', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+
+  await expect(page.locator('#score-display')).toHaveText('');
+
+  const dots = await page.evaluate(() => window.__lumina.getDots());
+  const byPair = {};
+  for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+  const pair = Object.values(byPair)[0];
+  await page.mouse.move(pair[0].x, pair[0].y);
+  await page.mouse.down();
+  await page.mouse.move(pair[1].x, pair[1].y, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+
+  const score = await page.evaluate(() => window.__lumina.getState().score);
+  await expect(page.locator('#score-display')).toHaveText(`Score: ${score}`);
+  expect(errors).toEqual([]);
+});
+
 // Regression guard for a defect where a completed connection's stored
 // line/segments could trail off short of the dot it was actually drawn
 // to. Root cause: the recorded path only ever gained points from move
@@ -580,9 +605,14 @@ test('the HINT button appears once playing, flashes unconnected dots white at th
 
   await expect(page.locator('#hint-button')).toBeHidden();
   await expect(page.locator('#hint-button')).toHaveText('HINT');
+  // HINT is free/functional in Relaxed only (see the difficulty-gating
+  // test below) -- select it explicitly so this test still covers the
+  // actual pulse/sound mechanics regardless of the default difficulty.
+  await page.click('.difficulty-btn[data-difficulty="relaxed"]');
   await page.mouse.click(200, 700);
   await page.waitForTimeout(1000);
   await expect(page.locator('#hint-button')).toBeVisible();
+  await expect(page.locator('#hint-button')).not.toHaveClass(/locked/);
 
   const config = await page.evaluate(() => {
     for (const d of STATE.dots) d.connected = false; // clean signal, regardless of what this wave generated
@@ -624,6 +654,57 @@ test('the HINT button appears once playing, flashes unconnected dots white at th
   expect(afterDone.fills[0].alpha).toBeCloseTo(0.55, 2); // back to the normal dimmed idle state
   expect(afterDone.fills).toHaveLength(2); // just the base color + the permanent core dot -- no flash fill once the pulse is over
   expect(afterDone.cleared).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('HINT is free in Relaxed, visible-but-locked in Normal, and hidden entirely in Intense', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+  await expect(page.locator('#hint-button')).toBeVisible();
+  await expect(page.locator('#hint-button')).toHaveClass(/locked/);
+  // The button-side .locked class is just visual -- confirm the action
+  // itself is also guarded (triggerHintPulse), so nothing could bypass
+  // the lock by calling it directly.
+  const lockedNoOp = await page.evaluate(() => {
+    triggerHintPulse();
+    return STATE.hintPulse === null;
+  });
+  expect(lockedNoOp).toBe(true);
+
+  await page.evaluate(() => window.__lumina.getState()); // sanity: page still alive
+  await page.reload();
+  await page.waitForTimeout(300);
+  await page.click('.difficulty-btn[data-difficulty="intense"]');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+  await expect(page.locator('#hint-button')).toBeHidden();
+  expect(errors).toEqual([]);
+});
+
+test('triggering a hint pulse in Relaxed plays a short confirmation chime', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.click('.difficulty-btn[data-difficulty="relaxed"]');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+
+  const started = await page.evaluate(() => {
+    const origStart = OscillatorNode.prototype.start;
+    let called = false;
+    OscillatorNode.prototype.start = function (...args) { called = true; return origStart.apply(this, args); };
+    triggerHintPulse();
+    OscillatorNode.prototype.start = origStart;
+    return called;
+  });
+  expect(started).toBe(true);
   expect(errors).toEqual([]);
 });
 
