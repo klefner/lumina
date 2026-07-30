@@ -478,7 +478,11 @@ test('maze barriers grow one corner/gap per tier starting at wave 40, and genera
         ensureAllDotsInWorldBounds(dots);
         const barriers = generateBarriersSafely(wave, dots);
         total++;
-        if (!allDotsReachableGivenBarriers(dots, barriers)) unsolvable++;
+        // Reachability must be checked with whatever portal generateBarriersSafely
+        // just set (see PORTAL_CONFIG, wave 50+) -- a sealed pocket is only
+        // reachable THROUGH one, so checking without it would flag a wave
+        // that's actually fine as a false "unsolvable."
+        if (!allDotsReachableGivenBarriers(dots, barriers, STATE.portals)) unsolvable++;
         if (barriers.some(b => b.type === 'maze')) mazeSeen++;
         if (barriers.some(b => b.type === 'factBox')) factBoxSeen++;
       }
@@ -492,6 +496,254 @@ test('maze barriers grow one corner/gap per tier starting at wave 40, and genera
   expect(result.unsolvable).toBe(0); // the core guarantee, across every wave and barrier type generated above
   expect(result.mazeSeen).toBeGreaterThan(0); // maze barriers actually show up once unlocked
   expect(result.factBoxSeen).toBeGreaterThan(0); // fact boxes actually show up over enough waves
+  expect(errors).toEqual([]);
+});
+
+// Same Monte Carlo methodology as the maze-barrier stress test above, run
+// specifically across the wave range portals unlock at (see PORTAL_CONFIG,
+// wave 50+). Confirms three things simultaneously, since they'd each
+// individually be easy to get subtly wrong: portals show up at all, a
+// sealed pocket is genuinely UNREACHABLE without one (not decorative --
+// see generatePortalPocket's own reachability re-check), and the wave as a
+// whole is always solvable once the portal IS accounted for (see
+// isReachableAround's wormhole edge).
+test('generatePortalPocket only ever seals a dot that its own portal genuinely un-seals, and never ships an unsolvable wave', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    let total = 0, unsolvableWithPortal = 0, portalsSeen = 0, sealedButReachableWithoutPortal = 0;
+    for (let trial = 0; trial < 15; trial++) {
+      for (let wave = 50; wave <= 65; wave++) {
+        const dots = generateDots(wave);
+        ensureAllDotsInWorldBounds(dots);
+        const barriers = generateBarriersSafely(wave, dots);
+        total++;
+        if (!allDotsReachableGivenBarriers(dots, barriers, STATE.portals)) unsolvableWithPortal++;
+        if (STATE.portals) {
+          portalsSeen++;
+          const groupDots = dots.filter(d => d.pairId === STATE.portals.pairId);
+          // With the SAME final barrier set (portal's own sealing wall
+          // included) but no wormhole edge, the sealed group must be
+          // unreachable -- otherwise the portal didn't actually seal
+          // anything, it was just sitting there.
+          if (allDotsReachableGivenBarriers(groupDots, barriers, null)) sealedButReachableWithoutPortal++;
+        }
+      }
+    }
+    return { total, unsolvableWithPortal, portalsSeen, sealedButReachableWithoutPortal };
+  });
+
+  expect(result.unsolvableWithPortal).toBe(0);
+  expect(result.portalsSeen).toBeGreaterThan(0); // confirms the feature isn't silently always skipping out
+  expect(result.sealedButReachableWithoutPortal).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+// Exercises the actual two-hop drawing mechanic (see PORTAL_CONFIG's own
+// comment on why it's two ordinary drags joined at the pair, not one
+// continuous teleporting one) directly via the real input handlers, same
+// as the pinch-safety erase test above -- this is real production code,
+// not a re-implementation. Portal placement itself (generatePortalPocket)
+// is covered by the Monte Carlo test above; this only cares that a
+// portal, once it exists, is actually drawable through correctly.
+test('drawing through a portal is two separate hops that only complete the real pair on the second one', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const setup = await page.evaluate(() => {
+    const dots = window.__lumina.getDots();
+    const byPair = {};
+    for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+    const [a, b] = Object.values(byPair)[0];
+
+    // Exact generation rules (see generatePortalPocket) don't matter for
+    // this test -- only that a portal pair exists and is drawable to/from,
+    // so placed in the corners, safely clear of every dot and (wave 1 has
+    // none yet anyway) every barrier.
+    const portalA = { x: 30, y: 30 };
+    const portalB = { x: STATE.world.w - 30, y: 30 };
+    STATE.portals = { a: portalA, b: portalB, colorIndex: a.colorIndex, pairId: a.pairId };
+
+    return { aId: a.id, bId: b.id, ax: a.x, ay: a.y, bx: b.x, by: b.y, portalA, portalB };
+  });
+
+  // Leg 1: dot A to portal A. Locks in as a thread, not a real connection.
+  const afterLeg1 = await page.evaluate(({ ax, ay, portalA, aId }) => {
+    onInputStart({ preventDefault() {}, clientX: ax, clientY: ay });
+    onInputEnd({ preventDefault() {}, clientX: portalA.x, clientY: portalA.y });
+    return {
+      threadCount: STATE.portalThreads.length,
+      threadDotAId: STATE.portalThreads[0] && STATE.portalThreads[0].dotA.id,
+      connectionsCount: STATE.connections.length,
+      linesCount: STATE.lines.length,
+      dotAConnected: STATE.dots.find(d => d.id === aId).connected,
+      score: STATE.score,
+    };
+  }, setup);
+  expect(afterLeg1.threadCount).toBe(1);
+  expect(afterLeg1.threadDotAId).toBe(setup.aId);
+  expect(afterLeg1.connectionsCount).toBe(0); // not a completed pair yet
+  expect(afterLeg1.linesCount).toBe(1); // but it's a real, visible, drawn line
+  expect(afterLeg1.dotAConnected).toBe(false);
+  expect(afterLeg1.score).toBe(0); // no score for a half-connection
+
+  // Leg 2: starting a fresh drag from portal B (the OTHER side) picks the
+  // thread back up as dot A itself, then finishing at dot A's real match
+  // completes the actual pair.
+  const afterLeg2 = await page.evaluate(({ bx, by, portalB, aId, bId }) => {
+    onInputStart({ preventDefault() {}, clientX: portalB.x, clientY: portalB.y });
+    const pickedUpDotId = STATE.activeDot && STATE.activeDot.id;
+    onInputEnd({ preventDefault() {}, clientX: bx, clientY: by });
+    return {
+      pickedUpDotId,
+      threadCount: STATE.portalThreads.length,
+      connection: STATE.connections[0],
+      linesCount: STATE.lines.length,
+      dotAConnected: STATE.dots.find(d => d.id === aId).connected,
+      dotBConnected: STATE.dots.find(d => d.id === bId).connected,
+      score: STATE.score,
+    };
+  }, setup);
+  expect(afterLeg2.pickedUpDotId).toBe(setup.aId); // resumes as the ORIGINAL dot, not a stand-in
+  expect(afterLeg2.threadCount).toBe(0); // consumed on success
+  expect(afterLeg2.connection.dotA).toBe(setup.aId);
+  expect(afterLeg2.connection.dotB).toBe(setup.bId);
+  expect(afterLeg2.connection.segments.length).toBeGreaterThan(0);
+  expect(afterLeg2.linesCount).toBe(2); // both hops remain their own independent fading lines
+  expect(afterLeg2.dotAConnected).toBe(true);
+  expect(afterLeg2.dotBConnected).toBe(true);
+  expect(afterLeg2.score).toBeGreaterThan(0); // both legs' length counted, awarded only now
+  expect(errors).toEqual([]);
+});
+
+// A rejected second hop (wrong color, in this case) shouldn't cost the
+// player the first one -- STATE.activePortalThread is cleared, but the
+// thread itself stays in STATE.portalThreads for another attempt, exactly
+// like a plain rejected connection just cancels the current drag rather
+// than un-drawing anything already on the board.
+test('a rejected second hop through a portal leaves the first hop\'s thread available to retry', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const setup = await page.evaluate(() => {
+    const dots = window.__lumina.getDots();
+    const byPair = {};
+    for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+    const pairs = Object.values(byPair);
+    const [a] = pairs[0];
+    // A dot from a DIFFERENT color group, guaranteed to reject on a color
+    // mismatch -- if this wave only generated one color, skip cleanly.
+    const wrongColorDot = pairs.find(g => g[0].colorIndex !== a.colorIndex)?.[0];
+
+    const portalA = { x: 30, y: 30 };
+    const portalB = { x: STATE.world.w - 30, y: 30 };
+    STATE.portals = { a: portalA, b: portalB, colorIndex: a.colorIndex, pairId: a.pairId };
+
+    onInputStart({ preventDefault() {}, clientX: a.x, clientY: a.y });
+    onInputEnd({ preventDefault() {}, clientX: portalA.x, clientY: portalA.y });
+
+    return {
+      hasWrongColorDot: !!wrongColorDot,
+      wrongColorDot,
+      portalB,
+      threadCountAfterLeg1: STATE.portalThreads.length,
+    };
+  });
+  test.skip(!setup.hasWrongColorDot, 'this generated wave only has one color group');
+  expect(setup.threadCountAfterLeg1).toBe(1);
+
+  const afterRejectedAttempt = await page.evaluate(({ wrongColorDot, portalB }) => {
+    onInputStart({ preventDefault() {}, clientX: portalB.x, clientY: portalB.y });
+    onInputEnd({ preventDefault() {}, clientX: wrongColorDot.x, clientY: wrongColorDot.y });
+    return {
+      threadCount: STATE.portalThreads.length,
+      connectionsCount: STATE.connections.length,
+      activePortalThread: STATE.activePortalThread,
+    };
+  }, setup);
+  expect(afterRejectedAttempt.threadCount).toBe(1); // still there, untouched
+  expect(afterRejectedAttempt.connectionsCount).toBe(0);
+  expect(afterRejectedAttempt.activePortalThread).toBeNull(); // this attempt's own reference is cleared
+  expect(errors).toEqual([]);
+});
+
+// STATE.portals/portalThreads must never survive into a wave, restart, or
+// title screen that didn't itself just generate them -- otherwise a
+// leftover portal from a previous wave could sit there un-generated but
+// still tappable, or a stale thread could silently attach itself to a
+// completely different dot.
+test('portal state resets cleanly on both a new wave and exiting to the title screen', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const afterNewWave = await page.evaluate(() => {
+    STATE.portals = { a: { x: 10, y: 10 }, b: { x: 20, y: 20 }, colorIndex: 0, pairId: 0 };
+    STATE.portalThreads = [{ enteredSide: 'a', dotA: STATE.dots[0], segments: [], points: [], length: 0 }];
+    STATE.activePortalThread = STATE.portalThreads[0];
+    startWave(1);
+    return { portals: STATE.portals, threadCount: STATE.portalThreads.length, active: STATE.activePortalThread };
+  });
+  expect(afterNewWave.portals).toBeNull();
+  expect(afterNewWave.threadCount).toBe(0);
+  expect(afterNewWave.active).toBeNull();
+
+  const afterExit = await page.evaluate(() => {
+    STATE.portals = { a: { x: 10, y: 10 }, b: { x: 20, y: 20 }, colorIndex: 0, pairId: 0 };
+    STATE.portalThreads = [{ enteredSide: 'a', dotA: STATE.dots[0], segments: [], points: [], length: 0 }];
+    exitToTitle();
+    return { portals: STATE.portals, threadCount: STATE.portalThreads.length };
+  });
+  expect(afterExit.portals).toBeNull();
+  expect(afterExit.threadCount).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+// World growth (see growWorldToMatchAspect/shiftWorldEntities) already
+// shifts dots/connections/barriers to stay put visually when the world
+// resizes out from under them -- a portal or a pending thread's own
+// already-drawn geometry needs the exact same treatment, or the portal
+// would visibly jump away from where the player just saw it, or a pending
+// thread's stored line would end up detached from the portal it actually
+// leads to.
+test('shiftWorldEntities moves both an active portal pair and a pending thread\'s stored geometry', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.portals = { a: { x: 10, y: 20 }, b: { x: 100, y: 200 }, colorIndex: 0, pairId: 0 };
+    STATE.portalThreads = [{
+      enteredSide: 'a',
+      dotA: { id: 0 },
+      segments: [{ x1: 0, y1: 0, x2: 10, y2: 20 }],
+      points: [{ x: 0, y: 0 }, { x: 10, y: 20 }],
+      length: 22,
+    }];
+    shiftWorldEntities(5, 7);
+    return {
+      portals: STATE.portals,
+      threadSeg: STATE.portalThreads[0].segments[0],
+      threadPoint: STATE.portalThreads[0].points[1],
+    };
+  });
+
+  expect(result.portals).toEqual({ a: { x: 15, y: 27 }, b: { x: 105, y: 207 }, colorIndex: 0, pairId: 0 });
+  expect(result.threadSeg).toEqual({ x1: 5, y1: 7, x2: 15, y2: 27 });
+  expect(result.threadPoint).toEqual({ x: 15, y: 27 });
   expect(errors).toEqual([]);
 });
 
