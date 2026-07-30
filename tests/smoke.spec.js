@@ -715,6 +715,33 @@ test('HINT stays visible in Intense but shows an explanatory toast instead of fi
   expect(errors).toEqual([]);
 });
 
+// Regression guard for a Codex finding (#39): the toast used a fixed CSS
+// top offset sized for a one-line button row, but that row wraps to two
+// lines on narrow viewports (see its own flex-wrap rule) -- on Intense,
+// where only HINT/HELP/PAUSE show (no ERASE), it can still wrap around
+// ~280px CSS width. A hardcoded offset would land the toast on top of
+// the wrapped second row instead of below it.
+test('the hint toast appears below the button row even when that row has wrapped to two lines', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.setViewportSize({ width: 280, height: 700 });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.click('.difficulty-btn[data-difficulty="intense"]');
+  await page.mouse.click(140, 600);
+  await page.waitForTimeout(1000);
+
+  const layout = await page.evaluate(() => {
+    const rowRect = document.getElementById('top-buttons-row').getBoundingClientRect();
+    triggerHintPulse();
+    const toastRect = document.getElementById('hint-toast').getBoundingClientRect();
+    return { rowBottom: rowRect.bottom, toastTop: toastRect.top, rowWrapped: rowRect.height > 30 };
+  });
+  expect(layout.rowWrapped).toBe(true); // confirms this test actually exercises the wrapped case
+  expect(layout.toastTop).toBeGreaterThanOrEqual(layout.rowBottom);
+  expect(errors).toEqual([]);
+});
+
 test('triggering a hint pulse in Relaxed plays a short confirmation chime', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });

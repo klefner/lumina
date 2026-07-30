@@ -2568,6 +2568,13 @@ function triggerHintPulse() {
 function showHintToast(text) {
   const toast = document.getElementById('hint-toast');
   toast.textContent = text;
+  // #top-buttons-row wraps to a second line on narrow viewports (see its
+  // own flex-wrap rule) -- a fixed top offset sized for one line would
+  // land the toast on top of the wrapped row instead of below it.
+  // Anchoring to the row's own measured bottom works regardless of how
+  // many lines it's actually wrapped to right now.
+  const rowBottom = document.getElementById('top-buttons-row').getBoundingClientRect().bottom;
+  toast.style.top = `${rowBottom + 8}px`;
   toast.classList.add('visible');
   clearTimeout(showHintToast._timer);
   showHintToast._timer = setTimeout(() => toast.classList.remove('visible'), 4200);

@@ -114,10 +114,13 @@ html, body {
 /* Explains why tapping HINT in Intense doesn't do anything (see
    triggerHintPulse) -- anchored under the button row rather than a
    generic screen-center toast, so it visually points back at the
-   button that triggered it. */
+   button that triggered it. `top` is set inline by showHintToast, not
+   here -- the button row can wrap to a second line on narrow viewports
+   (see its own flex-wrap rule), so a fixed CSS offset sized for one
+   line would land the toast on top of the wrapped row instead of
+   below it. */
 #hint-toast {
   position: fixed;
-  top: 58px;
   right: 24px;
   max-width: 200px;
   font-family: 'Courier New', monospace;
