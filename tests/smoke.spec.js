@@ -513,7 +513,7 @@ test('generatePortalPocket only ever seals a dot that its own portal genuinely u
   await page.waitForFunction(() => window.__lumina);
 
   const result = await page.evaluate(() => {
-    let total = 0, unsolvableWithPortal = 0, portalsSeen = 0, sealedButReachableWithoutPortal = 0;
+    let total = 0, unsolvableWithPortal = 0, portalsSeen = 0, sealedButReachableWithoutPortal = 0, portalInsideDotHitRadius = 0;
     for (let trial = 0; trial < 15; trial++) {
       for (let wave = 50; wave <= 65; wave++) {
         const dots = generateDots(wave);
@@ -529,15 +529,23 @@ test('generatePortalPocket only ever seals a dot that its own portal genuinely u
           // unreachable -- otherwise the portal didn't actually seal
           // anything, it was just sitting there.
           if (allDotsReachableGivenBarriers(groupDots, barriers, null)) sealedButReachableWithoutPortal++;
+          // Portal A must sit outside every dot's own tap radius --
+          // onInputEnd checks findDotAt before findPortalAt, so a portal
+          // any closer than that to any dot (especially the one it seals)
+          // is unreachable in real play, permanently stranding the group
+          // it exists to un-seal (review, #41).
+          const minDistToAnyDot = Math.min(...dots.map(d => Math.hypot(STATE.portals.a.x - d.x, STATE.portals.a.y - d.y)));
+          if (minDistToAnyDot <= CONFIG.DOT_HIT_RADIUS) portalInsideDotHitRadius++;
         }
       }
     }
-    return { total, unsolvableWithPortal, portalsSeen, sealedButReachableWithoutPortal };
+    return { total, unsolvableWithPortal, portalsSeen, sealedButReachableWithoutPortal, portalInsideDotHitRadius };
   });
 
   expect(result.unsolvableWithPortal).toBe(0);
   expect(result.portalsSeen).toBeGreaterThan(0); // confirms the feature isn't silently always skipping out
   expect(result.sealedButReachableWithoutPortal).toBe(0);
+  expect(result.portalInsideDotHitRadius).toBe(0);
   expect(errors).toEqual([]);
 });
 
@@ -3619,15 +3627,21 @@ test('every 10th wave opens a skippable milestone postcard intermission, and oth
   });
   expect(nonMilestone).toBe(false);
 
-  const milestone = await page.evaluate(() => {
+  // The milestone capture is deliberately deferred a frame (see
+  // checkWaveComplete) so it snapshots the finished reveal instead of
+  // whatever the canvas looked like the instant before this frame's own
+  // render() ran -- wait for that same rAF here rather than reading the
+  // overlay synchronously.
+  await page.evaluate(() => new Promise(resolve => {
     startWave(10);
     for (const dot of STATE.dots) dot.connected = true;
     checkWaveComplete();
-    return {
-      visible: document.getElementById('postcard-preview-overlay').classList.contains('visible'),
-      title: document.getElementById('postcard-preview-title').textContent,
-    };
-  });
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+  const milestone = await page.evaluate(() => ({
+    visible: document.getElementById('postcard-preview-overlay').classList.contains('visible'),
+    title: document.getElementById('postcard-preview-title').textContent,
+  }));
   expect(milestone.visible).toBe(true);
   expect(milestone.title.length).toBeGreaterThan(0);
 

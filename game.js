@@ -4376,8 +4376,12 @@ function checkWaveComplete() {
 
   // Every 10th wave gets its own skippable congrats-and-postcard beat, on
   // top of (not instead of) the achievement-gated "Share This Wave" row
-  // above -- see showMilestoneIntermission.
-  if (isMilestoneWave(STATE.wave)) showMilestoneIntermission();
+  // above -- see showMilestoneIntermission. Deferred one frame: this runs
+  // mid-update(), before this frame's own render() has actually painted
+  // the final connecting line, starfield reveal, and celestial bodies set
+  // up just above -- capturing right here would snapshot last frame's
+  // stale canvas instead of the finished reveal (flagged in review on #41).
+  if (isMilestoneWave(STATE.wave)) requestAnimationFrame(() => showMilestoneIntermission());
 
   // The song keeps looping (already playing in full) for as long as the
   // player lingers here — there's no auto-advance. Only a tap, click, or
@@ -5023,7 +5027,12 @@ function generatePortalPocket(wave, dots, barriers) {
     // the walls -- a straight line from an interior point to another
     // interior point of a convex shape never crosses its own boundary, so
     // this is safe by construction, no extra crossing check needed.
-    const inset = half * 0.45;
+    // Must also clear the sealed dot's own CONFIG.DOT_HIT_RADIUS: onInputEnd
+    // checks findDotAt before findPortalAt, so a portal placed any closer
+    // than that to the dot it seals is unreachable -- any release aimed at
+    // it keeps re-selecting the dot itself instead, making the pocket
+    // permanently un-enterable (flagged in review on #41).
+    const inset = Math.max(half * 0.45, CONFIG.DOT_HIT_RADIUS + 8);
     const portalAngle = Math.random() * Math.PI * 2;
     const portalA = { x: cx + Math.cos(portalAngle) * inset, y: cy + Math.sin(portalAngle) * inset };
 
