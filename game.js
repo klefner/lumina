@@ -905,6 +905,27 @@ const MAZE_CONFIG = {
   SCREEN_CLEARANCE: 10,
 };
 
+// Late-wave portals (issue #25): a paired teleport link that can bridge a
+// dot deliberately sealed off by its own small enclosing barrier (see
+// generatePortalPocket) back to the rest of the board. Drawing works as
+// two separate hops joined at the pair, not one continuous magic
+// teleporting drag -- drag the sealed dot to either portal (locks in as a
+// STATE.portalThreads entry, not yet a real connection), then start a new
+// drag from the OTHER portal to the dot's actual same-color match to
+// finish the pair. Both hops are ordinary, fully continuous lines, so
+// every existing crossing/stranding/scoring/rendering path handles them
+// unchanged -- only the flood-fill reachability check needed to learn
+// about the wormhole edge (see isReachableAround's portals parameter).
+const PORTAL_CONFIG = {
+  START_WAVE: 50,
+  PROBABILITY: 0.4,      // per-eligible-wave odds of attempting a sealed pocket at all
+  ENCLOSURE_RADIUS: 90,  // px from the sealed dot's center to each wall of its triangular enclosure
+  HIT_RADIUS: 40,        // how close a drag has to land to register as touching a portal
+  DOT_CLEARANCE: 60,     // keep the enclosure and the open-side portal this far from every other dot
+  SCREEN_CLEARANCE: 20,
+  GENERATION_ATTEMPTS: 12, // candidate dots / open-portal placements tried before giving up for the wave
+};
+
 // A rare cosmetic-but-real obstacle: a small square barrier with one of the
 // curated pause-menu fun facts (see PAUSE_FACTS) printed inside it, so
 // there's a chance of stumbling on one mid-play instead of only at pause.
@@ -1141,6 +1162,17 @@ const STATE = {
   currentPath: [],     // Points being drawn right now [{x, y}]
   isDrawing: false,
   smoothedCursor: { x: 0, y: 0 }, // low-pass-filtered pointer position, tracks raw input each move
+
+  portals: null,          // { a: {x,y}, b: {x,y}, colorIndex, pairId } for this wave, or null --
+                           // see PORTAL_CONFIG/generatePortalPocket. Neither side is a fixed
+                           // "entry"/"exit"; either can be dragged to or from.
+  portalThreads: [],       // Pending half-connections that touched one portal side and are waiting
+                           // to be picked up from the other (see completePortalLeg/onInputStart) --
+                           // { enteredSide: 'a'|'b', dotA, segments, points, length }
+  activePortalThread: null, // The thread STATE.activeDot is currently continuing, if this drag
+                             // started at a portal rather than a real dot -- see completeConnection's
+                             // portalPrefix parameter. Only removed from portalThreads on success, so
+                             // a rejected/cancelled second hop can just be retried from the portal.
 
   audioCtx: null,      // Created on first gesture
   beatInterval: null,  // setInterval reference for beat pulse
@@ -2316,6 +2348,14 @@ function shiftWorldEntities(dx, dy) {
   for (const spark of STATE.breakSparks) { spark.x += dx; spark.y += dy; }
   for (const p of STATE.currentPath) { p.x += dx; p.y += dy; }
   STATE.smoothedCursor.x += dx; STATE.smoothedCursor.y += dy;
+  if (STATE.portals) {
+    STATE.portals.a.x += dx; STATE.portals.a.y += dy;
+    STATE.portals.b.x += dx; STATE.portals.b.y += dy;
+  }
+  for (const t of STATE.portalThreads) {
+    for (const seg of t.segments) { seg.x1 += dx; seg.y1 += dy; seg.x2 += dx; seg.y2 += dy; }
+    for (const p of t.points) { p.x += dx; p.y += dy; }
+  }
 }
 
 function growWorldToMatchAspect() {
@@ -3280,31 +3320,54 @@ function onInputStart(e) {
   }
 
   const dot = findDotAt(pos.x, pos.y, false);
-  if (!dot) {
-    // Dragging empty board space was always a no-op before panning
-    // existed, and stays one at the guaranteed-fit view or further out —
-    // only once the viewport is actually smaller than the world is there
-    // anywhere left to pan to. That's the *composed* zoom relative to
-    // autoScale (baseZoom * userZoom), not userZoom alone -- on a wide
-    // wave (see WIDE_WORLD_START_WAVE), baseZoom alone can already put the
-    // resting "comfortable" zoom past 1 even while userZoom is still its
-    // reset default of 1, and the player needs to be able to pan right
-    // away there, not only after zooming in further still.
-    if (STATE.camera.baseZoom * STATE.camera.userZoom > 1) {
-      const screenPos = getEventScreenPos(e);
-      STATE.panDrag = {
-        startScreenX: screenPos.x, startScreenY: screenPos.y,
-        startCenterX: STATE.camera.centerX, startCenterY: STATE.camera.centerY,
-      };
-    }
+  if (dot) {
+    STATE.activeDot = dot;
+    STATE.isDrawing = true;
+    STATE.currentPath = [{ x: dot.x, y: dot.y }];
+    STATE.smoothedCursor = { x: dot.x, y: dot.y };
+    STATE.lastDrawScreenPos = getEventScreenPos(e);
     return;
   }
 
-  STATE.activeDot = dot;
-  STATE.isDrawing = true;
-  STATE.currentPath = [{ x: dot.x, y: dot.y }];
-  STATE.smoothedCursor = { x: dot.x, y: dot.y };
-  STATE.lastDrawScreenPos = getEventScreenPos(e);
+  // A drag can also start AT a portal, but only to continue a thread
+  // already waiting on its OTHER side (see completePortalLeg) -- e.g. the
+  // thread entered at side 'a', so only side 'b' can pick it up. Starting
+  // fresh at a portal with nothing to continue there is just a no-op, same
+  // as tapping any other empty spot; it deliberately never falls through
+  // to a pan either, so a mis-tap near a portal can't be mistaken for the
+  // start of a camera drag.
+  if (STATE.portals) {
+    const portal = findPortalAt(pos.x, pos.y);
+    if (portal) {
+      const thread = STATE.portalThreads.find(t => t.enteredSide !== portal.side);
+      if (thread) {
+        STATE.activeDot = thread.dotA;
+        STATE.activePortalThread = thread;
+        STATE.isDrawing = true;
+        STATE.currentPath = [{ x: portal.x, y: portal.y }];
+        STATE.smoothedCursor = { x: portal.x, y: portal.y };
+        STATE.lastDrawScreenPos = getEventScreenPos(e);
+      }
+      return;
+    }
+  }
+
+  // Dragging empty board space was always a no-op before panning
+  // existed, and stays one at the guaranteed-fit view or further out —
+  // only once the viewport is actually smaller than the world is there
+  // anywhere left to pan to. That's the *composed* zoom relative to
+  // autoScale (baseZoom * userZoom), not userZoom alone -- on a wide
+  // wave (see WIDE_WORLD_START_WAVE), baseZoom alone can already put the
+  // resting "comfortable" zoom past 1 even while userZoom is still its
+  // reset default of 1, and the player needs to be able to pan right
+  // away there, not only after zooming in further still.
+  if (STATE.camera.baseZoom * STATE.camera.userZoom > 1) {
+    const screenPos = getEventScreenPos(e);
+    STATE.panDrag = {
+      startScreenX: screenPos.x, startScreenY: screenPos.y,
+      startCenterX: STATE.camera.centerX, startCenterY: STATE.camera.centerY,
+    };
+  }
 }
 
 function onInputMove(e) {
@@ -3436,7 +3499,42 @@ function onInputEnd(e) {
 
   const targetDot = findDotAt(pos.x, pos.y, false);
 
-  if (!targetDot || targetDot.id === STATE.activeDot.id) {
+  if (!targetDot) {
+    // Only a fresh drag from a real dot -- not one already continuing a
+    // portal thread (see STATE.activePortalThread) -- can end AT a portal.
+    // Reaching a second portal mid-continuation has no sensible meaning
+    // here, so it's just left to fall through to the plain-miss cancel
+    // below like any other non-dot release would.
+    if (!STATE.activePortalThread && STATE.portals) {
+      const portal = findPortalAt(pos.x, pos.y);
+      if (portal) {
+        // Same reasoning as the dot case below: snap the recorded path to
+        // the portal's exact center before checking/storing it, or the
+        // stored leg (and whatever eventually renders along it) trails
+        // off short of the portal by a visible gap.
+        STATE.currentPath.push({ x: portal.x, y: portal.y });
+        if (pathCrossesExistingConnections(STATE.currentPath) || pathCrossesBarriers(STATE.currentPath)) {
+          rejectConnection();
+          return;
+        }
+        // This leg isn't a completed connection yet (see completePortalLeg),
+        // so wouldStrandAnyDot's own dotA/dotB wrapper doesn't apply -- no
+        // second dot to simulate a union with -- but the geometry it's
+        // about to leave permanently on the board is exactly as capable of
+        // walling something off as a real connection is.
+        if (wouldNewSegmentsStrandAnyDot(smoothedCurveSegments(STATE.currentPath), null, null)) {
+          rejectConnection();
+          return;
+        }
+        completePortalLeg(STATE.activeDot, portal);
+        return;
+      }
+    }
+    cancelActiveLine();
+    return;
+  }
+
+  if (targetDot.id === STATE.activeDot.id) {
     cancelActiveLine();
     return;
   }
@@ -3480,7 +3578,8 @@ function onInputEnd(e) {
     return;
   }
 
-  completeConnection(STATE.activeDot, targetDot);
+  completeConnection(STATE.activeDot, targetDot, STATE.activePortalThread);
+  STATE.activePortalThread = null;
 }
 
 // ============================================================
@@ -3491,6 +3590,20 @@ function findDotAt(x, y, includeConnected) {
     if (!includeConnected && dot.connected) continue;
     const dist = Math.hypot(dot.x - x, dot.y - y);
     if (dist <= CONFIG.DOT_HIT_RADIUS) return dot;
+  }
+  return null;
+}
+
+// Portal counterpart to findDotAt -- see PORTAL_CONFIG/STATE.portals. No
+// per-wave "includeConnected"-style exclusion: a portal doesn't belong to
+// any one pending thread, so it stays touchable for as long as it exists.
+function findPortalAt(x, y) {
+  if (!STATE.portals) return null;
+  if (Math.hypot(STATE.portals.a.x - x, STATE.portals.a.y - y) <= PORTAL_CONFIG.HIT_RADIUS) {
+    return { side: 'a', x: STATE.portals.a.x, y: STATE.portals.a.y };
+  }
+  if (Math.hypot(STATE.portals.b.x - x, STATE.portals.b.y - y) <= PORTAL_CONFIG.HIT_RADIUS) {
+    return { side: 'b', x: STATE.portals.b.x, y: STATE.portals.b.y };
   }
   return null;
 }
@@ -3802,12 +3915,26 @@ function updateConnectionPraise() {
   }
 }
 
-function completeConnection(dotA, dotB) {
+// `portalPrefix` (see completePortalLeg/STATE.portalThreads) is the other,
+// already-drawn half of a portal-mediated connection, if this one is
+// finishing through a portal -- its segments/length just get folded into
+// this connection's own, and it's the ONLY thing this function needs to
+// know about portals at all. Concatenating two independently-smoothed
+// segment arrays (rather than re-smoothing across the two legs as one
+// path) is what keeps the visible gap between the portals a real gap --
+// no synthetic segment ever connects the last point of one leg to the
+// first point of the other, so nothing downstream (traveling lights,
+// crossing-checks, world-growth shifting) needs to know the join is even
+// there. Undefined/null for every ordinary, non-portal connection, which
+// is the overwhelming majority -- behavior there is unchanged.
+function completeConnection(dotA, dotB, portalPrefix) {
   ufUnion(dotA.id, dotB.id);
   markGroupIfFullySolved(dotA.pairId);
 
-  const newSegments = smoothedCurveSegments(STATE.currentPath);
-  const actualLen = pathLength(STATE.currentPath);
+  const legSegments = smoothedCurveSegments(STATE.currentPath);
+  const legLen = pathLength(STATE.currentPath);
+  const newSegments = portalPrefix ? [...portalPrefix.segments, ...legSegments] : legSegments;
+  const actualLen = portalPrefix ? portalPrefix.length + legLen : legLen;
   // Same rule fact boxes already follow (see FACT_BOX_CONFIG/isTutorialWave
   // in generateBarriersSafely): never coexist with the tutorial hint. A
   // praise popup positions itself at whatever dot the connection just
@@ -3839,6 +3966,19 @@ function completeConnection(dotA, dotB) {
     settled: false,
   };
   STATE.lines.push(fadingLine);
+  // The portal leg's own points already became their own separate
+  // STATE.lines entry when it was first drawn (completePortalLeg) --
+  // merging them into one entry here would reintroduce exactly the
+  // cross-board-jump problem concatenating segments (above) avoids, since
+  // line.points gets walked as one continuous curve wherever it's
+  // rendered. Two independent fading lines that happen to share a pairId
+  // is already a normal shape (any 3+-dot group has multiple), and
+  // resetPairConnections already clears every line for a pairId at once,
+  // so nothing else needs to change to support it.
+  if (portalPrefix) {
+    const idx = STATE.portalThreads.indexOf(portalPrefix);
+    if (idx !== -1) STATE.portalThreads.splice(idx, 1);
+  }
 
   spawnStarsAroundDots(dotA, dotB);
 
@@ -3862,12 +4002,50 @@ function completeConnection(dotA, dotB) {
   checkWaveComplete();
 }
 
+// Reaching a portal doesn't complete a color pair by itself -- a portal is
+// a waypoint, not a dot (see STATE.portals/PORTAL_CONFIG) -- so this
+// deliberately skips everything completeConnection does for a REAL finish:
+// no union-find, no score, no chime or unmuted music stem, no
+// achievement/praise check. It just banks this leg as a STATE.portalThreads
+// entry and gives it the same fading-line visual any drawn line gets, so
+// it reads as a real, permanent stroke on the board rather than vanishing.
+// A new drag starting from the portal's OTHER side (see onInputStart) picks
+// the thread back up, and the pair only actually completes once that second
+// leg reaches dotA's real matching dot (see completeConnection's
+// portalPrefix parameter).
+function completePortalLeg(dotA, portal) {
+  const segments = smoothedCurveSegments(STATE.currentPath);
+  const points = STATE.currentPath.map(p => ({ x: p.x, y: p.y, alpha: 1.0 }));
+  const length = pathLength(STATE.currentPath);
+
+  STATE.portalThreads.push({ enteredSide: portal.side, dotA, segments, points, length });
+
+  STATE.lines.push({
+    colorIndex: dotA.colorIndex,
+    pairId: dotA.pairId,
+    points,
+    bornAt: performance.now(),
+    settled: false,
+  });
+
+  haptic('connect');
+
+  STATE.activeDot = null;
+  STATE.currentPath = [];
+}
+
 function rejectConnection() {
   haptic('reject');
   STATE.activeDot = null;
   STATE.currentPath = [];
   STATE.isDrawing = false;
   STATE.lastDrawScreenPos = null;
+  // The thread itself (if any) is untouched in STATE.portalThreads -- only
+  // completeConnection ever removes one, on success -- so this just clears
+  // which one THIS gesture was continuing, letting a fresh drag from the
+  // portal pick the same thread back up rather than losing the first leg
+  // just because the second one didn't land.
+  STATE.activePortalThread = null;
 }
 
 function cancelActiveLine() {
@@ -3875,6 +4053,7 @@ function cancelActiveLine() {
   STATE.currentPath = [];
   STATE.isDrawing = false;
   STATE.lastDrawScreenPos = null;
+  STATE.activePortalThread = null;
 }
 
 function pathToSegments(path) {
@@ -4012,10 +4191,24 @@ function buildBlockedGrid(segments, size) {
 // own blocked state is ignored (a dot must always be able to leave from
 // where it stands), and reaching the target cell always counts even if
 // that cell is itself marked blocked (same reasoning, for the groupmate).
-function isReachableAround(fromX, fromY, toX, toY, blocked, size, cols, rows) {
+//
+// `portals`, if given (see PORTAL_CONFIG), adds one extra wormhole edge to
+// the graph: standing in either portal's cell also lets the fill step
+// straight to its paired portal's cell, on top of the normal 8 neighbors.
+// This is the one place a portal actually needs to be understood as a real
+// traversal route rather than just two more dots -- everywhere else
+// (rendering, scoring, crossing-checks) only ever sees the two ordinary,
+// fully continuous line segments a portal-mediated connection is actually
+// drawn as (see completeConnection's portalPrefix parameter).
+function isReachableAround(fromX, fromY, toX, toY, blocked, size, cols, rows, portals) {
   const startCol = Math.round(fromX / size), startRow = Math.round(fromY / size);
   const toCol = Math.round(toX / size), toRow = Math.round(toY / size);
   if (startCol === toCol && startRow === toRow) return true;
+
+  const portalCells = portals ? [
+    [Math.round(portals.a.x / size), Math.round(portals.a.y / size)],
+    [Math.round(portals.b.x / size), Math.round(portals.b.y / size)],
+  ] : null;
 
   const visited = new Set([startCol + ',' + startRow]);
   const queue = [[startCol, startRow]];
@@ -4023,14 +4216,24 @@ function isReachableAround(fromX, fromY, toX, toY, blocked, size, cols, rows) {
 
   while (queue.length) {
     const [col, row] = queue.shift();
-    for (const [dc, dr] of dirs) {
-      const ncol = col + dc, nrow = row + dr;
+
+    let neighbors = dirs.map(([dc, dr]) => [col + dc, row + dr, dc, dr]);
+    if (portalCells) {
+      const [[ac, ar], [bc, br]] = portalCells;
+      if (col === ac && row === ar) neighbors = neighbors.concat([[bc, br, null, null]]);
+      else if (col === bc && row === br) neighbors = neighbors.concat([[ac, ar, null, null]]);
+    }
+
+    for (const [ncol, nrow, dc, dr] of neighbors) {
       if (ncol < 0 || ncol > cols || nrow < 0 || nrow > rows) continue;
       // No cutting corners: a diagonal move between two blocked orthogonal
       // neighbors would let the flood fill leak straight through a wall
       // that's only one cell thick wherever it happens to run diagonally
       // (exactly the shape a hand-drawn loop's boundary usually takes).
-      if (dc !== 0 && dr !== 0 && blocked.has(col + dc + ',' + row) && blocked.has(col + ',' + (row + dr))) continue;
+      // Doesn't apply to a portal jump (dc/dr null above) -- that's not a
+      // physical adjacent step, corner-cutting isn't a meaningful concept
+      // for it.
+      if (dc !== null && dc !== 0 && dr !== 0 && blocked.has(col + dc + ',' + row) && blocked.has(col + ',' + (row + dr))) continue;
       const key = ncol + ',' + nrow;
       if (visited.has(key)) continue;
       if (ncol === toCol && nrow === toRow) return true;
@@ -4050,6 +4253,17 @@ function isReachableAround(fromX, fromY, toX, toY, blocked, size, cols, rows) {
 // as a group, but the board geometry that accumulates over the course of
 // play can still trap one of them).
 function wouldStrandAnyDot(newSegments, dotA, dotB) {
+  return wouldNewSegmentsStrandAnyDot(newSegments, dotA.id, dotB.id);
+}
+
+// Core of the check above, but with the "simulate a completed A-B
+// connection" step made optional (unionA/unionB nullable) -- a portal's
+// first leg (see completePortalLeg) is real, permanent, wall-off-capable
+// geometry the instant it's drawn, exactly like a completed connection is,
+// even though it hasn't actually paired two dots together yet and so has
+// nothing to union. Called with both a real union (the normal case) or
+// neither (a portal's first leg) depending on which move is being checked.
+function wouldNewSegmentsStrandAnyDot(newSegments, unionA, unionB) {
   // Dots and connection segments live in world space, which can be larger
   // than the screen on a crowded wave (see computeWorldSize) — the grid
   // has to cover the whole world or it'd silently clip off part of the
@@ -4091,14 +4305,14 @@ function wouldStrandAnyDot(newSegments, dotA, dotB) {
   // move; completeConnection() does the real union only if this is
   // accepted.
   const savedUnion = { ...STATE.dotUnion };
-  ufUnion(dotA.id, dotB.id);
+  if (unionA != null && unionB != null) ufUnion(unionA, unionB);
 
   let stranded = false;
   for (const dot of STATE.dots) {
     if (dot.connected) continue;
     const groupmates = STATE.dots.filter(d => d.pairId === dot.pairId && d.id !== dot.id && !ufConnected(d.id, dot.id));
     if (groupmates.length === 0) continue;
-    const hasRoute = groupmates.some(g => isReachableAround(dot.x, dot.y, g.x, g.y, blocked, size, cols, rows));
+    const hasRoute = groupmates.some(g => isReachableAround(dot.x, dot.y, g.x, g.y, blocked, size, cols, rows, STATE.portals));
     if (!hasRoute) { stranded = true; break; }
   }
 
@@ -4236,6 +4450,12 @@ function startWave(waveNumber) {
   STATE.eraseMode = false;
   STATE.eraseArmed = false;
   document.getElementById('erase-button').classList.remove('active');
+  // Set below by generateBarriersSafely if this wave gets one -- reset
+  // here first so a wave that doesn't roll one doesn't inherit the
+  // previous wave's portal pair or any thread still pending on it.
+  STATE.portals = null;
+  STATE.portalThreads = [];
+  STATE.activePortalThread = null;
   for (const entry of STATE.connectionPraise) entry.el.remove();
   STATE.connectionPraise = [];
   STATE.spaceObjects = [];
@@ -4682,7 +4902,13 @@ function generateFactBoxBarrier(dots, reservedRect, existingBarriers) {
 // the wave even starts. wouldStrandAnyDot alone can't catch that: it only
 // runs once the player is mid-drag, by which point a wave that was already
 // unsolvable at spawn just looks like an unplayable one with no recourse.
-function allDotsReachableGivenBarriers(dots, barriers) {
+// `portals`, if given, is treated as an extra wormhole edge (see
+// isReachableAround) -- passed explicitly rather than always read from
+// STATE.portals so generatePortalPocket can ask this same question both
+// "as if the portal didn't exist yet" (to confirm a candidate dot is
+// genuinely sealed without one) and "with the candidate portal in place"
+// (to confirm it actually fixes what it sealed) before committing to it.
+function allDotsReachableGivenBarriers(dots, barriers, portals) {
   const size = STRAND_CHECK_CELL_SIZE;
   const cols = Math.ceil(STATE.world.w / size) + 1;
   const rows = Math.ceil(STATE.world.h / size) + 1;
@@ -4695,12 +4921,118 @@ function allDotsReachableGivenBarriers(dots, barriers) {
       // Reachability is transitive (it's just "in the same connected
       // free-space region"), so checking every groupmate against dot 0
       // is enough to guarantee the whole group is mutually reachable.
-      if (!isReachableAround(groupDots[0].x, groupDots[0].y, groupDots[i].x, groupDots[i].y, blocked, size, cols, rows)) {
+      if (!isReachableAround(groupDots[0].x, groupDots[0].y, groupDots[i].x, groupDots[i].y, blocked, size, cols, rows, portals)) {
         return false;
       }
     }
   }
   return true;
+}
+
+// Finds an open, empty spot elsewhere on the board for a portal's non-
+// sealed side -- same random-attempts-with-clearance shape as
+// generateFactBoxBarrier's own placement search, just for a point instead
+// of a box. `avoidPoint` (the sealed side, inside its enclosure) is kept
+// at real distance so the pair reads as "genuinely elsewhere," not a
+// technicality one step outside the wall.
+function findOpenPortalSpot(dots, barriers, avoidPoint) {
+  const c = PORTAL_CONFIG.SCREEN_CLEARANCE;
+  const spanX = STATE.world.w - 2 * c;
+  const spanY = STATE.world.h - 2 * c;
+  if (spanX <= 0 || spanY <= 0) return null;
+  const barrierSegs = barriers.flatMap(segmentsOfBarrier);
+
+  for (let attempts = 0; attempts < 100; attempts++) {
+    const x = c + Math.random() * spanX;
+    const y = c + Math.random() * spanY;
+    if (dots.some(d => Math.hypot(d.x - x, d.y - y) < PORTAL_CONFIG.DOT_CLEARANCE)) continue;
+    if (Math.hypot(avoidPoint.x - x, avoidPoint.y - y) < PORTAL_CONFIG.ENCLOSURE_RADIUS * 3) continue;
+    if (barrierSegs.some(seg => distPointToSegment(x, y, seg.x1, seg.y1, seg.x2, seg.y2) < PORTAL_CONFIG.DOT_CLEARANCE)) continue;
+    return { x, y };
+  }
+  return null;
+}
+
+// Late-wave portals (issue #25): tries to wall one existing dot into its
+// own small square enclosure and bridge it back out with a portal pair,
+// layered on top of an ALREADY fully-solvable barrier set (see
+// generateBarriersSafely, which only ever calls this once its own
+// classic, portal-free retry loop has already found one) -- so failure
+// anywhere in here just means this particular wave ships without a
+// portal, never an unsolvable one. Picks from real dots in random order
+// (not always the first one tried) so which color gets sealed varies
+// wave to wave.
+function generatePortalPocket(wave, dots, barriers) {
+  if (wave < PORTAL_CONFIG.START_WAVE) return null;
+  if (Math.random() >= PORTAL_CONFIG.PROBABILITY) return null;
+
+  const half = PORTAL_CONFIG.ENCLOSURE_RADIUS;
+  const c = PORTAL_CONFIG.SCREEN_CLEARANCE;
+  const barrierSegs = barriers.flatMap(segmentsOfBarrier);
+  const candidates = [...dots].sort(() => Math.random() - 0.5).slice(0, PORTAL_CONFIG.GENERATION_ATTEMPTS);
+
+  for (const candidate of candidates) {
+    const cx = candidate.x, cy = candidate.y;
+    if (cx - half < c || cx + half > STATE.world.w - c || cy - half < c || cy + half > STATE.world.h - c) continue;
+
+    // The candidate itself is deliberately excluded -- it's meant to sit
+    // this close to its own walls -- but every OTHER dot still needs real
+    // clearance, same as any other barrier placement in this file.
+    const tooCloseToOtherDot = dots.some(d => d.id !== candidate.id &&
+      Math.max(Math.abs(d.x - cx), Math.abs(d.y - cy)) < half + PORTAL_CONFIG.DOT_CLEARANCE);
+    if (tooCloseToOtherDot) continue;
+
+    const x1 = cx - half, x2 = cx + half, y1 = cy - half, y2 = cy + half;
+    const enclosureSegments = [
+      { x1, y1, x2, y2: y1 },
+      { x1: x2, y1, x2, y2 },
+      { x1: x2, y1: y2, x2: x1, y2 },
+      { x1, y1: y2, x2: x1, y2: y1 },
+    ];
+    if (barrierSegs.some(seg => segmentNearRect(seg.x1, seg.y1, seg.x2, seg.y2, {
+      x1: x1 - PORTAL_CONFIG.DOT_CLEARANCE, x2: x2 + PORTAL_CONFIG.DOT_CLEARANCE,
+      y1: y1 - PORTAL_CONFIG.DOT_CLEARANCE, y2: y2 + PORTAL_CONFIG.DOT_CLEARANCE,
+    }))) continue;
+
+    const enclosureBarrier = {
+      type: 'portalSeal',
+      segments: enclosureSegments,
+      rotating: false,
+      angularSpeed: 0,
+      targetPairId: candidate.pairId,
+      colorIndex: candidate.colorIndex,
+      x1, y1, x2, y2: y1, // uniform x1/y1/x2/y2 fallback (see segmentsOfBarrier) -- unused here since .segments is set, kept only for shape-consistency with every other barrier type
+    };
+    const barriersWithSeal = [...barriers, enclosureBarrier];
+
+    // Confirm the enclosure genuinely seals the candidate's own group off
+    // WITHOUT a portal -- if some other gap this placement didn't account
+    // for still leaves it reachable, a portal here would be decorative,
+    // not the actual only way in, which defeats the entire point.
+    const groupDots = dots.filter(d => d.pairId === candidate.pairId);
+    if (allDotsReachableGivenBarriers(groupDots, barriersWithSeal, null)) continue;
+
+    // Portal A sits inside the enclosure, offset from the dot so the two
+    // don't visually sit exactly on top of each other, but nowhere near
+    // the walls -- a straight line from an interior point to another
+    // interior point of a convex shape never crosses its own boundary, so
+    // this is safe by construction, no extra crossing check needed.
+    const inset = half * 0.45;
+    const portalAngle = Math.random() * Math.PI * 2;
+    const portalA = { x: cx + Math.cos(portalAngle) * inset, y: cy + Math.sin(portalAngle) * inset };
+
+    const portalB = findOpenPortalSpot(dots, barriersWithSeal, portalA);
+    if (!portalB) continue;
+
+    const portals = { a: portalA, b: portalB, colorIndex: candidate.colorIndex, pairId: candidate.pairId };
+    // Full-board check, not just the candidate's group -- the new seal is
+    // real geometry every other color's own reachability has to be
+    // re-verified against too, cheap as this is to just always redo.
+    if (!allDotsReachableGivenBarriers(dots, barriersWithSeal, portals)) continue;
+
+    return { enclosureBarrier, portals };
+  }
+  return null;
 }
 
 // Generates a wave's full barrier set (regular + maze) and verifies it
@@ -4741,8 +5073,17 @@ function generateBarriersSafely(wave, dots) {
       return segmentsOfBarrier(b).some(seg => segmentNearRect(seg.x1, seg.y1, seg.x2, seg.y2, reservedRect));
     });
     if (crossesReserved) continue;
-    if (allDotsReachableGivenBarriers(dots, barriers)) return barriers;
+    if (allDotsReachableGivenBarriers(dots, barriers)) {
+      // A pure bonus layered on top of an already-solvable set -- see
+      // generatePortalPocket's own comment for why this can never turn a
+      // solvable wave into an unsolvable one.
+      const pocket = generatePortalPocket(wave, dots, barriers);
+      STATE.portals = pocket ? pocket.portals : null;
+      if (pocket) barriers.push(pocket.enclosureBarrier);
+      return barriers;
+    }
   }
+  STATE.portals = null;
   return [];
 }
 
@@ -4953,6 +5294,56 @@ function drawBarriers() {
       }
       ctx.restore();
     }
+  }
+  ctx.restore();
+}
+
+// Deliberately unlike both a dot (solid filled shape) and a barrier
+// (straight dashed line) -- see PORTAL_CONFIG's own comment on why the
+// issue this implements explicitly asked for a distinct visual language.
+// Two concentric rings spinning in opposite directions around a soft glow
+// core reads as "a vortex, tap here" at a glance, tinted to the sealed
+// pair's own color the same way a barrier tints to the pair it blocks.
+function drawPortals() {
+  if (!STATE.portals) return;
+  const instrument = INSTRUMENTS[STATE.portals.colorIndex] || INSTRUMENTS[0];
+  const t = performance.now() / 1000;
+  ctx.save();
+  ctx.lineCap = 'round';
+  for (const p of [STATE.portals.a, STATE.portals.b]) {
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(t * 1.1);
+    ctx.beginPath();
+    ctx.setLineDash([10, 8]);
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = instrument.glow + '0.85)';
+    ctx.shadowBlur = 16;
+    ctx.shadowColor = instrument.hex;
+    ctx.arc(0, 0, 26, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(-t * 1.6);
+    ctx.beginPath();
+    ctx.setLineDash([6, 6]);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = instrument.glow + '0.7)';
+    ctx.shadowBlur = 10;
+    ctx.shadowColor = instrument.hex;
+    ctx.arc(0, 0, 15, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.beginPath();
+    ctx.setLineDash([]);
+    ctx.fillStyle = instrument.glow + '0.35)';
+    ctx.shadowBlur = 20;
+    ctx.shadowColor = instrument.hex;
+    ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+    ctx.fill();
   }
   ctx.restore();
 }
@@ -5921,6 +6312,9 @@ function exitToTitle() {
   STATE.song = null;
   STATE.eraseMode = false;
   STATE.eraseArmed = false;
+  STATE.portals = null;
+  STATE.portalThreads = [];
+  STATE.activePortalThread = null;
   document.getElementById('erase-button').classList.remove('active');
   hideTutorialHint(true); // in-wave UI must never linger over the title screen
   document.getElementById('achievement-toast').classList.remove('visible');
@@ -6536,6 +6930,7 @@ function render() {
   applyCameraTransform();
 
   drawBarriers();
+  drawPortals();
 
   for (const line of STATE.lines) {
     drawFadingLine(line);
