@@ -252,7 +252,10 @@ test('stars reset on a fresh wave, a connection line never fully disappears, and
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
-  await page.click('body');
+  // See the equivalent comment further down this file (the long-winding-
+  // connection test) -- a generic `click('body')` risks landing on the
+  // title screen's own UI now that it has more rows than it used to.
+  await page.mouse.click(200, 700);
   await page.waitForTimeout(300);
 
   const freshStars = await page.evaluate(() => { startWave(1); return STATE.stars.length; });
@@ -320,7 +323,13 @@ test('a long, winding connection settles within a fixed time regardless of point
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
-  await page.click('body');
+  // A generic `click('body')` used to land on empty canvas space below
+  // the title screen's centered content block, but that block has since
+  // grown a Start Game row -- clicking well below it (the same coordinate
+  // other tests already use to reliably hit real canvas, not a UI
+  // element) avoids depending on exactly how tall that block happens to
+  // be on any given change.
+  await page.mouse.click(200, 700);
   await page.waitForTimeout(300);
 
   const setup = await page.evaluate(() => {
@@ -605,14 +614,13 @@ test('the HINT button appears once playing, flashes unconnected dots white at th
 
   await expect(page.locator('#hint-button')).toBeHidden();
   await expect(page.locator('#hint-button')).toHaveText('HINT');
-  // HINT is free/functional in Relaxed only (see the difficulty-gating
-  // test below) -- select it explicitly so this test still covers the
-  // actual pulse/sound mechanics regardless of the default difficulty.
+  // HINT is free/functional in Relaxed and Normal, not Intense (see the
+  // difficulty-gating tests below) -- select Relaxed explicitly so this
+  // test covers the actual pulse/sound mechanics regardless of default.
   await page.click('.difficulty-btn[data-difficulty="relaxed"]');
   await page.mouse.click(200, 700);
   await page.waitForTimeout(1000);
   await expect(page.locator('#hint-button')).toBeVisible();
-  await expect(page.locator('#hint-button')).not.toHaveClass(/locked/);
 
   const config = await page.evaluate(() => {
     for (const d of STATE.dots) d.connected = false; // clean signal, regardless of what this wave generated
@@ -657,7 +665,7 @@ test('the HINT button appears once playing, flashes unconnected dots white at th
   expect(errors).toEqual([]);
 });
 
-test('HINT is free in Relaxed, visible-but-locked in Normal, and hidden entirely in Intense', async ({ page }) => {
+test('HINT is free and functional in both Relaxed and Normal', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
@@ -667,23 +675,43 @@ test('HINT is free in Relaxed, visible-but-locked in Normal, and hidden entirely
   await page.mouse.click(200, 700);
   await page.waitForTimeout(1000);
   await expect(page.locator('#hint-button')).toBeVisible();
-  await expect(page.locator('#hint-button')).toHaveClass(/locked/);
-  // The button-side .locked class is just visual -- confirm the action
-  // itself is also guarded (triggerHintPulse), so nothing could bypass
-  // the lock by calling it directly.
-  const lockedNoOp = await page.evaluate(() => {
-    triggerHintPulse();
-    return STATE.hintPulse === null;
-  });
-  expect(lockedNoOp).toBe(true);
 
-  await page.evaluate(() => window.__lumina.getState()); // sanity: page still alive
-  await page.reload();
+  const fired = await page.evaluate(() => {
+    for (const d of STATE.dots) d.connected = false;
+    triggerHintPulse();
+    return STATE.hintPulse !== null;
+  });
+  expect(fired).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('HINT stays visible in Intense but shows an explanatory toast instead of firing a hint', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
   await page.waitForTimeout(300);
   await page.click('.difficulty-btn[data-difficulty="intense"]');
   await page.mouse.click(200, 700);
   await page.waitForTimeout(1000);
-  await expect(page.locator('#hint-button')).toBeHidden();
+  await expect(page.locator('#hint-button')).toBeVisible();
+
+  const result = await page.evaluate(() => {
+    triggerHintPulse();
+    return {
+      hintFired: STATE.hintPulse !== null,
+      toastVisible: document.getElementById('hint-toast').classList.contains('visible'),
+      toastText: document.getElementById('hint-toast').textContent,
+    };
+  });
+  expect(result.hintFired).toBe(false);
+  expect(result.toastVisible).toBe(true);
+  expect(result.toastText.length).toBeGreaterThan(0);
+
+  // Stays up long enough to actually read, then clears itself.
+  await page.waitForTimeout(2000);
+  await expect(page.locator('#hint-toast')).toHaveClass(/visible/);
+  await page.waitForTimeout(2500);
+  await expect(page.locator('#hint-toast')).not.toHaveClass(/visible/);
   expect(errors).toEqual([]);
 });
 
@@ -3162,6 +3190,41 @@ test('the Share row is title-screen only, and the postcard row never lingers int
   });
   const afterAdvance = await page.evaluate(() => document.getElementById('postcard-row').classList.contains('visible'));
   expect(afterAdvance).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('the title-screen Start Game button starts the game the same way a plain tap does, and is title-only', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await expect(page.locator('#start-game-button')).toBeVisible();
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(1000);
+
+  const state = await page.evaluate(() => ({ phase: STATE.phase, wave: STATE.wave, difficulty: STATE.difficulty }));
+  expect(state.phase).toBe('PLAYING');
+  expect(state.wave).toBe(1);
+  expect(state.difficulty).toBe('normal'); // honors whatever was picked before starting
+  await expect(page.locator('#start-game-row')).toBeHidden();
+  expect(errors).toEqual([]);
+});
+
+test('the top button row reads ERASE, HINT, HELP, PAUSE left to right', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.click('.difficulty-btn[data-difficulty="relaxed"]'); // only difficulty where ERASE also shows
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(1000);
+
+  const order = await page.evaluate(() =>
+    [...document.getElementById('top-buttons-row').children].map(el => el.id)
+  );
+  expect(order).toEqual(['erase-button', 'hint-button', 'help-button', 'pause-button']);
   expect(errors).toEqual([]);
 });
 

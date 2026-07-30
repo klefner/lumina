@@ -1045,8 +1045,32 @@ function handleLoadGameFromTitle() {
   startWave(resume.wave);
 }
 
+// Shared by a plain tap anywhere on the title screen (onInputStart) and
+// the explicit Start Game button (setupTitleLoadListeners) -- testers
+// reported not realizing a tap alone was enough, so the button exists
+// purely for discoverability; both paths do exactly the same thing.
+function startGameFromTitle() {
+  initAudio();
+  hideMessage();
+  // A plain tap/click only resumes automatically when the player has
+  // opted into that via the Auto Load Last Save checkbox -- otherwise it
+  // always starts wave 1, same as if there were no save at all. An
+  // existing save is still reachable through the explicit Load Game
+  // button (see handleLoadGameFromTitle), just never picked up silently.
+  if (STATE.autoLoadEnabled && STATE.pendingResume) {
+    const resume = STATE.pendingResume;
+    STATE.pendingResume = null;
+    STATE.score = resume.score;
+    startWave(resume.wave);
+  } else {
+    STATE.pendingResume = null;
+    startWave(1);
+  }
+}
+
 function setupTitleLoadListeners() {
   document.getElementById('title-load-button').addEventListener('click', handleLoadGameFromTitle);
+  document.getElementById('start-game-button').addEventListener('click', startGameFromTitle);
   document.getElementById('autoload-checkbox').addEventListener('change', (e) => {
     STATE.autoLoadEnabled = e.target.checked;
     saveAutoLoadSetting(STATE.autoLoadEnabled);
@@ -2523,16 +2547,30 @@ const HINT_PULSE_CONFIG = {
   CYCLES: 5,
 };
 
-// Free in Relaxed only (see updateWaveDisplay for the button's own
-// visible/locked states) -- Normal shows the button but locked, pending
-// a future ad-unlock; Intense hides it entirely, so there's nothing to
-// early-return for there in the first place. Guarded here too (not just
-// via the button's own disabled look) so nothing else that might call
-// this directly could bypass the gate.
+// Free in Relaxed and Normal (see updateWaveDisplay for the button's own
+// visibility, which stays shown even in Intense now so there's something
+// to tap that explains why nothing happens, rather than the button just
+// disappearing without a word). Guarded here too, not just via the
+// button's own look, so nothing else that might call this directly could
+// bypass the Intense gate.
 function triggerHintPulse() {
-  if (STATE.difficulty !== 'relaxed') return;
+  if (STATE.difficulty === 'intense') {
+    showHintToast('Hints: Relaxed & Normal Only');
+    return;
+  }
   STATE.hintPulse = { startTime: performance.now() };
   playHintChime();
+}
+
+// Mirrors showShareToast's fade-in/auto-hide pattern, just with a longer
+// visible window -- this one is a short explanatory sentence a player
+// needs to actually read, not a one-glance confirmation word.
+function showHintToast(text) {
+  const toast = document.getElementById('hint-toast');
+  toast.textContent = text;
+  toast.classList.add('visible');
+  clearTimeout(showHintToast._timer);
+  showHintToast._timer = setTimeout(() => toast.classList.remove('visible'), 4200);
 }
 
 // A short, generic confirmation ping to go with the hint flash --
@@ -3206,21 +3244,7 @@ function onInputStart(e) {
   initAudio();
 
   if (STATE.phase === 'TITLE') {
-    hideMessage();
-    // A plain tap only resumes automatically when the player has opted
-    // into that via the Auto Load Last Save checkbox — otherwise it
-    // always starts wave 1, same as if there were no save at all. An
-    // existing save is still reachable through the explicit Load Game
-    // button (see handleLoadGameFromTitle), just never picked up silently.
-    if (STATE.autoLoadEnabled && STATE.pendingResume) {
-      const resume = STATE.pendingResume;
-      STATE.pendingResume = null;
-      STATE.score = resume.score;
-      startWave(resume.wave);
-    } else {
-      STATE.pendingResume = null;
-      startWave(1);
-    }
+    startGameFromTitle();
     return;
   }
 
@@ -6013,6 +6037,7 @@ function showMessage(title, subtitle, opts) {
   document.getElementById('difficulty-selector').classList.toggle('visible', isTitleScreen);
   document.getElementById('title-load-row').classList.toggle('visible', isTitleScreen);
   document.getElementById('share-row').classList.toggle('visible', isTitleScreen);
+  document.getElementById('start-game-row').classList.toggle('visible', isTitleScreen);
   if (isTitleScreen) {
     refreshDifficultyButtons();
     refreshTitleLoadRow();
@@ -6029,6 +6054,7 @@ function hideMessage() {
   document.getElementById('difficulty-selector').classList.remove('visible');
   document.getElementById('title-load-row').classList.remove('visible');
   document.getElementById('share-row').classList.remove('visible');
+  document.getElementById('start-game-row').classList.remove('visible');
   document.getElementById('postcard-row').classList.remove('visible');
 }
 
@@ -6404,12 +6430,11 @@ function updateWaveDisplay() {
   // intentionally absent one. Hidden here instead, at the same place
   // every phase transition already runs through.
   document.getElementById('pause-button').classList.toggle('visible', STATE.phase !== 'TITLE');
-  // Free-and-functional in Relaxed, visible-but-locked in Normal (pending a
-  // future ad-unlock), hidden entirely in Intense -- see triggerHintPulse
-  // for the matching action-side guard.
-  const hintButton = document.getElementById('hint-button');
-  hintButton.classList.toggle('visible', STATE.phase !== 'TITLE' && STATE.difficulty !== 'intense');
-  hintButton.classList.toggle('locked', STATE.difficulty === 'normal');
+  // Free and functional in both Relaxed and Normal. Still shown (not
+  // hidden) in Intense too -- see triggerHintPulse, which explains why via
+  // a toast on tap instead of silently doing nothing, rather than the
+  // button just disappearing without a word.
+  document.getElementById('hint-button').classList.toggle('visible', STATE.phase !== 'TITLE');
   // Unlike HINT/pause, gated to PLAYING specifically, not just "not TITLE"
   // -- during WAVE_COMPLETE, canvas taps advance to the next wave before
   // ever reaching the erase-mode branch in onInputStart, so a lit ERASE
