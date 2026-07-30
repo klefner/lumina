@@ -662,6 +662,139 @@ html, body {
   opacity: 1;
 }
 
+/* The postcard preview -- shared by the WAVE_COMPLETE "Share This Wave"
+   button, the every-10th-wave milestone intermission (see
+   showMilestoneIntermission), and the pause menu's "Share Postcard" button.
+   One overlay, one image, one real link -- whichever entry point opened it. */
+#postcard-preview-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.78);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.3s ease;
+  z-index: 40;
+}
+#postcard-preview-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+#postcard-preview-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: min(90vw, 460px);
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 30px 22px 22px;
+  background: rgba(12, 12, 18, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  box-shadow: 0 0 60px rgba(0, 0, 0, 0.6);
+}
+
+/* Only non-empty when opened from the milestone intermission (see
+   showMilestoneIntermission) -- the ordinary "share what I just drew" flow
+   from the WAVE_COMPLETE button and the pause menu has nothing to
+   congratulate, so this just collapses out of the way for those. */
+#postcard-preview-title {
+  font-family: 'Courier New', monospace;
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  text-align: center;
+  color: rgba(255, 214, 120, 0.95);
+  text-shadow: 0 0 16px rgba(255, 214, 120, 0.4);
+}
+#postcard-preview-title:empty {
+  display: none;
+}
+
+#postcard-preview-img {
+  width: 100%;
+  border-radius: 4px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+}
+
+/* The one actual clickable link in this whole flow -- everything else
+   ("play free at...") used to be static, hard-to-read text baked into the
+   shared image itself. This is a real <a>, tappable in-app whether or not
+   the player ever shares or downloads anything. */
+#postcard-preview-link {
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: rgba(140, 200, 255, 0.95);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+#postcard-preview-link:hover {
+  color: rgba(180, 220, 255, 1);
+}
+
+#postcard-preview-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+#postcard-preview-share {
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 214, 120, 0.9);
+  background: rgba(255, 214, 120, 0.08);
+  border: 1px solid rgba(255, 214, 120, 0.35);
+  border-radius: 20px;
+  padding: 9px 18px;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+#postcard-preview-share:hover {
+  background: rgba(255, 214, 120, 0.16);
+}
+
+#postcard-preview-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+#postcard-preview-close:hover, #postcard-preview-close:active {
+  color: rgba(255, 255, 255, 0.95);
+}
+
+#postcard-preview-toast {
+  text-align: center;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: rgba(140, 255, 180, 0.85);
+  min-height: 1.2em;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+#postcard-preview-toast.visible {
+  opacity: 1;
+}
+
 /* Small and dim on purpose -- the build stamp is a reference for
    support/debugging (us checking what a player is actually running),
    not something a player needs to notice while playing. */

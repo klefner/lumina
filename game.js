@@ -4374,6 +4374,11 @@ function checkWaveComplete() {
   STATE.lastWavePostcardLabels = earnedThisWave.map(e => e.label);
   document.getElementById('postcard-row').classList.toggle('visible', earnedThisWave.length > 0);
 
+  // Every 10th wave gets its own skippable congrats-and-postcard beat, on
+  // top of (not instead of) the achievement-gated "Share This Wave" row
+  // above -- see showMilestoneIntermission.
+  if (isMilestoneWave(STATE.wave)) showMilestoneIntermission();
+
   // The song keeps looping (already playing in full) for as long as the
   // player lingers here — there's no auto-advance. Only a tap, click, or
   // key press moves on to the next wave.
@@ -4456,6 +4461,7 @@ function startWave(waveNumber) {
   STATE.portals = null;
   STATE.portalThreads = [];
   STATE.activePortalThread = null;
+  closePostcardPreview(); // a milestone postcard from the wave just finished must never linger into the next one
   for (const entry of STATE.connectionPraise) entry.el.remove();
   STATE.connectionPraise = [];
   STATE.spaceObjects = [];
@@ -6317,6 +6323,7 @@ function exitToTitle() {
   STATE.activePortalThread = null;
   document.getElementById('erase-button').classList.remove('active');
   hideTutorialHint(true); // in-wave UI must never linger over the title screen
+  closePostcardPreview(); // a milestone/pause postcard must never linger over the title screen either
   document.getElementById('achievement-toast').classList.remove('visible');
   STATE.achievementQueue = [];
   STATE.achievementToastActive = false;
@@ -6501,70 +6508,197 @@ async function shareGameLink() {
 }
 
 const POSTCARD_CONFIG = {
-  BASE_BANNER_HEIGHT: 96, // at REFERENCE_WIDTH; scaled with the actual canvas below
+  BASE_WIDTH: 760, // at scale 1; scaled with the actual canvas below
+  BASE_HEIGHT: 500,
   REFERENCE_WIDTH: 500,
   MIN_SCALE: 0.75,
   MAX_SCALE: 1.7,
 };
 
-// Composites the just-completed board -- exactly as the player sees it at
-// the reveal, stars and all -- with a branded banner naming what was
-// earned. A raw canvas.toDataURL() screenshot alone would carry no
-// context once shared outside the game (no title, no score, nothing
-// saying what game this even is), which is the whole point of a postcard
-// over a plain screenshot.
+// Ten cutesy "wish you were here" lines, picked at random each time a
+// postcard is built -- some reference the actual wave number, most don't,
+// so the same phrasing doesn't reappear predictably wave after wave.
+const POSTCARD_MESSAGES = [
+  () => 'Wish you were here making music with me!',
+  () => 'Having a stellar time out here.',
+  (w) => `Sending you a signal all the way from Wave ${w}.`,
+  () => 'The stars keep asking me to stay a little longer.',
+  () => 'Found a new song hiding between the dots.',
+  () => 'This nebula has better acoustics than my shower.',
+  () => 'Connecting dots, making melodies, missing you.',
+  () => 'Discovered a constellation. Named it after you.',
+  () => 'Greetings from somewhere beautifully weird.',
+  () => 'Come play — the music out here is worth the trip.',
+];
+
+function pickPostcardMessage() {
+  const fn = POSTCARD_MESSAGES[Math.floor(Math.random() * POSTCARD_MESSAGES.length)];
+  return fn(STATE.wave);
+}
+
+// Simple word-wrap-and-draw for the postcard's own canvas context --
+// distinct from the module-level wrapCanvasText(text, maxWidth) used by
+// fitFactText, which wraps against the main game `ctx` and returns lines
+// rather than drawing them itself.
+function wrapPostcardText(ctx, text, x, y, maxWidth, lineHeight) {
+  const words = text.split(' ');
+  let line = '';
+  let cy = y;
+  for (const word of words) {
+    const test = line ? `${line} ${word}` : word;
+    if (line && ctx.measureText(test).width > maxWidth) {
+      ctx.fillText(line, x, cy);
+      line = word;
+      cy += lineHeight;
+    } else {
+      line = test;
+    }
+  }
+  if (line) ctx.fillText(line, x, cy);
+  return cy + lineHeight; // baseline of the next free line, for anything stacked below
+}
+
+// object-fit: cover, but for a 2D canvas drawImage -- crops the source to
+// the destination's aspect ratio instead of squashing it.
+function drawCoverImage(ctx, img, x, y, w, h) {
+  const srcW = img.width, srcH = img.height;
+  const srcRatio = srcW / srcH;
+  const dstRatio = w / h;
+  let sx, sy, sw, sh;
+  if (srcRatio > dstRatio) {
+    sh = srcH; sw = srcH * dstRatio; sx = (srcW - sw) / 2; sy = 0;
+  } else {
+    sw = srcW; sh = srcW / dstRatio; sx = 0; sy = (srcH - sh) / 2;
+  }
+  ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
+}
+
+// A small dashed-edge "stamp" in the corner, purely decorative -- part of
+// selling the old-timey travel-postcard bit.
+function drawPostcardStamp(ctx, x, y, size, scale) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.strokeStyle = 'rgba(60,50,40,0.5)';
+  ctx.setLineDash([4 * scale, 3 * scale]);
+  ctx.lineWidth = Math.max(1, 1.5 * scale);
+  ctx.strokeRect(0, 0, size, size * 1.2);
+  ctx.setLineDash([]);
+  ctx.fillStyle = 'rgba(255,214,120,0.9)';
+  ctx.beginPath();
+  ctx.arc(size / 2, size * 0.5, size * 0.22, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(90,80,140,0.9)';
+  ctx.textAlign = 'center';
+  ctx.font = `700 ${Math.round(9 * scale)}px "Courier New", monospace`;
+  ctx.fillText('LUMINA', size / 2, size * 1.05);
+  ctx.restore();
+}
+
+// Composites an actual old-timey space postcard: a cream card with a
+// handwritten-style note and a small stamp on the left, and the
+// just-played board -- exactly as the player saw it, stars and all --
+// pasted on as a slightly askew "photo" on the right. A raw
+// canvas.toDataURL() screenshot alone would carry no context once shared
+// outside the game (no title, no way to play it), which is the whole
+// point of a postcard over a plain screenshot.
 function buildWavePostcard() {
   const scale = Math.max(POSTCARD_CONFIG.MIN_SCALE, Math.min(POSTCARD_CONFIG.MAX_SCALE, canvas.width / POSTCARD_CONFIG.REFERENCE_WIDTH));
-  const bannerHeight = Math.round(POSTCARD_CONFIG.BASE_BANNER_HEIGHT * scale);
+  const W = Math.round(POSTCARD_CONFIG.BASE_WIDTH * scale);
+  const H = Math.round(POSTCARD_CONFIG.BASE_HEIGHT * scale);
 
   const pc = document.createElement('canvas');
-  pc.width = canvas.width;
-  pc.height = canvas.height + bannerHeight;
+  pc.width = W;
+  pc.height = H;
   const pctx = pc.getContext('2d');
 
-  pctx.fillStyle = '#000';
-  pctx.fillRect(0, 0, pc.width, pc.height);
-  pctx.drawImage(canvas, 0, 0);
+  // Cream card stock with a thin ink border, like something bought at a
+  // gift shop and never quite trimmed straight.
+  pctx.fillStyle = '#f6f1e2';
+  pctx.fillRect(0, 0, W, H);
+  pctx.strokeStyle = 'rgba(60,50,40,0.35)';
+  pctx.lineWidth = Math.max(1, 2 * scale);
+  pctx.strokeRect(pctx.lineWidth, pctx.lineWidth, W - pctx.lineWidth * 2, H - pctx.lineWidth * 2);
 
-  const bannerY = canvas.height;
-  const fade = pctx.createLinearGradient(0, bannerY - 24 * scale, 0, bannerY);
-  fade.addColorStop(0, 'rgba(5,5,10,0)');
-  fade.addColorStop(1, 'rgba(5,5,10,0.92)');
-  pctx.fillStyle = fade;
-  pctx.fillRect(0, bannerY - 24 * scale, pc.width, 24 * scale);
-  pctx.fillStyle = 'rgba(5,5,10,0.92)';
-  pctx.fillRect(0, bannerY, pc.width, bannerHeight);
+  // Title, top-left, in a serif hand -- the one bit of "branding" on the card.
+  pctx.textAlign = 'left';
+  pctx.fillStyle = '#2b2a28';
+  pctx.font = `700 ${Math.round(34 * scale)}px Georgia, 'Times New Roman', serif`;
+  pctx.fillText('Lumina', 26 * scale, 50 * scale);
+  pctx.strokeStyle = 'rgba(60,50,40,0.25)';
+  pctx.lineWidth = Math.max(1, scale);
+  pctx.beginPath();
+  pctx.moveTo(26 * scale, 62 * scale);
+  pctx.lineTo(180 * scale, 62 * scale);
+  pctx.stroke();
 
-  pctx.textAlign = 'center';
-  pctx.fillStyle = 'rgba(255,255,255,0.92)';
-  pctx.font = `700 ${Math.round(22 * scale)}px "Courier New", monospace`;
-  pctx.fillText('LUMINA', pc.width / 2, bannerY + 34 * scale);
+  // The handwritten-looking note -- a generic cursive/script stack so it
+  // reads as "someone actually wrote this" on whatever OS renders it.
+  const message = pickPostcardMessage();
+  pctx.fillStyle = '#33475b';
+  pctx.font = `${Math.round(28 * scale)}px 'Segoe Script', 'Bradley Hand', 'Comic Sans MS', cursive`;
+  wrapPostcardText(pctx, message, 26 * scale, 130 * scale, 300 * scale, 36 * scale);
 
-  const labels = STATE.lastWavePostcardLabels.length ? STATE.lastWavePostcardLabels.join('  •  ') : `Wave ${STATE.wave} Cleared`;
-  pctx.fillStyle = 'rgba(255,214,120,0.95)';
+  // Caption + the "play free" line at the bottom-left, sized to actually
+  // read, not the illegible corner text this replaces.
+  const labels = STATE.lastWavePostcardLabels.length
+    ? STATE.lastWavePostcardLabels.join(' • ')
+    : (STATE.phase === 'WAVE_COMPLETE' ? `Wave ${STATE.wave} Cleared` : `Wave ${STATE.wave}`);
+  pctx.fillStyle = 'rgba(43,42,40,0.7)';
   pctx.font = `${Math.round(13 * scale)}px "Courier New", monospace`;
-  pctx.fillText(`Wave ${STATE.wave} — ${labels}`, pc.width / 2, bannerY + 58 * scale);
+  pctx.fillText(`${labels} · ${STATE.score} pts`, 26 * scale, H - 56 * scale);
+  pctx.fillStyle = 'rgba(70,110,190,0.95)';
+  pctx.font = `700 ${Math.round(14 * scale)}px "Courier New", monospace`;
+  pctx.fillText('Play free at lumina-8f0.pages.dev', 26 * scale, H - 32 * scale);
 
-  pctx.fillStyle = 'rgba(255,255,255,0.4)';
-  pctx.font = `${Math.round(10 * scale)}px "Courier New", monospace`;
-  pctx.fillText(`${STATE.score} pts — play free at lumina-8f0.pages.dev`, pc.width / 2, bannerY + 80 * scale);
+  drawPostcardStamp(pctx, W - 96 * scale, 20 * scale, 70 * scale, scale);
+
+  // The "photo": the actual just-played board, pasted on smaller than the
+  // card itself with a white polaroid-style border, tilted a few degrees
+  // off-square so it looks stuck on rather than printed.
+  const photoW = W * 0.46;
+  const photoH = H * 0.62;
+  const photoX = W - photoW - 34 * scale;
+  const photoY = H - photoH - 30 * scale;
+  const angle = (Math.random() < 0.5 ? -1 : 1) * (2 + Math.random() * 3) * Math.PI / 180;
+  const borderPad = 10 * scale;
+
+  pctx.save();
+  pctx.translate(photoX + photoW / 2, photoY + photoH / 2);
+  pctx.rotate(angle);
+  pctx.shadowColor = 'rgba(0,0,0,0.35)';
+  pctx.shadowBlur = 14 * scale;
+  pctx.shadowOffsetY = 6 * scale;
+  pctx.fillStyle = '#fff';
+  pctx.fillRect(-photoW / 2 - borderPad, -photoH / 2 - borderPad, photoW + borderPad * 2, photoH + borderPad * 2);
+  pctx.shadowColor = 'transparent';
+  // The live game canvas reads as black on-screen only because the page
+  // body behind it is black -- its own pixels are mostly transparent
+  // (unlit space between stars), which would otherwise show through as
+  // the postcard's white card stock. Paint real black behind it first.
+  pctx.fillStyle = '#000';
+  pctx.fillRect(-photoW / 2, -photoH / 2, photoW, photoH);
+  drawCoverImage(pctx, canvas, -photoW / 2, -photoH / 2, photoW, photoH);
+  pctx.restore();
 
   return pc;
 }
 
 // Attempts the Web Share API with an actual image file attached -- the
 // only way "share" reads as sharing THIS wave's postcard rather than just
-// the game's link. Returns false (never throws) for anything short of a
-// clean, completed share, including the player cancelling their own
-// share sheet, so the caller can fall back to a plain download.
-async function tryShareCanvasImage(canvasEl, filename, title, text) {
+// the game's link. Passing `url` alongside the file lets share targets
+// that support it (e.g. messaging apps) surface it as a real tappable
+// link, not just pixels baked into the image. Returns false (never
+// throws) for anything short of a clean, completed share, including the
+// player cancelling their own share sheet, so the caller can fall back to
+// a plain download.
+async function tryShareCanvasImage(canvasEl, filename, title, text, url) {
   if (!navigator.share || !navigator.canShare) return false;
   try {
     const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
     if (!blob) return false;
     const file = new File([blob], filename, { type: 'image/png' });
     if (!navigator.canShare({ files: [file] })) return false;
-    await navigator.share({ files: [file], title, text });
+    await navigator.share({ files: [file], title, text, url });
     return true;
   } catch (e) {
     return false;
@@ -6578,23 +6712,87 @@ function downloadCanvasImage(canvasEl, filename) {
   link.click();
 }
 
+function showPostcardToast(text) {
+  const toast = document.getElementById('postcard-preview-toast');
+  toast.textContent = text;
+  toast.classList.add('visible');
+  setTimeout(() => toast.classList.remove('visible'), 1800);
+}
+
+// The one live postcard canvas behind whichever preview is currently open
+// (see openPostcardPreview) -- built once per open so Share and the
+// preview <img> both point at the exact same image, not two independent
+// (and possibly differently-randomized) renders.
+let activePostcardCanvas = null;
+
+// Shared by the WAVE_COMPLETE "Share This Wave" button, the pause menu's
+// "Share Postcard" button, and the every-10th-wave milestone intermission
+// (see showMilestoneIntermission) -- one preview overlay with a real,
+// tappable play link, rather than each entry point firing the share sheet
+// blind the way the old single-button flow did.
+function openPostcardPreview(opts) {
+  const title = (opts && opts.title) || '';
+  activePostcardCanvas = buildWavePostcard();
+  document.getElementById('postcard-preview-title').textContent = title;
+  document.getElementById('postcard-preview-img').src = activePostcardCanvas.toDataURL('image/png');
+  document.getElementById('postcard-preview-overlay').classList.add('visible');
+}
+
+function closePostcardPreview() {
+  document.getElementById('postcard-preview-overlay').classList.remove('visible');
+}
+
 async function shareOrSaveWavePostcard() {
-  const pc = buildWavePostcard();
+  const pc = activePostcardCanvas || buildWavePostcard();
   const filename = `lumina-wave-${STATE.wave}.png`;
   const shareText = `I just hit Wave ${STATE.wave} in Lumina! ${STATE.lastWavePostcardLabels.join(', ')}`.trim();
 
-  const shared = await tryShareCanvasImage(pc, filename, 'Lumina', shareText);
+  const shared = await tryShareCanvasImage(pc, filename, 'Lumina', shareText, CANONICAL_SHARE_URL);
   if (shared) {
-    showShareToast('Shared!');
+    showPostcardToast('Shared!');
     return;
   }
   downloadCanvasImage(pc, filename);
-  showShareToast('Postcard Saved');
+  showPostcardToast('Postcard Saved');
+}
+
+// Every 10th wave gets a skippable congratulatory beat before the normal
+// WAVE_COMPLETE tap-to-advance prompt -- same preview overlay as above,
+// just auto-opened with a random congrats line instead of waiting for a
+// button press. "Skip" is just the overlay's own close button; the
+// ordinary WAVE_COMPLETE screen underneath is untouched and still there
+// once it's dismissed.
+const MILESTONE_INTERVAL = 10;
+
+function isMilestoneWave(wave) {
+  return wave > 0 && wave % MILESTONE_INTERVAL === 0;
+}
+
+const MILESTONE_CONGRATS = [
+  (w) => `Wave ${w} down! You're on a roll out here.`,
+  (w) => `${w} waves cleared — the galaxy's impressed.`,
+  (w) => `Milestone unlocked: Wave ${w}!`,
+  (w) => `Look at you go — Wave ${w} complete!`,
+];
+
+function pickMilestoneCongrats(wave) {
+  const fn = MILESTONE_CONGRATS[Math.floor(Math.random() * MILESTONE_CONGRATS.length)];
+  return fn(wave);
+}
+
+function showMilestoneIntermission() {
+  openPostcardPreview({ title: pickMilestoneCongrats(STATE.wave) });
 }
 
 function setupShareListeners() {
   document.getElementById('share-game-button').addEventListener('click', shareGameLink);
-  document.getElementById('postcard-button').addEventListener('click', shareOrSaveWavePostcard);
+  document.getElementById('postcard-button').addEventListener('click', () => openPostcardPreview());
+  document.getElementById('pause-postcard').addEventListener('click', () => openPostcardPreview());
+  document.getElementById('postcard-preview-close').addEventListener('click', closePostcardPreview);
+  document.getElementById('postcard-preview-overlay').addEventListener('click', (e) => {
+    if (e.target.id === 'postcard-preview-overlay') closePostcardPreview(); // tapping the backdrop, not the panel
+  });
+  document.getElementById('postcard-preview-share').addEventListener('click', shareOrSaveWavePostcard);
 }
 
 function showTutorialHint(waveNumber) {

@@ -34,6 +34,7 @@
     <div id="pause-panel">
       <div id="pause-title">PAUSED</div>
       <button class="pause-menu-item" id="pause-resume">Resume</button>
+      <button class="pause-menu-item" id="pause-postcard">Share Postcard</button>
       <button class="pause-menu-item" id="pause-save">Save Game</button>
       <div id="save-tip">Tip: you can save your progress here!</div>
       <button class="pause-menu-item" id="pause-load">Load Game</button>
@@ -64,6 +65,18 @@
   <div id="achievement-toast">
     <div id="achievement-badge"></div>
     <div id="achievement-label"></div>
+  </div>
+  <div id="postcard-preview-overlay">
+    <div id="postcard-preview-panel">
+      <button id="postcard-preview-close" aria-label="Close">&times;</button>
+      <div id="postcard-preview-title"></div>
+      <img id="postcard-preview-img" alt="Your Lumina postcard">
+      <a id="postcard-preview-link" href="https://lumina-8f0.pages.dev/" target="_blank" rel="noopener">Play Lumina free &rarr;</a>
+      <div id="postcard-preview-actions">
+        <button id="postcard-preview-share">Share / Save Image</button>
+      </div>
+      <div id="postcard-preview-toast"></div>
+    </div>
   </div>
   <div id="connection-praise-layer" aria-hidden="true"></div>
   <div id="message-overlay">

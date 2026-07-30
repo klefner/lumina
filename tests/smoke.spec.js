@@ -3507,7 +3507,7 @@ test('the top button row reads ERASE, HINT, HELP, PAUSE left to right', async ({
   expect(errors).toEqual([]);
 });
 
-test('buildWavePostcard composites the game canvas with a banner sized to the canvas width', async ({ page }) => {
+test('buildWavePostcard composites a postcard-shaped card sized independently of the game canvas', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
@@ -3517,15 +3517,35 @@ test('buildWavePostcard composites the game canvas with a banner sized to the ca
     STATE.score = 4200;
     STATE.lastWavePostcardLabels = ['New Highest Wave'];
     const pc = buildWavePostcard();
+    const scale = Math.max(POSTCARD_CONFIG.MIN_SCALE, Math.min(POSTCARD_CONFIG.MAX_SCALE, canvas.width / POSTCARD_CONFIG.REFERENCE_WIDTH));
     return {
       width: pc.width,
-      canvasWidth: canvas.width,
-      tallerThanGameCanvas: pc.height > canvas.height,
+      height: pc.height,
+      expectedWidth: Math.round(POSTCARD_CONFIG.BASE_WIDTH * scale),
+      expectedHeight: Math.round(POSTCARD_CONFIG.BASE_HEIGHT * scale),
     };
   });
 
-  expect(result.width).toBe(result.canvasWidth);
-  expect(result.tallerThanGameCanvas).toBe(true);
+  expect(result.width).toBe(result.expectedWidth);
+  expect(result.height).toBe(result.expectedHeight);
+  expect(errors).toEqual([]);
+});
+
+test('buildWavePostcard picks a message from the fixed pool every time, and randomizes across calls', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const messages = await page.evaluate(() => {
+    STATE.wave = 7;
+    const picks = new Set();
+    for (let i = 0; i < 40; i++) picks.add(pickPostcardMessage());
+    return [...picks];
+  });
+
+  expect(messages.length).toBeGreaterThan(1); // genuinely randomizes, not the same line every time
+  const pool = await page.evaluate(() => POSTCARD_MESSAGES.map(fn => fn(7)));
+  for (const m of messages) expect(pool).toContain(m);
   expect(errors).toEqual([]);
 });
 
@@ -3543,20 +3563,101 @@ test('shareOrSaveWavePostcard shares a file when the browser supports it, and fa
     STATE.lastWavePostcardLabels = ['Best Wave Score'];
     await shareOrSaveWavePostcard();
     return {
-      toastText: document.getElementById('share-toast').textContent,
+      toastText: document.getElementById('postcard-preview-toast').textContent,
       sharedFileType: window.__lastShareData && window.__lastShareData.files && window.__lastShareData.files[0].type,
+      sharedUrl: window.__lastShareData && window.__lastShareData.url,
     };
   });
   expect(shareSupported.toastText).toBe('Shared!');
   expect(shareSupported.sharedFileType).toBe('image/png');
+  expect(shareSupported.sharedUrl).toBe('https://lumina-8f0.pages.dev/');
 
   const shareUnsupported = await page.evaluate(async () => {
     navigator.share = undefined;
     navigator.canShare = undefined;
     await shareOrSaveWavePostcard();
-    return document.getElementById('share-toast').textContent;
+    return document.getElementById('postcard-preview-toast').textContent;
   });
   expect(shareUnsupported).toBe('Postcard Saved');
+  expect(errors).toEqual([]);
+});
+
+test('the postcard preview overlay carries a real, tappable link to the game -- not just static text', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await page.evaluate(() => {
+    startWave(9);
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete(); // below the achievement gate, but the button still exists for this check
+    openPostcardPreview();
+  });
+
+  await expect(page.locator('#postcard-preview-overlay')).toHaveClass(/visible/);
+  const link = page.locator('#postcard-preview-link');
+  await expect(link).toHaveAttribute('href', 'https://lumina-8f0.pages.dev/');
+  await expect(page.locator('#postcard-preview-img')).toHaveAttribute('src', /^data:image\/png/);
+
+  await page.locator('#postcard-preview-close').click();
+  await expect(page.locator('#postcard-preview-overlay')).not.toHaveClass(/visible/);
+  expect(errors).toEqual([]);
+});
+
+test('every 10th wave opens a skippable milestone postcard intermission, and other waves do not', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const nonMilestone = await page.evaluate(() => {
+    startWave(11);
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete();
+    return document.getElementById('postcard-preview-overlay').classList.contains('visible');
+  });
+  expect(nonMilestone).toBe(false);
+
+  const milestone = await page.evaluate(() => {
+    startWave(10);
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete();
+    return {
+      visible: document.getElementById('postcard-preview-overlay').classList.contains('visible'),
+      title: document.getElementById('postcard-preview-title').textContent,
+    };
+  });
+  expect(milestone.visible).toBe(true);
+  expect(milestone.title.length).toBeGreaterThan(0);
+
+  // Skippable -- the close button dismisses it without disturbing the
+  // ordinary WAVE_COMPLETE screen underneath.
+  await page.locator('#postcard-preview-close').click();
+  await expect(page.locator('#postcard-preview-overlay')).not.toHaveClass(/visible/);
+
+  // And it never lingers into a later, non-milestone wave.
+  await page.evaluate(() => { hideMessage(); startWave(11); });
+  const afterAdvance = await page.evaluate(() => document.getElementById('postcard-preview-overlay').classList.contains('visible'));
+  expect(afterAdvance).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('the pause menu\'s Share Postcard button opens the same postcard preview mid-game', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(500);
+
+  await page.click('#pause-button');
+  await expect(page.locator('#pause-overlay')).toHaveClass(/visible/);
+  await page.click('#pause-postcard');
+
+  await expect(page.locator('#postcard-preview-overlay')).toHaveClass(/visible/);
+  await expect(page.locator('#postcard-preview-img')).toHaveAttribute('src', /^data:image\/png/);
   expect(errors).toEqual([]);
 });
 
