@@ -747,6 +747,242 @@ test('shiftWorldEntities moves both an active portal pair and a pending thread\'
   expect(errors).toEqual([]);
 });
 
+// ------------------------------------------------------------
+// Flight Mode: an alternate control scheme (see STATE.flightMode/
+// FLIGHT_CONFIG) where the player pilots a ship instead of dragging.
+// Exercised through the real input handlers and a real running game loop
+// (not a re-implementation) -- onInputStart/onInputMove set the ship's
+// steering target, and the ship has to actually fly there over real
+// elapsed frames before updateShipDrawing detects it's over a dot.
+// ------------------------------------------------------------
+
+test('the Flight Mode checkbox toggles STATE.flightMode and persists across a reload', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await expect(page.locator('#flight-mode-row')).toBeVisible();
+  expect(await page.evaluate(() => STATE.flightMode)).toBe(false);
+
+  await page.click('#flight-mode-checkbox');
+  expect(await page.evaluate(() => STATE.flightMode)).toBe(true);
+
+  await page.reload();
+  await page.waitForFunction(() => window.__lumina);
+  expect(await page.evaluate(() => STATE.flightMode)).toBe(true);
+  await expect(page.locator('#flight-mode-checkbox')).toBeChecked();
+  expect(errors).toEqual([]);
+});
+
+// The actual flying-and-connecting mechanic: steer toward dot A, let the
+// ship fly there and pick it up, then steer toward its match and let
+// momentum carry the ship through to complete the connection -- the same
+// checks (color match, crossing, stranding) and the same score/connection
+// bookkeeping a classic drag uses, just reached by flight instead.
+test('steering the ship through two matching dots completes a real connection', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#flight-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(500);
+
+  const setup = await page.evaluate(() => {
+    const dots = window.__lumina.getDots();
+    const byPair = {};
+    for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+    const [a, b] = Object.values(byPair).find(g => g.length >= 2);
+    return {
+      aId: a.id, bId: b.id, ax: a.x, ay: a.y, bx: b.x, by: b.y,
+      shipExists: !!STATE.ship,
+    };
+  });
+  expect(setup.shipExists).toBe(true);
+
+  // Steer toward dot A and give the ship real time to fly there.
+  await page.evaluate(({ ax, ay }) => {
+    onInputStart({ preventDefault() {}, clientX: ax, clientY: ay });
+  }, setup);
+  await page.waitForTimeout(2500);
+
+  const afterA = await page.evaluate(({ aId }) => ({
+    isDrawing: STATE.isDrawing,
+    activeDotId: STATE.activeDot && STATE.activeDot.id,
+    reachedA: STATE.activeDot && STATE.activeDot.id === aId,
+  }), setup);
+  expect(afterA.isDrawing).toBe(true);
+  expect(afterA.reachedA).toBe(true);
+
+  // Now steer toward its match and let momentum carry it the rest of the way.
+  await page.evaluate(({ bx, by }) => {
+    onInputMove({ preventDefault() {}, clientX: bx, clientY: by });
+  }, setup);
+  await page.waitForTimeout(2500);
+
+  const afterB = await page.evaluate(({ aId, bId }) => ({
+    connection: STATE.connections[0],
+    dotAConnected: STATE.dots.find(d => d.id === aId).connected,
+    dotBConnected: STATE.dots.find(d => d.id === bId).connected,
+    score: STATE.score,
+    isDrawing: STATE.isDrawing,
+  }), setup);
+  expect(afterB.connection).toBeTruthy();
+  expect(afterB.connection.dotA).toBe(setup.aId);
+  expect(afterB.connection.dotB).toBe(setup.bId);
+  expect(afterB.dotAConnected).toBe(true); // wave 1 groups are plain pairs -- one link fully solves both
+  expect(afterB.dotBConnected).toBe(true);
+  expect(afterB.score).toBeGreaterThan(0);
+  expect(afterB.isDrawing).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+// Flight Mode's ship must never survive past the wave/session it belongs
+// to -- same reasoning as every other per-wave reset (portals, lines,
+// connections) in startWave/exitToTitle.
+test('the Flight Mode ship resets cleanly on a new wave and exiting to the title screen', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.flightMode = true;
+    startWave(1);
+    const shipAfterStart = !!STATE.ship;
+    STATE.ship.x = 12345; // mutate so a stale carry-over would be detectable
+    startWave(2);
+    const shipResetPosition = STATE.ship ? { x: STATE.ship.x, y: STATE.ship.y } : null;
+    exitToTitle();
+    const shipAfterExit = STATE.ship;
+    STATE.flightMode = false;
+    startWave(1);
+    const shipWhenDisabled = STATE.ship;
+    return { shipAfterStart, shipResetPosition, shipAfterExit, shipWhenDisabled };
+  });
+
+  expect(result.shipAfterStart).toBe(true);
+  expect(result.shipResetPosition.x).not.toBe(12345); // startWave re-centers it, not carries the old position
+  expect(result.shipAfterExit).toBeNull();
+  expect(result.shipWhenDisabled).toBeNull(); // no ship at all once flightMode is off
+  expect(errors).toEqual([]);
+});
+
+// The window-level 'mouseup' safety net (see cancelStaleDrawGesture) fires
+// right after canvas's own bubble-phase onInputEnd for every release,
+// including a normal Flight Mode one -- it used to unconditionally cancel
+// any in-progress connection, which broke coasting for every desktop mouse
+// user the instant they let go (review, #42).
+test('the window-level mouseup safety net lets a Flight Mode connection keep coasting instead of cancelling it', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#flight-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(500);
+
+  const result = await page.evaluate(() => {
+    const dots = window.__lumina.getDots();
+    const [a] = dots;
+    onInputStart({ preventDefault() {}, clientX: a.x, clientY: a.y });
+    STATE.ship.x = a.x; STATE.ship.y = a.y; // drop the ship straight onto the dot rather than waiting real frames
+    updateShipDrawing();
+    const isDrawingBeforeRelease = STATE.isDrawing;
+
+    // The actual mouseup: canvas's own handler, then the window-level
+    // safety net right behind it, exactly as the browser fires them.
+    onInputEnd({ preventDefault() {}, clientX: a.x, clientY: a.y });
+    cancelStaleDrawGesture();
+
+    return { isDrawingBeforeRelease, isDrawingAfterRelease: STATE.isDrawing, hasTarget: STATE.ship.hasTarget };
+  });
+
+  expect(result.isDrawingBeforeRelease).toBe(true);
+  expect(result.isDrawingAfterRelease).toBe(true); // still coasting, not cancelled
+  expect(result.hasTarget).toBe(false); // but no longer actively steering
+  expect(errors).toEqual([]);
+});
+
+// updateEdgePan re-derives the world point under a held screen position
+// and used to always extend currentPath toward it -- correct in classic
+// mode (the pointer IS what's drawing), wrong in Flight Mode, where the
+// pointer is just a steering target that can be far from the ship's own
+// (separately recorded) position (review, #42).
+test('edge panning in Flight Mode never feeds the steering point into the connection path', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.flightMode = true;
+    startWave(1);
+    setUserZoom(3); // guarantee baseZoom*userZoom > 1 so edge-pan is eligible at all
+    STATE.camera.scale = STATE.camera.targetScale; // skip the per-frame lerp -- clampCameraCenter reads .scale, not userZoom
+    const dot = STATE.dots[0];
+    STATE.activeDot = dot;
+    STATE.isDrawing = true;
+    STATE.currentPath = [{ x: dot.x, y: dot.y }];
+    STATE.ship.hasTarget = true;
+    STATE.lastDrawScreenPos = { x: 2, y: 2 }; // well inside EDGE_PAN_CONFIG.MARGIN_PX of the corner
+    const lengthBefore = STATE.currentPath.length;
+    updateEdgePan();
+    return { lengthBefore, lengthAfter: STATE.currentPath.length, cameraMoved: STATE.camera.centerX !== STATE.world.w / 2 };
+  });
+
+  expect(result.cameraMoved).toBe(true); // the pan itself still happens
+  expect(result.lengthAfter).toBe(result.lengthBefore); // but nothing got appended to the path
+  expect(errors).toEqual([]);
+});
+
+// Same reasoning as the portal-pair/thread shift test above -- a ship and
+// its steering target are just as real a piece of per-wave world geometry
+// as a portal is, and need the same treatment on a resize/orientation
+// change (see growWorldToMatchAspect) or the ship ends up displaced
+// relative to the whole board (review, #42).
+test('shiftWorldEntities moves the Flight Mode ship and its steering target', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.ship = { x: 50, y: 60, vx: 0, vy: 0, heading: 0, hasTarget: true, targetX: 70, targetY: 80 };
+    shiftWorldEntities(5, 7);
+    return { x: STATE.ship.x, y: STATE.ship.y, targetX: STATE.ship.targetX, targetY: STATE.ship.targetY };
+  });
+
+  expect(result).toEqual({ x: 55, y: 67, targetX: 75, targetY: 87 });
+  expect(errors).toEqual([]);
+});
+
+// beginPinch already dropped any in-progress connection when a second
+// finger lands, but left the ship still thrusting toward the pre-pinch
+// touch point for the whole zoom gesture -- and onInputEnd's own pinch
+// handling returns before ever reaching the Flight Mode release branch, so
+// that stale target stayed active even after both fingers lifted (review,
+// #42).
+test('starting a pinch in Flight Mode stops the ship from steering toward the pre-pinch point', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.flightMode = true;
+    startWave(1);
+    STATE.ship.hasTarget = true;
+    STATE.ship.targetX = 123;
+    STATE.ship.targetY = 456;
+    beginPinch({ touches: [{ clientX: 100, clientY: 100 }, { clientX: 140, clientY: 140 }] });
+    return { hasTarget: STATE.ship.hasTarget, pinchActive: !!STATE.pinch };
+  });
+
+  expect(result.hasTarget).toBe(false);
+  expect(result.pinchActive).toBe(true); // the pinch itself still starts normally
+  expect(errors).toEqual([]);
+});
+
 test('a fact-box barrier is a real solid obstacle and displays one of the curated pause facts', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');

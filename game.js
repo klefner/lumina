@@ -284,6 +284,19 @@ function saveAutoLoadSetting(enabled) {
   try { localStorage.setItem(AUTOLOAD_KEY, enabled ? 'true' : 'false'); } catch (e) { /* best-effort only */ }
 }
 
+// Flight Mode -- an alternate way to play the same waves (see FLIGHT_CONFIG
+// and the onInputStart/Move/End branches below): pilot a ship around the
+// board and fly through dots instead of dragging between them. Off by
+// default, same reasoning as autoload above -- an unconfigured player's
+// experience never changes underneath them.
+const FLIGHT_MODE_KEY = 'lumina_flightmode_v1';
+function loadFlightModeSetting() {
+  try { return localStorage.getItem(FLIGHT_MODE_KEY) === 'true'; } catch (e) { return false; }
+}
+function saveFlightModeSetting(enabled) {
+  try { localStorage.setItem(FLIGHT_MODE_KEY, enabled ? 'true' : 'false'); } catch (e) { /* best-effort only */ }
+}
+
 // Every-10th-wave milestone tiers, each fancier than the last. Cycles
 // through an escalating shimmer beyond the last named tier (wave 60+)
 // rather than capping out, so the milestone keeps feeling special forever.
@@ -1051,6 +1064,7 @@ function refreshDifficultyButtons() {
 function refreshTitleLoadRow() {
   document.getElementById('title-load-button').classList.toggle('visible', !!STATE.pendingResume);
   document.getElementById('autoload-checkbox').checked = STATE.autoLoadEnabled;
+  document.getElementById('flight-mode-checkbox').checked = STATE.flightMode;
 }
 
 // The title screen's own equivalent of the pause menu's Load Game: no
@@ -1099,6 +1113,10 @@ function setupTitleLoadListeners() {
     // page load/exitToTitle in place, silently promising the opposite of
     // what a plain tap is now actually about to do.
     document.getElementById('message-subtitle').textContent = titleSubtitleText();
+  });
+  document.getElementById('flight-mode-checkbox').addEventListener('change', (e) => {
+    STATE.flightMode = e.target.checked;
+    saveFlightModeSetting(STATE.flightMode);
   });
 }
 
@@ -1225,6 +1243,10 @@ const STATE = {
   pendingResume: null,     // { wave, score } loaded from a save, offered on the title screen (see init/onInputStart)
   autoLoadEnabled: false,  // persisted (see AUTOLOAD_KEY) -- whether a plain tap on the title screen should
                            // silently resume pendingResume instead of always starting wave 1
+
+  flightMode: false,   // persisted (see FLIGHT_MODE_KEY) -- picked on the title screen, alongside difficulty
+  ship: null,           // { x, y, vx, vy, heading, hasTarget, targetX, targetY } while flightMode is active
+                         // and a wave is in progress (see startWave/updateShip); null otherwise
 };
 
 // ============================================================
@@ -2356,6 +2378,14 @@ function shiftWorldEntities(dx, dy) {
     for (const seg of t.segments) { seg.x1 += dx; seg.y1 += dy; seg.x2 += dx; seg.y2 += dy; }
     for (const p of t.points) { p.x += dx; p.y += dy; }
   }
+  if (STATE.ship) {
+    STATE.ship.x += dx; STATE.ship.y += dy;
+    // The steering target is stale/meaningless when nothing is actively
+    // held (hasTarget false), but shifting it unconditionally anyway costs
+    // nothing and avoids the ship lurching toward a now-wrong-relative
+    // point on whatever the next held frame happens to be.
+    STATE.ship.targetX += dx; STATE.ship.targetY += dy;
+  }
 }
 
 function growWorldToMatchAspect() {
@@ -3218,7 +3248,19 @@ canvas.addEventListener('wheel', onWheelZoom, { passive: false });
 // on canvas, so this is a no-op for a normal connection -- onInputEnd
 // has already cleared isDrawing by the time it runs.
 function cancelStaleDrawGesture() {
-  if (STATE.isDrawing) cancelActiveLine();
+  // Flight Mode deliberately leaves isDrawing true on a normal release so
+  // the ship can coast toward/through a dot with the finger already up
+  // (see onInputEnd's flight branch) -- this window-level 'mouseup' still
+  // fires right after canvas's own bubble-phase handler for EVERY release,
+  // including that one, so treating it the same as a genuinely stale/
+  // interrupted gesture would cancel every flight-mode connection the
+  // instant a mouse button lifts. Stop steering instead, same as a normal
+  // release does, and leave the connection itself alone (review, #42).
+  if (STATE.flightMode && STATE.ship) {
+    STATE.ship.hasTarget = false;
+  } else if (STATE.isDrawing) {
+    cancelActiveLine();
+  }
   STATE.eraseArmed = false;
 }
 window.addEventListener('mouseup', cancelStaleDrawGesture);
@@ -3265,6 +3307,13 @@ function beginPinch(e) {
   if (STATE.isDrawing) cancelActiveLine();
   STATE.panDrag = null; // a second finger landing mid-pan means a pinch is starting, not a continued drag
   STATE.eraseArmed = false; // the first finger only grazed a line on its way into a pinch, not a tap on it
+  // Otherwise the ship keeps accelerating toward the pre-pinch single-
+  // finger touch point for the whole zoom gesture -- and onInputEnd's own
+  // pinch handling (`if (STATE.pinch) { STATE.pinch = null; return; }`)
+  // returns before ever reaching the Flight Mode release branch, so that
+  // stale target would otherwise still be active even after both fingers
+  // lift (review, #42).
+  if (STATE.flightMode && STATE.ship) STATE.ship.hasTarget = false;
   STATE.pinch = { startDist: pinchDistance(e.touches), startZoom: STATE.camera.userZoom };
 }
 
@@ -3316,6 +3365,17 @@ function onInputStart(e) {
   // moment a second finger confirms it's a pinch, not a tap.
   if (STATE.eraseMode) {
     STATE.eraseArmed = true;
+    return;
+  }
+
+  // In Flight Mode a touch/click anywhere is a steering command, not a
+  // drag-from-a-dot gesture -- the ship free-flies to wherever is pointed
+  // at, and flying through a dot is what starts/continues a connection
+  // (see updateShipDrawing). This takes over single-touch input the same
+  // gesture would otherwise use for empty-space panning below; pinch-zoom
+  // (2+ touches, handled above) is untouched.
+  if (STATE.flightMode) {
+    flightInputStart(pos, getEventScreenPos(e));
     return;
   }
 
@@ -3388,6 +3448,15 @@ function onInputMove(e) {
     return;
   }
 
+  // Gated on ship.hasTarget rather than STATE.isDrawing -- the player can
+  // be actively steering (still hasn't flown through a dot yet, so no
+  // connection is in progress) or mid-connection; either way, moving the
+  // steering point should keep updating where the ship is headed.
+  if (STATE.flightMode && STATE.phase === 'PLAYING' && STATE.ship && STATE.ship.hasTarget) {
+    flightInputMove(getEventPos(e), getEventScreenPos(e));
+    return;
+  }
+
   if (!STATE.isDrawing || STATE.phase !== 'PLAYING') return;
 
   // Remembered so updateEdgePan (see its own comment) can keep re-deriving
@@ -3431,7 +3500,13 @@ const EDGE_PAN_CONFIG = {
 };
 
 function updateEdgePan() {
-  if (!STATE.isDrawing || !STATE.lastDrawScreenPos) return;
+  // In Flight Mode, steering toward the edge should reveal more of a wide
+  // world the same way dragging a classic line there does -- gated on
+  // ship.hasTarget rather than STATE.isDrawing, since the player can be
+  // steering toward a dot they haven't reached (and so haven't started a
+  // connection) yet.
+  const steering = STATE.isDrawing || (STATE.flightMode && STATE.ship && STATE.ship.hasTarget);
+  if (!steering || !STATE.lastDrawScreenPos) return;
   if (STATE.camera.baseZoom * STATE.camera.userZoom <= 1) return; // nothing off-screen to reveal
 
   const { x, y } = STATE.lastDrawScreenPos;
@@ -3453,7 +3528,15 @@ function updateEdgePan() {
   // The screen point itself hasn't moved, but the world point underneath
   // it just did (the camera moved) -- re-derive it fresh and keep
   // extending the line toward it, exactly as a real move event would.
-  advanceDrawingTo(screenToWorld(x, y));
+  // Classic mode only: there, the pointer position IS the thing drawing
+  // the line. In Flight Mode the pointer is just a steering target, often
+  // far from the ship itself (that's the whole point of momentum) --
+  // feeding it into currentPath here would record a jump between the
+  // ship's real position (added separately, every frame, by
+  // updateShipDrawing) and this distant point, inflating the line's score
+  // and risking false barrier/crossing rejections (review, #42). The
+  // camera still pans either way; only which path gets extended differs.
+  if (STATE.isDrawing && !STATE.flightMode) advanceDrawingTo(screenToWorld(x, y));
 }
 
 function onInputEnd(e) {
@@ -3483,6 +3566,18 @@ function onInputEnd(e) {
       const conn = findConnectionAt(pos.x, pos.y);
       if (conn) eraseConnection(conn);
     }
+    return;
+  }
+
+  // Letting go only stops steering -- it doesn't stop the ship. Momentum
+  // (see updateShip's drag decay) carries it the rest of the way toward
+  // wherever it was last headed, and any connection already in progress
+  // keeps extending/getting checked against dots every frame regardless of
+  // whether a finger is still down (see updateShipDrawing). There's
+  // nothing else to resolve here the way a classic release resolves a
+  // whole connection at once.
+  if (STATE.flightMode && STATE.ship) {
+    STATE.ship.hasTarget = false;
     return;
   }
 
@@ -4056,6 +4151,228 @@ function cancelActiveLine() {
   STATE.activePortalThread = null;
 }
 
+// ------------------------------------------------------------
+// FLIGHT MODE
+//
+// An alternate control scheme for the same waves (see STATE.flightMode,
+// picked on the title screen): instead of dragging a finger from dot to
+// dot, the player pilots a ship that's present on the board for the whole
+// wave. Touching/holding anywhere steers the ship there with momentum;
+// releasing just lets it coast. Flying through an eligible dot starts a
+// connection the same way touching one does in the classic control
+// scheme, and flying through a second one completes it -- the ship's own
+// flight path becomes the connecting line, recorded through the exact
+// same STATE.currentPath / advanceDrawingTo machinery the classic drag
+// already uses, so scoring, rendering, barrier/crossing checks, and the
+// portal mechanic all work unmodified underneath this.
+//
+// Deliberately NOT physically blocked by barriers -- a classic drag's
+// finger can also freely move over a barrier while dragging; only the
+// crossing check at the moment a connection actually completes ever
+// rejects it (see attemptFlightConnection/attemptFlightPortalLeg). Flight
+// Mode keeps that exact rule rather than adding new collision physics.
+// ------------------------------------------------------------
+const FLIGHT_CONFIG = {
+  MAX_SPEED: 9,      // px/frame at full thrust
+  ACCEL: 0.6,          // px/frame^2 applied toward the current steering point
+  DRAG: 0.94,           // velocity multiplier per frame once released, so the ship coasts to a stop
+                         // instead of stopping dead the instant a finger lifts
+  SHIP_RADIUS: 14,       // visual hull size, world px
+};
+
+function flightInputStart(pos, screenPos) {
+  STATE.ship.hasTarget = true;
+  STATE.ship.targetX = pos.x;
+  STATE.ship.targetY = pos.y;
+  STATE.lastDrawScreenPos = screenPos; // so updateEdgePan can still reveal more of a wide world while steering
+}
+
+function flightInputMove(pos, screenPos) {
+  STATE.ship.targetX = pos.x;
+  STATE.ship.targetY = pos.y;
+  STATE.lastDrawScreenPos = screenPos;
+}
+
+// Same decision tree onInputEnd's dot branch uses, just reached by flying
+// through a dot instead of releasing on top of one.
+function attemptFlightConnection(targetDot) {
+  if (targetDot.colorIndex !== STATE.activeDot.colorIndex) {
+    rejectConnection();
+    return;
+  }
+  if (ufConnected(STATE.activeDot.id, targetDot.id)) {
+    cancelActiveLine();
+    return;
+  }
+  STATE.currentPath.push({ x: targetDot.x, y: targetDot.y });
+  if (pathCrossesExistingConnections(STATE.currentPath) || pathCrossesBarriers(STATE.currentPath)) {
+    rejectConnection();
+    return;
+  }
+  if (wouldStrandAnyDot(smoothedCurveSegments(STATE.currentPath), STATE.activeDot, targetDot)) {
+    rejectConnection();
+    return;
+  }
+  completeConnection(STATE.activeDot, targetDot, STATE.activePortalThread);
+  STATE.activePortalThread = null;
+}
+
+// Same decision tree onInputEnd's portal branch uses, reached by flying
+// into the open portal side instead of releasing on it.
+function attemptFlightPortalLeg(portal) {
+  STATE.currentPath.push({ x: portal.x, y: portal.y });
+  if (pathCrossesExistingConnections(STATE.currentPath) || pathCrossesBarriers(STATE.currentPath)) {
+    rejectConnection();
+    return;
+  }
+  if (wouldNewSegmentsStrandAnyDot(smoothedCurveSegments(STATE.currentPath), null, null)) {
+    rejectConnection();
+    return;
+  }
+  completePortalLeg(STATE.activeDot, portal);
+}
+
+// Runs every frame Flight Mode is active, independent of whether a
+// connection is currently in progress -- checks whatever the ship is
+// currently sitting on/passing through and starts, extends, or completes
+// a connection accordingly.
+function updateShipDrawing() {
+  const ship = STATE.ship;
+
+  if (!STATE.isDrawing) {
+    const dot = findDotAt(ship.x, ship.y, false);
+    if (dot) {
+      STATE.activeDot = dot;
+      STATE.isDrawing = true;
+      STATE.currentPath = [{ x: dot.x, y: dot.y }];
+      STATE.smoothedCursor = { x: dot.x, y: dot.y };
+      return;
+    }
+    if (STATE.portals) {
+      const portal = findPortalAt(ship.x, ship.y);
+      if (portal) {
+        const thread = STATE.portalThreads.find(t => t.enteredSide !== portal.side);
+        if (thread) {
+          STATE.activeDot = thread.dotA;
+          STATE.activePortalThread = thread;
+          STATE.isDrawing = true;
+          STATE.currentPath = [{ x: portal.x, y: portal.y }];
+          STATE.smoothedCursor = { x: portal.x, y: portal.y };
+        }
+      }
+    }
+    return;
+  }
+
+  advanceDrawingTo({ x: ship.x, y: ship.y });
+
+  const targetDot = findDotAt(ship.x, ship.y, false);
+  if (targetDot) {
+    // Flying back through the dot the line started from is just ignored,
+    // not treated as a cancel -- a continuously piloted ship can easily
+    // clip back past its own start point mid-maneuver, which a single
+    // discrete drag-and-release gesture never has to account for.
+    if (targetDot.id === STATE.activeDot.id) return;
+    // completeConnection/completePortalLeg (unlike rejectConnection/
+    // cancelActiveLine) never touch STATE.isDrawing themselves -- they
+    // were written assuming the classic onInputEnd caller already cleared
+    // it first. Match that ordering here, or a successful flight-mode
+    // connection would leave isDrawing stuck true with activeDot null,
+    // crashing the very next dot the ship touches.
+    STATE.isDrawing = false;
+    attemptFlightConnection(targetDot);
+    return;
+  }
+
+  if (!STATE.activePortalThread && STATE.portals) {
+    const portal = findPortalAt(ship.x, ship.y);
+    if (portal) {
+      STATE.isDrawing = false;
+      attemptFlightPortalLeg(portal);
+    }
+  }
+}
+
+function updateShip() {
+  if (!STATE.flightMode || STATE.phase !== 'PLAYING' || !STATE.ship) return;
+  const ship = STATE.ship;
+
+  if (ship.hasTarget) {
+    const dx = ship.targetX - ship.x, dy = ship.targetY - ship.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > 1) {
+      // Eases off approaching the target ("arrival" steering) instead of
+      // thrusting at full strength right up to the last pixel -- full
+      // constant thrust all the way in, combined with the drag below,
+      // would settle into a small perpetual wobble around the target
+      // instead of actually coming to rest there.
+      const thrust = FLIGHT_CONFIG.ACCEL * Math.min(1, dist / (FLIGHT_CONFIG.SHIP_RADIUS * 3));
+      ship.vx += (dx / dist) * thrust;
+      ship.vy += (dy / dist) * thrust;
+    }
+  }
+  // Applies every frame, not just while coasting -- without it, constant
+  // thrust toward a held (fixed) target never converges: it overshoots and
+  // swings back forever, like a frictionless pendulum, instead of settling
+  // near wherever the player is actually pointing.
+  ship.vx *= FLIGHT_CONFIG.DRAG;
+  ship.vy *= FLIGHT_CONFIG.DRAG;
+
+  const speed = Math.hypot(ship.vx, ship.vy);
+  if (speed > FLIGHT_CONFIG.MAX_SPEED) {
+    ship.vx = (ship.vx / speed) * FLIGHT_CONFIG.MAX_SPEED;
+    ship.vy = (ship.vy / speed) * FLIGHT_CONFIG.MAX_SPEED;
+  }
+
+  ship.x = Math.min(STATE.world.w, Math.max(0, ship.x + ship.vx));
+  ship.y = Math.min(STATE.world.h, Math.max(0, ship.y + ship.vy));
+  if (speed > 0.3) ship.heading = Math.atan2(ship.vy, ship.vx);
+
+  updateShipDrawing();
+}
+
+function drawShip() {
+  const ship = STATE.ship;
+  if (!STATE.flightMode || !ship) return;
+
+  ctx.save();
+  ctx.translate(ship.x, ship.y);
+  ctx.rotate(ship.heading + Math.PI / 2); // local hull points "up" (-y); align it to the actual heading
+
+  const r = FLIGHT_CONFIG.SHIP_RADIUS;
+  const speed = Math.hypot(ship.vx, ship.vy);
+
+  if (ship.hasTarget && speed > 0.5) {
+    const flicker = 0.7 + Math.random() * 0.3;
+    const flameLen = r * (0.6 + Math.min(1, speed / FLIGHT_CONFIG.MAX_SPEED) * 0.9) * flicker;
+    ctx.beginPath();
+    ctx.moveTo(-r * 0.35, r * 0.6);
+    ctx.lineTo(0, r * 0.6 + flameLen);
+    ctx.lineTo(r * 0.35, r * 0.6);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(120, 200, 255, 0.85)';
+    ctx.shadowBlur = 14;
+    ctx.shadowColor = 'rgba(120, 200, 255, 0.9)';
+    ctx.fill();
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(0, -r);
+  ctx.lineTo(r * 0.65, r * 0.7);
+  ctx.lineTo(0, r * 0.35);
+  ctx.lineTo(-r * 0.65, r * 0.7);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(235, 245, 255, 0.96)';
+  ctx.shadowBlur = 16;
+  ctx.shadowColor = 'rgba(180, 220, 255, 0.9)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(120, 200, 255, 0.9)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
 function pathToSegments(path) {
   const segments = [];
   for (let i = 1; i < path.length; i++) {
@@ -4456,6 +4773,9 @@ function startWave(waveNumber) {
   STATE.portals = null;
   STATE.portalThreads = [];
   STATE.activePortalThread = null;
+  STATE.ship = STATE.flightMode
+    ? { x: STATE.world.w / 2, y: STATE.world.h / 2, vx: 0, vy: 0, heading: -Math.PI / 2, hasTarget: false, targetX: 0, targetY: 0 }
+    : null;
   for (const entry of STATE.connectionPraise) entry.el.remove();
   STATE.connectionPraise = [];
   STATE.spaceObjects = [];
@@ -6315,6 +6635,7 @@ function exitToTitle() {
   STATE.portals = null;
   STATE.portalThreads = [];
   STATE.activePortalThread = null;
+  STATE.ship = null;
   document.getElementById('erase-button').classList.remove('active');
   hideTutorialHint(true); // in-wave UI must never linger over the title screen
   document.getElementById('achievement-toast').classList.remove('visible');
@@ -6436,6 +6757,7 @@ function showMessage(title, subtitle, opts) {
   const isTitleScreen = !!(opts && opts.isTitleScreen);
   document.getElementById('sound-hint').classList.toggle('visible', isTitleScreen);
   document.getElementById('difficulty-selector').classList.toggle('visible', isTitleScreen);
+  document.getElementById('flight-mode-row').classList.toggle('visible', isTitleScreen);
   document.getElementById('title-load-row').classList.toggle('visible', isTitleScreen);
   document.getElementById('share-row').classList.toggle('visible', isTitleScreen);
   document.getElementById('start-game-row').classList.toggle('visible', isTitleScreen);
@@ -6453,6 +6775,7 @@ function hideMessage() {
   // pointer-events) over whatever dots happen to render underneath once
   // play starts.
   document.getElementById('difficulty-selector').classList.remove('visible');
+  document.getElementById('flight-mode-row').classList.remove('visible');
   document.getElementById('title-load-row').classList.remove('visible');
   document.getElementById('share-row').classList.remove('visible');
   document.getElementById('start-game-row').classList.remove('visible');
@@ -6849,6 +7172,7 @@ function updateWaveDisplay() {
 function update() {
   enforceTutorialHintInvariant();
   updateEdgePan();
+  updateShip();
   updateConnectionPraise();
 
   for (const dot of STATE.dots) {
@@ -6943,6 +7267,7 @@ function render() {
     drawDot(dot);
   }
 
+  drawShip();
   drawTravelingLights();
 
   ctx.restore();
@@ -7043,6 +7368,7 @@ function init() {
   STATE.pendingResume = loadSave();
   STATE.difficulty = loadDifficulty();
   STATE.autoLoadEnabled = loadAutoLoadSetting();
+  STATE.flightMode = loadFlightModeSetting();
   applyDifficulty(STATE.difficulty);
   setupDifficultySelectorListeners();
   setupTitleLoadListeners();
