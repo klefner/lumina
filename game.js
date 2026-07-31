@@ -348,10 +348,30 @@ const COCKPIT_CONFIG = {
   SHIP_START_DISTANCE: 1.4,    // multiple of DOT_FIELD_RADIUS the ship starts out from the field,
                                 // looking back in toward it (yaw 0 / pitch 0 already faces -z)
   MAX_FLIGHT_DISTANCE: 2.2,    // multiple of DOT_FIELD_RADIUS the soft boundary holds the ship within
-  JOYSTICK_MAX_RADIUS: 90,     // screen px of drag distance for full throttle
-  JOYSTICK_DEAD_ZONE: 4,       // screen px before any turn/thrust registers
-  STAR_COUNT: 1600,
-  STAR_FIELD_RADIUS: 900,
+  STICK_MAX_RADIUS: 60,        // screen px a touch stick's knob travels from its anchor for full deflection
+  STICK_DEAD_ZONE: 6,          // screen px before a touch stick registers any input
+  MOUSE_STEER_RADIUS_FRACTION: 0.4, // fraction of min(canvas.width, canvas.height) that maps to full
+                                     // steering deflection -- the whole screen acts as one big virtual
+                                     // joystick centered on its middle, no click-and-drag required
+  MOUSE_STEER_DEAD_ZONE: 12,   // screen px from center before mouse-position steering registers
+  FOV_DEFAULT: 75,
+  FOV_MIN: 40,                 // degrees -- most zoomed in
+  FOV_MAX: 100,                // degrees -- most zoomed out
+  FOV_KEY_STEP: 1.2,           // degrees/frame while a zoom key is held
+  FOV_WHEEL_STEP: 0.05,        // degrees per wheel-delta unit
+  WAYPOINT_IDLE_MS: 3000,      // Normal difficulty: no new connection this long shows the waypoint
+                                // arrow -- Relaxed shows it always, Intense never (see
+                                // updateCockpitWaypointArrow)
+  CONNECTION_STARS_PER_DOT: 20,     // mirrors classic mode's STARFIELD_CONFIG.STARS_PER_CONNECTION/2 --
+                                     // no ambient background starfield here (see review feedback: it
+                                     // read as a field of connectable objects) -- only a sparse halo
+                                     // around each completed connection's two dots, same as classic
+  CONNECTION_STAR_SCATTER_RADIUS: 35, // world units around each dot the halo scatters within
+  CONNECTION_STAR_SIZE: 3,
+  LINE_TUBE_RADIUS: 1.8,       // world units -- real geometry, not a WebGL line-width hint (which
+                                // GL clamps to ~1px on most drivers regardless of what you ask for,
+                                // exactly why the original LineBasicMaterial lines were nearly
+                                // invisible -- see review feedback)
   SCORE_PER_LINE_UNIT: 4,      // 3D world units are much smaller than 2D screen pixels -- scaled up
                                 // so a typical connection's score feels comparable to classic mode
 };
@@ -385,9 +405,11 @@ function ensureThreeLoaded() {
 const COCKPIT = {
   renderer: null, scene: null, camera: null,
   dotMeshes: new Map(),    // dot.id -> THREE.Mesh
-  lineObjects: [],         // THREE.Line per completed STATE.cockpitLines entry
-  activeLineObject: null,  // THREE.Line for the connection currently being drawn, or null
-  starPoints: null,
+  lineObjects: [],         // THREE.Mesh (tube) per completed STATE.cockpitLines entry
+  activeLineObject: null,  // THREE.Mesh (tube) for the connection currently being drawn, or null
+  starGroups: [],          // THREE.Points, one per completed connection's two-dot halo (see
+                            // spawnCockpitConnectionStars) -- no ambient background field
+  starTexture: null,       // lazily-built soft circular sprite, shared by every star group
 };
 
 function noseDirection(yaw, pitch) {
@@ -441,16 +463,198 @@ function generateCockpitDots(waveNumber) {
   return dots;
 }
 
-function cockpitInputStart(screenPos) {
-  STATE.cockpitJoystick = { anchorX: screenPos.x, anchorY: screenPos.y, curX: screenPos.x, curY: screenPos.y };
+// The stick's own DOM element (see index.html/#cockpit-left-stick,
+// #cockpit-right-stick) is the fixed anchor, not wherever a touch first
+// landed -- canvas-relative, same coordinate space getEventScreenPos uses,
+// so a knob offset computed against this lines up with the visual exactly.
+function cockpitStickAnchor(elId) {
+  const rect = canvas.getBoundingClientRect();
+  const stickRect = document.getElementById(elId).getBoundingClientRect();
+  return {
+    x: stickRect.left + stickRect.width / 2 - rect.left,
+    y: stickRect.top + stickRect.height / 2 - rect.top,
+  };
 }
-function cockpitInputMove(screenPos) {
-  if (!STATE.cockpitJoystick) return;
-  STATE.cockpitJoystick.curX = screenPos.x;
-  STATE.cockpitJoystick.curY = screenPos.y;
+
+// Touch only -- desktop steers/throttles via keyboard+mouse instead (see
+// handleCockpitKeyDown/handleCockpitMouseMove/Down/Up below). Two sticks
+// tracked independently by touch identifier so both fingers can be down at
+// once; which stick a new touch claims is decided by which half of the
+// screen it landed in, matching the two fixed on-screen graphics.
+function cockpitTouchStart(e) {
+  const rect = canvas.getBoundingClientRect();
+  for (const t of e.changedTouches) {
+    const x = t.clientX - rect.left, y = t.clientY - rect.top;
+    const isLeftHalf = x < canvas.width / 2;
+    if (isLeftHalf && !STATE.cockpitLeftStick) {
+      STATE.cockpitLeftStick = { touchId: t.identifier, curX: x, curY: y };
+    } else if (!isLeftHalf && !STATE.cockpitRightStick) {
+      STATE.cockpitRightStick = { touchId: t.identifier, curX: x, curY: y };
+    }
+  }
 }
-function cockpitInputEnd() {
-  STATE.cockpitJoystick = null;
+
+function cockpitTouchMove(e) {
+  const rect = canvas.getBoundingClientRect();
+  for (const t of e.changedTouches) {
+    const x = t.clientX - rect.left, y = t.clientY - rect.top;
+    if (STATE.cockpitLeftStick && STATE.cockpitLeftStick.touchId === t.identifier) {
+      STATE.cockpitLeftStick.curX = x; STATE.cockpitLeftStick.curY = y;
+    } else if (STATE.cockpitRightStick && STATE.cockpitRightStick.touchId === t.identifier) {
+      STATE.cockpitRightStick.curX = x; STATE.cockpitRightStick.curY = y;
+    }
+  }
+}
+
+function cockpitTouchEnd(e) {
+  for (const t of e.changedTouches) {
+    if (STATE.cockpitLeftStick && STATE.cockpitLeftStick.touchId === t.identifier) STATE.cockpitLeftStick = null;
+    if (STATE.cockpitRightStick && STATE.cockpitRightStick.touchId === t.identifier) STATE.cockpitRightStick = null;
+  }
+}
+
+function isTouchCapableDevice() {
+  return ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+}
+
+// Called once per cockpit wave start (device capability doesn't change
+// mid-session) -- the sticks are only ever meaningful on a touch device;
+// desktop relies on WASD/arrows/mouse instead (see the player's own
+// request: "see these controls on mobile, but not on PC").
+function refreshCockpitControlVisibility() {
+  const touch = isTouchCapableDevice();
+  document.getElementById('cockpit-left-stick').classList.toggle('visible', touch);
+  document.getElementById('cockpit-right-stick').classList.toggle('visible', touch);
+}
+
+// Moves each stick's knob graphic to track its actual current input, same
+// clamp radius the physics itself uses (see computeCockpitThrottle/Turn) --
+// called every render frame, independent of whether the Three.js scene has
+// finished loading, so the controls are usable even during that brief gap.
+function updateCockpitStickVisuals() {
+  updateCockpitStickKnob('cockpit-left-stick', STATE.cockpitLeftStick);
+  updateCockpitStickKnob('cockpit-right-stick', STATE.cockpitRightStick);
+}
+
+function updateCockpitStickKnob(stickElId, stickState) {
+  const knob = document.getElementById(stickElId).querySelector('.cockpit-stick-knob');
+  if (!stickState) {
+    knob.style.transform = 'translate(0px, 0px)';
+    return;
+  }
+  const anchor = cockpitStickAnchor(stickElId);
+  let dx = stickState.curX - anchor.x;
+  let dy = stickState.curY - anchor.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist > COCKPIT_CONFIG.STICK_MAX_RADIUS) {
+    const k = COCKPIT_CONFIG.STICK_MAX_RADIUS / dist;
+    dx *= k; dy *= k;
+  }
+  knob.style.transform = `translate(${dx}px, ${dy}px)`;
+}
+
+function clampUnit(v) { return Math.max(-1, Math.min(1, v)); }
+
+// Combines every active source (touch stick, keyboard, mouse) into one
+// throttle value -1..1 -- summed then clamped, since a player only ever
+// uses one device's worth of these at a time in practice, not fighting
+// several simultaneously.
+function computeCockpitThrottle() {
+  let throttle = 0;
+  const stick = STATE.cockpitLeftStick;
+  if (stick) {
+    const anchor = cockpitStickAnchor('cockpit-left-stick');
+    const dy = anchor.y - stick.curY; // up = positive = accelerate
+    if (Math.abs(dy) > COCKPIT_CONFIG.STICK_DEAD_ZONE) throttle += clampUnit(dy / COCKPIT_CONFIG.STICK_MAX_RADIUS);
+  }
+  if (STATE.cockpitKeys.up) throttle += 1;
+  if (STATE.cockpitKeys.down) throttle -= 1;
+  if (STATE.cockpitMouseButtons.right) throttle += 1;
+  if (STATE.cockpitMouseButtons.left) throttle -= 1;
+  return clampUnit(throttle);
+}
+
+// Same combining approach as computeCockpitThrottle, for the 2D steering
+// vector (x = yaw, y = pitch) instead of a single throttle axis.
+function computeCockpitTurn() {
+  let tx = 0, ty = 0;
+  const stick = STATE.cockpitRightStick;
+  if (stick) {
+    const anchor = cockpitStickAnchor('cockpit-right-stick');
+    const dx = stick.curX - anchor.x, dy = stick.curY - anchor.y;
+    if (Math.hypot(dx, dy) > COCKPIT_CONFIG.STICK_DEAD_ZONE) {
+      tx += clampUnit(dx / COCKPIT_CONFIG.STICK_MAX_RADIUS);
+      ty += clampUnit(dy / COCKPIT_CONFIG.STICK_MAX_RADIUS);
+    }
+  }
+  if (STATE.cockpitKeys.a) tx -= 1;
+  if (STATE.cockpitKeys.d) tx += 1;
+  if (STATE.cockpitKeys.w) ty -= 1;
+  if (STATE.cockpitKeys.s) ty += 1;
+  if (STATE.cockpitMousePos) {
+    const cx = canvas.width / 2, cy = canvas.height / 2;
+    const dx = STATE.cockpitMousePos.x - cx, dy = STATE.cockpitMousePos.y - cy;
+    const radius = Math.min(canvas.width, canvas.height) * COCKPIT_CONFIG.MOUSE_STEER_RADIUS_FRACTION;
+    if (Math.hypot(dx, dy) > COCKPIT_CONFIG.MOUSE_STEER_DEAD_ZONE) {
+      tx += clampUnit(dx / radius);
+      ty += clampUnit(dy / radius);
+    }
+  }
+  return { x: clampUnit(tx), y: clampUnit(ty) };
+}
+
+function handleCockpitKeyDown(e) {
+  if (!STATE.cockpitMode || STATE.phase !== 'PLAYING' || STATE.paused) return;
+  switch (e.key) {
+    case 'w': case 'W': STATE.cockpitKeys.w = true; break;
+    case 'a': case 'A': STATE.cockpitKeys.a = true; break;
+    case 's': case 'S': STATE.cockpitKeys.s = true; break;
+    case 'd': case 'D': STATE.cockpitKeys.d = true; break;
+    case 'ArrowUp': STATE.cockpitKeys.up = true; e.preventDefault(); break;
+    case 'ArrowDown': STATE.cockpitKeys.down = true; e.preventDefault(); break;
+    case 'ArrowLeft': STATE.cockpitKeys.zoomOut = true; e.preventDefault(); break;
+    case 'ArrowRight': STATE.cockpitKeys.zoomIn = true; e.preventDefault(); break;
+    default: return;
+  }
+}
+
+function handleCockpitKeyUp(e) {
+  if (!STATE.cockpitMode) return; // always clear on keyup regardless of phase -- a key released mid-pause must not stick
+  switch (e.key) {
+    case 'w': case 'W': STATE.cockpitKeys.w = false; break;
+    case 'a': case 'A': STATE.cockpitKeys.a = false; break;
+    case 's': case 'S': STATE.cockpitKeys.s = false; break;
+    case 'd': case 'D': STATE.cockpitKeys.d = false; break;
+    case 'ArrowUp': STATE.cockpitKeys.up = false; break;
+    case 'ArrowDown': STATE.cockpitKeys.down = false; break;
+    case 'ArrowLeft': STATE.cockpitKeys.zoomOut = false; break;
+    case 'ArrowRight': STATE.cockpitKeys.zoomIn = false; break;
+  }
+}
+
+function handleCockpitMouseMove(e) {
+  if (!STATE.cockpitMode || STATE.phase !== 'PLAYING') return;
+  const rect = canvas.getBoundingClientRect();
+  STATE.cockpitMousePos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+function handleCockpitMouseDown(e) {
+  if (!STATE.cockpitMode || STATE.phase !== 'PLAYING' || STATE.paused) return;
+  if (e.button === 0) STATE.cockpitMouseButtons.left = true;
+  else if (e.button === 2) { STATE.cockpitMouseButtons.right = true; e.preventDefault(); } // suppress the context menu
+}
+
+function handleCockpitMouseUp(e) {
+  if (!STATE.cockpitMode) return; // always clear regardless of phase -- same reasoning as handleCockpitKeyUp
+  if (e.button === 0) STATE.cockpitMouseButtons.left = false;
+  else if (e.button === 2) STATE.cockpitMouseButtons.right = false;
+}
+
+function updateCockpitZoom() {
+  if (!STATE.cockpitMode || STATE.phase !== 'PLAYING' || STATE.cockpitFov == null) return;
+  if (STATE.cockpitKeys.zoomIn) STATE.cockpitFov -= COCKPIT_CONFIG.FOV_KEY_STEP;
+  if (STATE.cockpitKeys.zoomOut) STATE.cockpitFov += COCKPIT_CONFIG.FOV_KEY_STEP;
+  STATE.cockpitFov = Math.max(COCKPIT_CONFIG.FOV_MIN, Math.min(COCKPIT_CONFIG.FOV_MAX, STATE.cockpitFov));
 }
 
 function cockpitPathLength(points) {
@@ -467,6 +671,7 @@ function completeCockpitConnection(dotA, dotB) {
 
   const scoreAwarded = Math.round(cockpitPathLength(STATE.cockpitPath) * COCKPIT_CONFIG.SCORE_PER_LINE_UNIT);
   STATE.cockpitLines.push({ pairId: dotA.pairId, colorIndex: dotA.colorIndex, points: STATE.cockpitPath });
+  spawnCockpitConnectionStars(dotA, dotB);
 
   unmuteChunk(dotA.pairId);
   playConnectionChime(dotA.pairId);
@@ -474,6 +679,7 @@ function completeCockpitConnection(dotA, dotB) {
 
   STATE.score += scoreAwarded;
   updateWaveDisplay();
+  STATE.cockpitLastProgressTime = performance.now(); // resets the Normal-difficulty waypoint arrow's idle delay
 
   STATE.cockpitActiveDot = null;
   STATE.cockpitPath = [];
@@ -549,27 +755,31 @@ function updateCockpitDrawing() {
 function updateCockpitShip() {
   if (!STATE.cockpitMode || STATE.phase !== 'PLAYING' || !STATE.cockpitShip) return;
   const ship = STATE.cockpitShip;
-  const joy = STATE.cockpitJoystick;
 
-  if (joy) {
-    const dx = joy.curX - joy.anchorX;
-    const dy = joy.curY - joy.anchorY;
-    const dist = Math.hypot(dx, dy);
-    if (dist > COCKPIT_CONFIG.JOYSTICK_DEAD_ZONE) {
-      const throttle = Math.min(1, dist / COCKPIT_CONFIG.JOYSTICK_MAX_RADIUS);
-      const nx = dx / dist, ny = dy / dist;
-      ship.yaw += nx * COCKPIT_CONFIG.TURN_RATE * throttle;
-      ship.pitch = Math.max(-COCKPIT_CONFIG.MAX_PITCH, Math.min(COCKPIT_CONFIG.MAX_PITCH,
-        ship.pitch - ny * COCKPIT_CONFIG.TURN_RATE * throttle));
-      const dir = noseDirection(ship.yaw, ship.pitch);
-      ship.vx += dir.x * COCKPIT_CONFIG.ACCEL * throttle;
-      ship.vy += dir.y * COCKPIT_CONFIG.ACCEL * throttle;
-      ship.vz += dir.z * COCKPIT_CONFIG.ACCEL * throttle;
-    }
+  updateCockpitZoom();
+
+  // Throttle (accelerate/decelerate) and steering direction are two
+  // independent inputs now, not one combined joystick vector -- left
+  // stick/up-down arrows/mouse buttons for throttle, right stick/WASD/
+  // mouse position for direction (see computeCockpitThrottle/Turn and the
+  // player's own request for this split).
+  const turn = computeCockpitTurn();
+  if (turn.x !== 0 || turn.y !== 0) {
+    ship.yaw += turn.x * COCKPIT_CONFIG.TURN_RATE;
+    ship.pitch = Math.max(-COCKPIT_CONFIG.MAX_PITCH, Math.min(COCKPIT_CONFIG.MAX_PITCH,
+      ship.pitch - turn.y * COCKPIT_CONFIG.TURN_RATE));
   }
 
-  // Drift, not a hard stop -- thrust only fires while the joystick is
-  // actively held past the dead zone (above); releasing it just removes
+  const throttle = computeCockpitThrottle();
+  if (throttle !== 0) {
+    const dir = noseDirection(ship.yaw, ship.pitch);
+    ship.vx += dir.x * COCKPIT_CONFIG.ACCEL * throttle;
+    ship.vy += dir.y * COCKPIT_CONFIG.ACCEL * throttle;
+    ship.vz += dir.z * COCKPIT_CONFIG.ACCEL * throttle;
+  }
+
+  // Drift, not a hard stop -- thrust only fires while a throttle input is
+  // actively held past its dead zone (above); releasing it just removes
   // that input; existing velocity keeps carrying the ship forward, decaying
   // slowly via DRAG rather than snapping to zero.
   ship.vx *= COCKPIT_CONFIG.DRAG;
@@ -598,22 +808,75 @@ function updateCockpitShip() {
   updateCockpitDrawing();
 }
 
-function buildCockpitStarfield() {
+// A soft round sprite for star points -- THREE.PointsMaterial with no map
+// renders plain GL squares (the "stars look too large and perfectly
+// square, like connectable objects" review feedback), not circles. Built
+// once from a tiny canvas gradient and shared by every connection's star
+// group, not regenerated per-connection.
+function cockpitStarTexture() {
+  if (COCKPIT.starTexture) return COCKPIT.starTexture;
   const THREE = THREE_LIB;
-  const positions = new Float32Array(COCKPIT_CONFIG.STAR_COUNT * 3);
-  for (let i = 0; i < COCKPIT_CONFIG.STAR_COUNT; i++) {
-    const r = COCKPIT_CONFIG.STAR_FIELD_RADIUS * (0.3 + 0.7 * Math.random());
-    const theta = Math.random() * Math.PI * 2;
-    const phi = Math.acos(2 * Math.random() - 1);
-    positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
-    positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
-    positions[i * 3 + 2] = r * Math.cos(phi);
+  const size = 32;
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  const ctx2d = c.getContext('2d');
+  const gradient = ctx2d.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  gradient.addColorStop(0, 'rgba(255,255,255,1)');
+  gradient.addColorStop(0.4, 'rgba(255,255,255,0.7)');
+  gradient.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx2d.fillStyle = gradient;
+  ctx2d.fillRect(0, 0, size, size);
+  COCKPIT.starTexture = new THREE.CanvasTexture(c);
+  return COCKPIT.starTexture;
+}
+
+// No ambient background starfield (see review feedback: a full 3D field of
+// bright squares read as a field of connectable objects, not decoration).
+// Instead, a small sparse halo appears around each dot the instant its
+// connection completes -- the direct 3D equivalent of classic mode's
+// spawnStarsAroundDots, called from completeCockpitConnection the same way.
+function spawnCockpitConnectionStars(dotA, dotB) {
+  if (!COCKPIT.scene || !THREE_LIB) return; // scene not built yet (Three.js still loading) -- nothing to add to
+  const THREE = THREE_LIB;
+  const perDot = COCKPIT_CONFIG.CONNECTION_STARS_PER_DOT;
+  const positions = new Float32Array(perDot * 2 * 3);
+  let i = 0;
+  for (const dot of [dotA, dotB]) {
+    for (let k = 0; k < perDot; k++) {
+      // Scattered within a small sphere around the dot, not just on its
+      // surface -- same reasoning as findValidCockpitPosition's own r * cbrt.
+      const r = COCKPIT_CONFIG.CONNECTION_STAR_SCATTER_RADIUS * Math.cbrt(Math.random());
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      positions[i++] = dot.x + r * Math.sin(phi) * Math.cos(theta);
+      positions[i++] = dot.y + r * Math.sin(phi) * Math.sin(theta);
+      positions[i++] = dot.z + r * Math.cos(phi);
+    }
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  const material = new THREE.PointsMaterial({ color: 0xffffff, size: 1.6, sizeAttenuation: true });
-  COCKPIT.starPoints = new THREE.Points(geometry, material);
-  COCKPIT.scene.add(COCKPIT.starPoints);
+  const material = new THREE.PointsMaterial({
+    map: cockpitStarTexture(),
+    color: 0xffffff,
+    size: COCKPIT_CONFIG.CONNECTION_STAR_SIZE,
+    sizeAttenuation: true,
+    transparent: true,
+    depthWrite: false,
+  });
+  const points = new THREE.Points(geometry, material);
+  COCKPIT.scene.add(points);
+  COCKPIT.starGroups.push(points);
+}
+
+function clearCockpitConnectionStars() {
+  if (COCKPIT.scene) {
+    for (const points of COCKPIT.starGroups) {
+      COCKPIT.scene.remove(points);
+      points.geometry.dispose();
+      points.material.dispose();
+    }
+  }
+  COCKPIT.starGroups = [];
 }
 
 function ensureCockpitScene() {
@@ -625,14 +888,12 @@ function ensureCockpitScene() {
   COCKPIT.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
 
   COCKPIT.scene = new THREE.Scene();
-  COCKPIT.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 4000);
+  COCKPIT.camera = new THREE.PerspectiveCamera(COCKPIT_CONFIG.FOV_DEFAULT, window.innerWidth / window.innerHeight, 0.1, 4000);
 
   COCKPIT.scene.add(new THREE.AmbientLight(0xffffff, 0.7));
   const point = new THREE.PointLight(0xffffff, 0.6);
   point.position.set(0, 200, 200);
   COCKPIT.scene.add(point);
-
-  buildCockpitStarfield();
 }
 
 function buildCockpitDotMeshes() {
@@ -658,17 +919,31 @@ function threeVectorsFrom(points) {
   return points.map(p => new THREE_LIB.Vector3(p.x, p.y, p.z));
 }
 
-function updateCockpitLineObjects() {
+// A real tube mesh, not a THREE.Line -- WebGL clamps gl.LINE width to ~1px
+// on most drivers regardless of LineBasicMaterial's linewidth property (a
+// well-known Three.js/WebGL limitation, not a bug in this file), which is
+// exactly why the original lines were "way too thin and not very bright"
+// (review feedback). MeshBasicMaterial is unlit -- it renders at its exact
+// color from every angle regardless of scene lighting, reading as a bright
+// self-illuminated trail rather than something that dims when it's not
+// facing a light.
+function buildCockpitLineMesh(points, colorHex) {
   const THREE = THREE_LIB;
+  const curve = new THREE.CatmullRomCurve3(threeVectorsFrom(points));
+  const tubularSegments = Math.max(8, Math.min(64, points.length * 4));
+  const geometry = new THREE.TubeGeometry(curve, tubularSegments, COCKPIT_CONFIG.LINE_TUBE_RADIUS, 6, false);
+  const material = new THREE.MeshBasicMaterial({ color: new THREE.Color(colorHex) });
+  return new THREE.Mesh(geometry, material);
+}
+
+function updateCockpitLineObjects() {
   // Completed lines: rebuilt only when the count changes -- cheap enough at
   // this scale (a handful of pairs per wave) and simplest to keep in sync
   // with STATE.cockpitLines without a separate dirty-tracking scheme.
   if (COCKPIT.lineObjects.length !== STATE.cockpitLines.length) {
     for (const obj of COCKPIT.lineObjects) { COCKPIT.scene.remove(obj); obj.geometry.dispose(); obj.material.dispose(); }
     COCKPIT.lineObjects = STATE.cockpitLines.map(line => {
-      const geometry = new THREE.BufferGeometry().setFromPoints(threeVectorsFrom(line.points));
-      const material = new THREE.LineBasicMaterial({ color: new THREE.Color(INSTRUMENTS[line.colorIndex].hex) });
-      const obj = new THREE.Line(geometry, material);
+      const obj = buildCockpitLineMesh(line.points, INSTRUMENTS[line.colorIndex].hex);
       COCKPIT.scene.add(obj);
       return obj;
     });
@@ -684,9 +959,7 @@ function updateCockpitLineObjects() {
     COCKPIT.activeLineObject = null;
   }
   if (STATE.cockpitActiveDot && STATE.cockpitPath.length > 1) {
-    const geometry = new THREE.BufferGeometry().setFromPoints(threeVectorsFrom(STATE.cockpitPath));
-    const material = new THREE.LineBasicMaterial({ color: new THREE.Color(INSTRUMENTS[STATE.cockpitActiveDot.colorIndex].hex) });
-    COCKPIT.activeLineObject = new THREE.Line(geometry, material);
+    COCKPIT.activeLineObject = buildCockpitLineMesh(STATE.cockpitPath, INSTRUMENTS[STATE.cockpitActiveDot.colorIndex].hex);
     COCKPIT.scene.add(COCKPIT.activeLineObject);
   }
 }
@@ -695,19 +968,84 @@ function renderCockpitScene() {
   if (!THREE_LIB || !COCKPIT.scene || !STATE.cockpitShip) return;
   const ship = STATE.cockpitShip;
 
+  if (STATE.cockpitFov != null && COCKPIT.camera.fov !== STATE.cockpitFov) {
+    COCKPIT.camera.fov = STATE.cockpitFov;
+    COCKPIT.camera.updateProjectionMatrix();
+  }
+
   COCKPIT.camera.position.set(ship.x, ship.y, ship.z);
   const dir = noseDirection(ship.yaw, ship.pitch);
   COCKPIT.camera.lookAt(ship.x + dir.x, ship.y + dir.y, ship.z + dir.z);
   // Bank into turns -- purely visual (recomputed from scratch every frame,
-  // so it never accumulates), proportional to how hard the joystick is
-  // currently pushed sideways.
-  const joy = STATE.cockpitJoystick;
-  const dx = joy ? joy.curX - joy.anchorX : 0;
-  COCKPIT.camera.rotateZ(Math.max(-0.5, Math.min(0.5, -dx * 0.006)));
+  // so it never accumulates), proportional to the current steering input's
+  // yaw component, from whichever source (stick/WASD/mouse) is active.
+  const turn = computeCockpitTurn();
+  COCKPIT.camera.rotateZ(-turn.x * 0.4);
 
   updateCockpitLineObjects();
 
   COCKPIT.renderer.render(COCKPIT.scene, COCKPIT.camera);
+}
+
+// The dot the waypoint arrow should point toward: the match for whichever
+// connection is currently in progress, or the nearest unconnected dot if
+// none is. Mirrors what a player is actually trying to reach in either
+// case, not just "closest thing" regardless of context.
+function cockpitWaypointTarget() {
+  if (STATE.cockpitActiveDot) {
+    return STATE.dots.find(d => d.pairId === STATE.cockpitActiveDot.pairId
+      && d.id !== STATE.cockpitActiveDot.id && !d.connected) || null;
+  }
+  let nearest = null, nearestDist = Infinity;
+  const ship = STATE.cockpitShip;
+  for (const dot of STATE.dots) {
+    if (dot.connected) continue;
+    const dist = Math.hypot(ship.x - dot.x, ship.y - dot.y, ship.z - dot.z);
+    if (dist < nearestDist) { nearestDist = dist; nearest = dot; }
+  }
+  return nearest;
+}
+
+// A compass-style arrow near the screen edge, always pointing the right
+// direction to turn -- including when the target is behind the ship, where
+// it correctly still resolves to "turn left" or "turn right" rather than
+// pointing somewhere nonsensical (camera-local x/y stay meaningful even
+// when local z, "in front vs. behind," goes positive). Difficulty-gated
+// per the player's own request: Relaxed always shows it, Normal only after
+// COCKPIT_CONFIG.WAYPOINT_IDLE_MS without a new connection, Intense never.
+function updateCockpitWaypointArrow() {
+  const el = document.getElementById('cockpit-waypoint-arrow');
+  if (!STATE.cockpitMode || !STATE.cockpitShip || STATE.difficulty === 'intense') {
+    el.classList.remove('visible');
+    return;
+  }
+  const dueToIdle = STATE.difficulty === 'relaxed'
+    || (performance.now() - STATE.cockpitLastProgressTime >= COCKPIT_CONFIG.WAYPOINT_IDLE_MS);
+  if (!dueToIdle) {
+    el.classList.remove('visible');
+    return;
+  }
+  const target = cockpitWaypointTarget();
+  if (!target || !THREE_LIB || !COCKPIT.camera) {
+    el.classList.remove('visible');
+    return;
+  }
+
+  const THREE = THREE_LIB;
+  const ship = STATE.cockpitShip;
+  const toTarget = new THREE.Vector3(target.x - ship.x, target.y - ship.y, target.z - ship.z);
+  const local = toTarget.applyQuaternion(COCKPIT.camera.quaternion.clone().invert());
+  const angle = Math.atan2(local.x, local.y); // 0 = target dead ahead-and-up on screen, clockwise from there
+
+  const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+  const edgeRadius = Math.min(window.innerWidth, window.innerHeight) * 0.42;
+  el.style.left = (cx + Math.sin(angle) * edgeRadius) + 'px';
+  el.style.top = (cy - Math.cos(angle) * edgeRadius) + 'px';
+  el.style.transform = `translate(-50%, -50%) rotate(${angle}rad)`;
+  const color = INSTRUMENTS[target.colorIndex].hex;
+  el.style.color = color;
+  el.style.textShadow = `0 0 14px ${color}`;
+  el.classList.add('visible');
 }
 
 function teardownCockpitScene() {
@@ -736,7 +1074,11 @@ function teardownCockpitScene() {
   COCKPIT.dotMeshes.clear();
   COCKPIT.lineObjects = [];
   COCKPIT.activeLineObject = null;
+  clearCockpitConnectionStars();
   document.getElementById('cockpitCanvas').classList.remove('visible');
+  document.getElementById('cockpit-left-stick').classList.remove('visible');
+  document.getElementById('cockpit-right-stick').classList.remove('visible');
+  document.getElementById('cockpit-waypoint-arrow').classList.remove('visible');
 }
 
 function startCockpitWave(waveNumber) {
@@ -746,10 +1088,20 @@ function startCockpitWave(waveNumber) {
     vx: 0, vy: 0, vz: 0,
     yaw: 0, pitch: 0, // already faces -z, i.e. back in toward the dot field centered on the origin
   };
-  STATE.cockpitJoystick = null;
+  if (STATE.cockpitFov == null) STATE.cockpitFov = COCKPIT_CONFIG.FOV_DEFAULT; // a zoom preference, not
+                                                                                 // per-wave state -- only
+                                                                                 // defaulted once, then
+                                                                                 // left alone across waves
+  STATE.cockpitLeftStick = null;
+  STATE.cockpitRightStick = null;
+  STATE.cockpitKeys = { w: false, a: false, s: false, d: false, up: false, down: false, zoomIn: false, zoomOut: false };
+  STATE.cockpitMouseButtons = { left: false, right: false };
   STATE.cockpitActiveDot = null;
   STATE.cockpitPath = [];
   STATE.cockpitLines = [];
+  clearCockpitConnectionStars(); // a new wave's connections haven't happened yet -- no halo carries over
+  STATE.cockpitLastProgressTime = performance.now();
+  refreshCockpitControlVisibility();
   document.getElementById('cockpitCanvas').classList.add('visible');
 
   ensureThreeLoaded().then(() => {
@@ -1756,7 +2108,33 @@ const STATE = {
                           // exclusive with flightMode (see setupTitleLoadListeners)
   cockpitShip: null,      // { x, y, z, vx, vy, vz, yaw, pitch } while cockpitMode is active and a
                            // wave is in progress (see startCockpitWave/updateCockpitShip); null otherwise
-  cockpitJoystick: null,  // { anchorX, anchorY, curX, curY } screen-space, while a touch/drag is down
+  cockpitFov: null,       // camera field of view, degrees -- null until startCockpitWave sets it to the
+                           // default; persists across waves within a session (a zoom preference, not
+                           // per-wave ship state) -- see COCKPIT_CONFIG.FOV_DEFAULT/updateCockpitZoom
+  cockpitLastProgressTime: 0, // performance.now() of the last completed connection (or wave start) --
+                               // drives the Normal-difficulty waypoint arrow's idle delay (see
+                               // updateCockpitWaypointArrow)
+  // Touch: two independent on-screen sticks, tracked by touch identifier so
+  // both fingers can be down at once (see cockpitTouchStart/Move/End) --
+  // left = throttle, right = steering direction. { touchId, curX, curY }
+  // while that stick's zone has an active touch, screen-space; null
+  // otherwise. The stick's anchor (fixed screen position) comes from its
+  // own DOM element's position, not from wherever the touch started -- see
+  // cockpitStickAnchor -- so the on-screen graphic and the actual input
+  // origin can never drift apart.
+  cockpitLeftStick: null,
+  cockpitRightStick: null,
+  // Desktop: WASD (steering) + up/down arrows (throttle) + left/right
+  // arrows (zoom, continuous while held) -- see handleCockpitKeyDown/Up.
+  cockpitKeys: { w: false, a: false, s: false, d: false, up: false, down: false, zoomIn: false, zoomOut: false },
+  // Desktop: mouse position (screen-space, relative to canvas center) acts
+  // as a continuous steering input alongside WASD -- see
+  // handleCockpitMouseMove -- null until the first real mousemove, so a
+  // touch-only session never has stray desktop steering mixed in.
+  cockpitMousePos: null,
+  // Desktop: left button decelerates, right button accelerates -- see
+  // handleCockpitMouseDown/Up.
+  cockpitMouseButtons: { left: false, right: false },
   cockpitActiveDot: null, // the dot a cockpit connection is currently being drawn from, or null
   cockpitPath: [],        // 3D points [{x,y,z}] recorded along the ship's own flight path since
                            // cockpitActiveDot was entered -- the 3D equivalent of STATE.currentPath
@@ -3783,6 +4161,27 @@ function cancelStaleDrawGesture() {
     cancelActiveLine();
   }
   STATE.eraseArmed = false;
+
+  // Cockpit Mode: a held key/mouse button or an in-progress stick touch has
+  // exactly the same "interrupted, no matching end event" problem -- iOS
+  // can fire touchcancel instead of touchend, and losing window focus
+  // entirely (alt-tab, another app) skips keyup/mouseup altogether. Without
+  // this, updateCockpitShip keeps steering/thrusting after the player
+  // returns, and a cancelled stick touch permanently blocks that side from
+  // ever accepting a new finger, since only a real touchend clears it
+  // (review, #45).
+  STATE.cockpitLeftStick = null;
+  STATE.cockpitRightStick = null;
+  STATE.cockpitKeys.w = false;
+  STATE.cockpitKeys.a = false;
+  STATE.cockpitKeys.s = false;
+  STATE.cockpitKeys.d = false;
+  STATE.cockpitKeys.up = false;
+  STATE.cockpitKeys.down = false;
+  STATE.cockpitKeys.zoomIn = false;
+  STATE.cockpitKeys.zoomOut = false;
+  STATE.cockpitMouseButtons.left = false;
+  STATE.cockpitMouseButtons.right = false;
 }
 window.addEventListener('mouseup', cancelStaleDrawGesture);
 window.addEventListener('blur', cancelStaleDrawGesture);
@@ -3794,6 +4193,24 @@ window.addEventListener('keydown', () => {
     STATE.waveCompleteAdvanceFn();
   }
 });
+
+// Cockpit Mode's desktop control scheme -- WASD/arrows/mouse, alongside
+// (not instead of) the two on-screen sticks used on touch (see
+// cockpitTouchStart/Move/End above and refreshCockpitControlVisibility for
+// which one a given device actually sees). Registered unconditionally at
+// window level, same as the listeners above -- each handler is a no-op
+// unless STATE.cockpitMode is actually active, so there's no cost or
+// interference for classic/Flight Mode.
+window.addEventListener('keydown', handleCockpitKeyDown);
+window.addEventListener('keyup', handleCockpitKeyUp);
+window.addEventListener('mousemove', handleCockpitMouseMove);
+window.addEventListener('mousedown', handleCockpitMouseDown);
+window.addEventListener('mouseup', handleCockpitMouseUp);
+// The right mouse button is "accelerate" in Cockpit Mode (see
+// handleCockpitMouseDown) -- the browser's own right-click context menu
+// must never appear over it, or holding it down would be interrupted by a
+// menu popping up mid-flight.
+window.addEventListener('contextmenu', (e) => { if (STATE.cockpitMode && STATE.phase === 'PLAYING') e.preventDefault(); });
 
 // Returns world-space coordinates (see screenToWorld) — every caller wants
 // to compare against dot.x/dot.y, which live in world space once the
@@ -3846,6 +4263,15 @@ function updatePinch(e) {
 function onWheelZoom(e) {
   if (STATE.phase !== 'PLAYING' || STATE.paused) return;
   e.preventDefault();
+  if (STATE.cockpitMode) {
+    // Scroll up (negative deltaY) narrows the FOV -- zooms in -- same
+    // direction classic mode's own scroll-to-zoom uses (see setUserZoom).
+    if (STATE.cockpitFov != null) {
+      STATE.cockpitFov = Math.max(COCKPIT_CONFIG.FOV_MIN, Math.min(COCKPIT_CONFIG.FOV_MAX,
+        STATE.cockpitFov + e.deltaY * COCKPIT_CONFIG.FOV_WHEEL_STEP));
+    }
+    return;
+  }
   setUserZoom(STATE.camera.userZoom - e.deltaY * CAMERA_CONFIG.WHEEL_ZOOM_STEP);
 }
 
@@ -3894,12 +4320,13 @@ function onInputStart(e) {
     return;
   }
 
-  // In Cockpit Mode a touch/drag anywhere is a virtual joystick -- wherever
-  // it first lands becomes the joystick's anchor (see cockpitInputStart);
-  // it never starts a drag-from-a-dot gesture or a camera pan the way
-  // classic mode's touch does.
+  // In Cockpit Mode, touch is the two on-screen sticks (see
+  // cockpitTouchStart) -- it never starts a drag-from-a-dot gesture or a
+  // camera pan the way classic mode's touch does. Desktop mouse input goes
+  // through its own always-on listeners instead (handleCockpitMouseMove/
+  // Down/Up, registered separately) -- a plain click here does nothing.
   if (STATE.cockpitMode) {
-    cockpitInputStart(getEventScreenPos(e));
+    if (e.touches) cockpitTouchStart(e);
     return;
   }
 
@@ -3975,7 +4402,7 @@ function onInputMove(e) {
   }
 
   if (STATE.cockpitMode && STATE.phase === 'PLAYING') {
-    cockpitInputMove(getEventScreenPos(e));
+    if (e.touches) cockpitTouchMove(e);
     return;
   }
 
@@ -4110,7 +4537,7 @@ function onInputEnd(e) {
   }
 
   if (STATE.cockpitMode) {
-    cockpitInputEnd();
+    if (e.changedTouches) cockpitTouchEnd(e);
     return;
   }
 
@@ -7079,7 +7506,12 @@ function maybeShowSaveTip() {
 function pauseGame() {
   if (STATE.paused || STATE.phase === 'TITLE') return; // nothing meaningful to pause from the title screen
   STATE.paused = true;
-  STATE.cockpitJoystick = null; // a touch still down when pause was triggered must not keep steering once resumed
+  // A touch/key/button still down when pause was triggered must not keep
+  // steering or thrusting once resumed.
+  STATE.cockpitLeftStick = null;
+  STATE.cockpitRightStick = null;
+  STATE.cockpitKeys = { w: false, a: false, s: false, d: false, up: false, down: false, zoomIn: false, zoomOut: false };
+  STATE.cockpitMouseButtons = { left: false, right: false };
   if (STATE.audioCtx && STATE.masterGain) {
     const t = STATE.audioCtx.currentTime;
     STATE.masterGain.gain.cancelScheduledValues(t);
@@ -7225,7 +7657,11 @@ function exitToTitle() {
   STATE.activePortalThread = null;
   STATE.ship = null;
   STATE.cockpitShip = null;
-  STATE.cockpitJoystick = null;
+  STATE.cockpitLeftStick = null;
+  STATE.cockpitRightStick = null;
+  STATE.cockpitKeys = { w: false, a: false, s: false, d: false, up: false, down: false, zoomIn: false, zoomOut: false };
+  STATE.cockpitMousePos = null;
+  STATE.cockpitMouseButtons = { left: false, right: false };
   STATE.cockpitActiveDot = null;
   STATE.cockpitPath = [];
   STATE.cockpitLines = [];
@@ -7853,6 +8289,8 @@ function render() {
   // still runs so wave-transition fades work the same as classic mode.
   if (STATE.cockpitMode && STATE.cockpitShip) {
     renderCockpitScene();
+    updateCockpitStickVisuals();
+    updateCockpitWaypointArrow();
     drawFadeOverlay();
     return;
   }
