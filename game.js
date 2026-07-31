@@ -2378,6 +2378,14 @@ function shiftWorldEntities(dx, dy) {
     for (const seg of t.segments) { seg.x1 += dx; seg.y1 += dy; seg.x2 += dx; seg.y2 += dy; }
     for (const p of t.points) { p.x += dx; p.y += dy; }
   }
+  if (STATE.ship) {
+    STATE.ship.x += dx; STATE.ship.y += dy;
+    // The steering target is stale/meaningless when nothing is actively
+    // held (hasTarget false), but shifting it unconditionally anyway costs
+    // nothing and avoids the ship lurching toward a now-wrong-relative
+    // point on whatever the next held frame happens to be.
+    STATE.ship.targetX += dx; STATE.ship.targetY += dy;
+  }
 }
 
 function growWorldToMatchAspect() {
@@ -3240,7 +3248,19 @@ canvas.addEventListener('wheel', onWheelZoom, { passive: false });
 // on canvas, so this is a no-op for a normal connection -- onInputEnd
 // has already cleared isDrawing by the time it runs.
 function cancelStaleDrawGesture() {
-  if (STATE.isDrawing) cancelActiveLine();
+  // Flight Mode deliberately leaves isDrawing true on a normal release so
+  // the ship can coast toward/through a dot with the finger already up
+  // (see onInputEnd's flight branch) -- this window-level 'mouseup' still
+  // fires right after canvas's own bubble-phase handler for EVERY release,
+  // including that one, so treating it the same as a genuinely stale/
+  // interrupted gesture would cancel every flight-mode connection the
+  // instant a mouse button lifts. Stop steering instead, same as a normal
+  // release does, and leave the connection itself alone (review, #42).
+  if (STATE.flightMode && STATE.ship) {
+    STATE.ship.hasTarget = false;
+  } else if (STATE.isDrawing) {
+    cancelActiveLine();
+  }
   STATE.eraseArmed = false;
 }
 window.addEventListener('mouseup', cancelStaleDrawGesture);
@@ -3287,6 +3307,13 @@ function beginPinch(e) {
   if (STATE.isDrawing) cancelActiveLine();
   STATE.panDrag = null; // a second finger landing mid-pan means a pinch is starting, not a continued drag
   STATE.eraseArmed = false; // the first finger only grazed a line on its way into a pinch, not a tap on it
+  // Otherwise the ship keeps accelerating toward the pre-pinch single-
+  // finger touch point for the whole zoom gesture -- and onInputEnd's own
+  // pinch handling (`if (STATE.pinch) { STATE.pinch = null; return; }`)
+  // returns before ever reaching the Flight Mode release branch, so that
+  // stale target would otherwise still be active even after both fingers
+  // lift (review, #42).
+  if (STATE.flightMode && STATE.ship) STATE.ship.hasTarget = false;
   STATE.pinch = { startDist: pinchDistance(e.touches), startZoom: STATE.camera.userZoom };
 }
 
@@ -3501,10 +3528,15 @@ function updateEdgePan() {
   // The screen point itself hasn't moved, but the world point underneath
   // it just did (the camera moved) -- re-derive it fresh and keep
   // extending the line toward it, exactly as a real move event would.
-  // Only meaningful once a connection is actually in progress -- in
-  // Flight Mode this can run before the ship has ever reached a dot, and
-  // advanceDrawingTo assumes a non-empty STATE.currentPath.
-  if (STATE.isDrawing) advanceDrawingTo(screenToWorld(x, y));
+  // Classic mode only: there, the pointer position IS the thing drawing
+  // the line. In Flight Mode the pointer is just a steering target, often
+  // far from the ship itself (that's the whole point of momentum) --
+  // feeding it into currentPath here would record a jump between the
+  // ship's real position (added separately, every frame, by
+  // updateShipDrawing) and this distant point, inflating the line's score
+  // and risking false barrier/crossing rejections (review, #42). The
+  // camera still pans either way; only which path gets extended differs.
+  if (STATE.isDrawing && !STATE.flightMode) advanceDrawingTo(screenToWorld(x, y));
 }
 
 function onInputEnd(e) {
