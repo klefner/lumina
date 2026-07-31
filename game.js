@@ -1061,6 +1061,12 @@ function updateCockpitConnectionStatus() {
   }
   const color = INSTRUMENTS[STATE.cockpitActiveDot.colorIndex].hex;
   el.style.color = color;
+  // #top-buttons-row can wrap to a second line on narrow viewports (see its
+  // own comment) -- clear whatever it's actually rendering as right now
+  // instead of a fixed offset sized for one line, or the badge lands on top
+  // of the wrapped HELP/PAUSE row instead of below it (review, #46).
+  const overlayBottom = document.getElementById('ui-overlay').getBoundingClientRect().bottom;
+  el.style.top = Math.max(16, overlayBottom + 8) + 'px';
   el.classList.add('visible');
 }
 

@@ -121,10 +121,13 @@ html, body {
    difficulty-gated waypoint arrow above -- shown any time a cockpit
    connection is in progress, since the dot/line being dragged from is easy
    to lose behind the ship while flying forward past it. Color is set inline
-   to match the active pair's color (see updateCockpitConnectionStatus). */
+   to match the active pair's color (see updateCockpitConnectionStatus).
+   `top` is set inline too, not here -- same reasoning as #hint-toast above:
+   #top-buttons-row can wrap to a second line on narrow viewports, and a
+   fixed CSS offset sized for one line would sit the badge right on top of
+   the wrapped HELP/PAUSE row instead of clearing it (review, #46). */
 #cockpit-connection-status {
   position: fixed;
-  top: 16px;
   left: 50%;
   transform: translateX(-50%);
   display: none;
