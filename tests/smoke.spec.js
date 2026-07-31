@@ -3969,16 +3969,15 @@ test('starting a Cockpit Mode wave generates 3D dots and a ship, and shows the c
   expect(errors).toEqual([]);
 });
 
-// The joystick physics themselves, over real elapsed time: thrust turns the
-// nose and builds velocity while held, and releasing it removes the thrust
-// input without killing the existing velocity outright -- the "drift, not
-// an immediate stop" behavior that was explicitly requested for this mode
-// (see COCKPIT_CONFIG.DRAG's comment). Driven by real dispatched mouse
-// events (page.mouse), not direct onInputStart/Move/End calls -- those
-// would still pass even with #cockpitCanvas sitting on top and silently
-// swallowing every real touch/click (review, #44: pointer-events:none is
-// what actually fixed it), so only a real event round-trip proves it.
-test('the cockpit joystick steers the ship and lets it drift on release instead of stopping dead', async ({ page }) => {
+// Desktop control scheme, driven by real dispatched mouse events (not
+// direct function calls, for the same reason as the P1 fix in #44: only a
+// real event round-trip proves the input actually reaches the game).
+// Steering (mouse position, relative to screen center) and throttle (right
+// mouse button) are independent inputs now, not one combined joystick --
+// see computeCockpitThrottle/Turn and the player's own request for the
+// split. Also covers the "drift, not an immediate stop" behavior on
+// release (see COCKPIT_CONFIG.DRAG's comment).
+test('desktop mouse steers by position and throttles by button, and the ship drifts on release instead of stopping dead', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
@@ -3993,22 +3992,24 @@ test('the cockpit joystick steers the ship and lets it drift on release instead 
   expect(start.vy).toBe(0);
   expect(start.vz).toBe(0);
 
-  // Anchor at (250, 450), drag up-and-right -- should yaw right, pitch up,
-  // and build thrust back toward the dot field centered on the origin
-  // (the ship starts on the +z axis facing -z, see startCockpitWave).
-  await page.mouse.move(250, 450);
-  await page.mouse.down();
-  await page.mouse.move(320, 380, { steps: 5 });
-  expect(await page.evaluate(() => !!STATE.cockpitJoystick)).toBe(true); // the real event actually reached cockpitInputStart
-  await page.waitForTimeout(500); // ~30 real frames of thrust
+  // Move the mouse well off-center (no button held) -- steering alone,
+  // no thrust yet.
+  await page.mouse.move(400, 200, { steps: 5 });
+  await page.waitForTimeout(300);
+  const steeredOnly = await page.evaluate(() => ({ ...STATE.cockpitShip }));
+  expect(steeredOnly.yaw).not.toBe(0);
+  expect(steeredOnly.pitch).not.toBe(0);
+  expect(Math.hypot(steeredOnly.vx, steeredOnly.vy, steeredOnly.vz)).toBe(0);
 
+  // Now hold the right mouse button -- accelerate ("throttle") -- for real
+  // elapsed time.
+  await page.mouse.down({ button: 'right' });
+  await page.waitForTimeout(500); // ~30 real frames of thrust
   const thrusting = await page.evaluate(() => ({ ...STATE.cockpitShip }));
-  expect(thrusting.yaw).toBeGreaterThan(0);
-  expect(thrusting.pitch).toBeGreaterThan(0);
   const speedWhileThrusting = Math.hypot(thrusting.vx, thrusting.vy, thrusting.vz);
   expect(speedWhileThrusting).toBeGreaterThan(0);
 
-  await page.mouse.up();
+  await page.mouse.up({ button: 'right' });
   const justReleased = await page.evaluate(() => ({ ...STATE.cockpitShip }));
   const speedJustAfterRelease = Math.hypot(justReleased.vx, justReleased.vy, justReleased.vz);
   // Released, not stopped -- velocity survives the release itself.
@@ -4022,6 +4023,67 @@ test('the cockpit joystick steers the ship and lets it drift on release instead 
   expect(speedAfterDrift).toBeLessThan(speedJustAfterRelease);
   expect(speedAfterDrift).toBeGreaterThan(0.01);
   expect(errors).toEqual([]);
+});
+
+// Touch device: two independent on-screen sticks, tracked by real
+// simultaneous touches with distinct identifiers -- left = throttle
+// (vertical deflection), right = steering direction. Verifies both fingers
+// work at once, independently, which a single-pointer test couldn't catch.
+test('touch dual joysticks steer and throttle independently with two simultaneous fingers', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 500, height: 900 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#cockpit-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(200);
+
+  expect(await page.evaluate(() => isTouchCapableDevice())).toBe(true);
+  await expect(page.locator('#cockpit-left-stick')).toHaveClass(/visible/);
+  await expect(page.locator('#cockpit-right-stick')).toHaveClass(/visible/);
+
+  await page.evaluate(() => {
+    const canvasEl = document.getElementById('gameCanvas');
+    const rect = canvasEl.getBoundingClientRect();
+    const left = new Touch({ identifier: 1, target: canvasEl, clientX: 80, clientY: rect.height - 100 });
+    const right = new Touch({ identifier: 2, target: canvasEl, clientX: rect.width - 80, clientY: rect.height - 60 });
+    canvasEl.dispatchEvent(new TouchEvent('touchstart', { touches: [left, right], changedTouches: [left, right], targetTouches: [left, right], bubbles: true, cancelable: true }));
+  });
+  const afterStart = await page.evaluate(() => ({ left: STATE.cockpitLeftStick, right: STATE.cockpitRightStick }));
+  expect(afterStart.left).toBeTruthy();
+  expect(afterStart.right).toBeTruthy();
+
+  // Left finger up (throttle), right finger sideways (steer) -- both at once.
+  await page.evaluate(() => {
+    const canvasEl = document.getElementById('gameCanvas');
+    const rect = canvasEl.getBoundingClientRect();
+    const left = new Touch({ identifier: 1, target: canvasEl, clientX: 80, clientY: rect.height - 160 });
+    const right = new Touch({ identifier: 2, target: canvasEl, clientX: rect.width - 40, clientY: rect.height - 60 });
+    canvasEl.dispatchEvent(new TouchEvent('touchmove', { touches: [left, right], changedTouches: [left, right], targetTouches: [left, right], bubbles: true, cancelable: true }));
+  });
+  await page.waitForTimeout(400);
+  const afterMove = await page.evaluate(() => ({
+    speed: Math.hypot(STATE.cockpitShip.vx, STATE.cockpitShip.vy, STATE.cockpitShip.vz),
+    yaw: STATE.cockpitShip.yaw,
+  }));
+  expect(afterMove.speed).toBeGreaterThan(0);
+  expect(afterMove.yaw).not.toBe(0);
+
+  await page.evaluate(() => {
+    const canvasEl = document.getElementById('gameCanvas');
+    const rect = canvasEl.getBoundingClientRect();
+    const left = new Touch({ identifier: 1, target: canvasEl, clientX: 80, clientY: rect.height - 160 });
+    const right = new Touch({ identifier: 2, target: canvasEl, clientX: rect.width - 40, clientY: rect.height - 60 });
+    canvasEl.dispatchEvent(new TouchEvent('touchend', { touches: [], changedTouches: [left, right], targetTouches: [], bubbles: true, cancelable: true }));
+  });
+  const afterEnd = await page.evaluate(() => ({ left: STATE.cockpitLeftStick, right: STATE.cockpitRightStick }));
+  expect(afterEnd.left).toBeNull();
+  expect(afterEnd.right).toBeNull();
+  expect(errors).toEqual([]);
+  await context.close();
 });
 
 // The actual flying-and-connecting mechanic, driven deterministically by
@@ -4122,7 +4184,7 @@ test('flying back through an already-completed cockpit line breaks the connectio
   expect(errors).toEqual([]);
 });
 
-test('the Cockpit Mode ship/joystick reset cleanly on a new wave and exiting to the title screen', async ({ page }) => {
+test('the Cockpit Mode ship/controls reset cleanly on a new wave and exiting to the title screen', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
@@ -4132,13 +4194,21 @@ test('the Cockpit Mode ship/joystick reset cleanly on a new wave and exiting to 
     startWave(1);
     const shipAfterStart = !!STATE.cockpitShip;
     STATE.cockpitShip.x = 12345; // mutate so a stale carry-over would be detectable
-    STATE.cockpitJoystick = { anchorX: 1, anchorY: 1, curX: 2, curY: 2 };
+    STATE.cockpitLeftStick = { touchId: 1, curX: 2, curY: 2 };
+    STATE.cockpitRightStick = { touchId: 2, curX: 3, curY: 3 };
+    STATE.cockpitKeys.w = true;
+    STATE.cockpitKeys.up = true;
+    STATE.cockpitMouseButtons.right = true;
     STATE.cockpitActiveDot = STATE.dots[0];
     STATE.cockpitPath = [{ x: 1, y: 1, z: 1 }];
     startWave(2);
     const resetAfterNewWave = {
       shipPosition: STATE.cockpitShip.x,
-      joystick: STATE.cockpitJoystick,
+      leftStick: STATE.cockpitLeftStick,
+      rightStick: STATE.cockpitRightStick,
+      keysW: STATE.cockpitKeys.w,
+      keysUp: STATE.cockpitKeys.up,
+      mouseRight: STATE.cockpitMouseButtons.right,
       activeDot: STATE.cockpitActiveDot,
       path: STATE.cockpitPath.length,
       lines: STATE.cockpitLines.length,
@@ -4146,9 +4216,10 @@ test('the Cockpit Mode ship/joystick reset cleanly on a new wave and exiting to 
     exitToTitle();
     const stateAfterExit = {
       ship: STATE.cockpitShip,
-      joystick: STATE.cockpitJoystick,
       activeDot: STATE.cockpitActiveDot,
       canvasVisible: document.getElementById('cockpitCanvas').classList.contains('visible'),
+      leftStickVisible: document.getElementById('cockpit-left-stick').classList.contains('visible'),
+      waypointVisible: document.getElementById('cockpit-waypoint-arrow').classList.contains('visible'),
     };
     STATE.cockpitMode = false;
     startWave(1);
@@ -4158,23 +4229,28 @@ test('the Cockpit Mode ship/joystick reset cleanly on a new wave and exiting to 
 
   expect(result.shipAfterStart).toBe(true);
   expect(result.resetAfterNewWave.shipPosition).not.toBe(12345); // startWave re-centers it, not carries the old position
-  expect(result.resetAfterNewWave.joystick).toBeNull();
+  expect(result.resetAfterNewWave.leftStick).toBeNull();
+  expect(result.resetAfterNewWave.rightStick).toBeNull();
+  expect(result.resetAfterNewWave.keysW).toBe(false);
+  expect(result.resetAfterNewWave.keysUp).toBe(false);
+  expect(result.resetAfterNewWave.mouseRight).toBe(false);
   expect(result.resetAfterNewWave.activeDot).toBeNull();
   expect(result.resetAfterNewWave.path).toBe(0);
   expect(result.resetAfterNewWave.lines).toBe(0);
   expect(result.stateAfterExit.ship).toBeNull();
-  expect(result.stateAfterExit.joystick).toBeNull();
   expect(result.stateAfterExit.activeDot).toBeNull();
   expect(result.stateAfterExit.canvasVisible).toBe(false);
+  expect(result.stateAfterExit.leftStickVisible).toBe(false);
+  expect(result.stateAfterExit.waypointVisible).toBe(false);
   expect(result.shipWhenDisabled).toBeNull(); // no ship at all once cockpitMode is off
   expect(errors).toEqual([]);
 });
 
-// A touch still down when the pause button is hit (or a keyboard pause
-// shortcut fires) must not keep thrusting once the game resumes -- same
-// reasoning as Flight Mode's window-level mouseup safety net, just for the
-// pause menu's own entry point instead (see pauseGame's own comment).
-test('pausing mid-steer clears the cockpit joystick so a stuck touch cannot keep thrusting once resumed', async ({ page }) => {
+// A key/button/touch still down when the pause button is hit must not keep
+// steering or thrusting once the game resumes -- same reasoning as Flight
+// Mode's window-level mouseup safety net, just for the pause menu's own
+// entry point instead (see pauseGame's own comment).
+test('pausing mid-steer clears cockpit keys/mouse buttons so nothing keeps thrusting once resumed', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
@@ -4184,17 +4260,66 @@ test('pausing mid-steer clears the cockpit joystick so a stuck touch cannot keep
   await page.click('#start-game-button');
   await page.waitForTimeout(200);
 
-  await page.evaluate(() => {
-    onInputStart({ preventDefault() {}, clientX: 250, clientY: 450 });
-    onInputMove({ preventDefault() {}, clientX: 320, clientY: 380 });
-  });
-  expect(await page.evaluate(() => !!STATE.cockpitJoystick)).toBe(true);
+  await page.keyboard.down('w');
+  await page.mouse.down({ button: 'right' });
+  expect(await page.evaluate(() => STATE.cockpitKeys.w)).toBe(true);
+  expect(await page.evaluate(() => STATE.cockpitMouseButtons.right)).toBe(true);
 
   await page.click('#pause-button');
-  expect(await page.evaluate(() => STATE.cockpitJoystick)).toBeNull();
+  expect(await page.evaluate(() => STATE.cockpitKeys.w)).toBe(false);
+  expect(await page.evaluate(() => STATE.cockpitMouseButtons.right)).toBe(false);
+
+  // Release the real key/button now (the test harness, not the game, is
+  // holding them) so they don't leak into later assertions.
+  await page.keyboard.up('w');
+  await page.mouse.up({ button: 'right' });
 
   await page.click('#pause-resume');
   await page.waitForTimeout(300);
-  expect(await page.evaluate(() => STATE.cockpitJoystick)).toBeNull(); // still clear -- no residual touch to resume steering with
+  expect(await page.evaluate(() => STATE.cockpitKeys.w)).toBe(false);
+  expect(await page.evaluate(() => STATE.cockpitMouseButtons.right)).toBe(false);
   expect(errors).toEqual([]);
 });
+
+// Left/right arrows and the mouse wheel both adjust the camera's FOV as a
+// zoom analog (see updateCockpitZoom/onWheelZoom's cockpitMode branch),
+// clamped to COCKPIT_CONFIG.FOV_MIN/MAX.
+test('left/right arrow keys and the mouse wheel zoom the cockpit camera via FOV, clamped to its range', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#cockpit-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(200);
+
+  const initialFov = await page.evaluate(() => STATE.cockpitFov);
+  expect(initialFov).toBeGreaterThan(0);
+
+  await page.keyboard.down('ArrowRight'); // zoom in -- FOV decreases
+  await page.waitForTimeout(300);
+  await page.keyboard.up('ArrowRight');
+  const afterZoomIn = await page.evaluate(() => STATE.cockpitFov);
+  expect(afterZoomIn).toBeLessThan(initialFov);
+
+  await page.keyboard.down('ArrowLeft'); // zoom out -- FOV increases
+  await page.waitForTimeout(600); // enough to cross back past the initial value
+  await page.keyboard.up('ArrowLeft');
+  const afterZoomOut = await page.evaluate(() => STATE.cockpitFov);
+  expect(afterZoomOut).toBeGreaterThan(afterZoomIn);
+
+  // Clamp check: hold zoom-in far longer than needed to reach FOV_MIN.
+  await page.keyboard.down('ArrowRight');
+  await page.waitForTimeout(2000);
+  await page.keyboard.up('ArrowRight');
+  const clamped = await page.evaluate(() => ({ fov: STATE.cockpitFov, min: COCKPIT_CONFIG.FOV_MIN }));
+  expect(clamped.fov).toBe(clamped.min);
+
+  await page.mouse.wheel(0, -300); // scroll up -- zoom in further, but already at the floor
+  await page.waitForTimeout(100);
+  const afterWheel = await page.evaluate(() => STATE.cockpitFov);
+  expect(afterWheel).toBe(clamped.fov); // still clamped, wheel can't push it past FOV_MIN either
+  expect(errors).toEqual([]);
+});
+

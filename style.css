@@ -52,6 +52,71 @@ html, body {
   display: block;
 }
 
+/* Cockpit Mode's two on-screen sticks -- touch devices only (see
+   refreshCockpitControlVisibility; desktop uses WASD/arrows/mouse
+   instead). Purely visual: pointer-events:none, since which stick a touch
+   controls is decided by which half of the screen it lands in (see
+   cockpitTouchStart), not by literally touching the graphic -- the base
+   just shows the player where that zone reads as centered. The knob's own
+   position is set directly in JS every frame (see updateCockpitStickVisuals)
+   to track the actual input, clamped to the same radius the physics uses. */
+.cockpit-stick {
+  position: fixed;
+  bottom: 36px;
+  width: 112px;
+  height: 112px;
+  display: none;
+  pointer-events: none;
+  z-index: 12;
+}
+.cockpit-stick.visible {
+  display: block;
+}
+#cockpit-left-stick {
+  left: 28px;
+}
+#cockpit-right-stick {
+  right: 28px;
+}
+.cockpit-stick-base {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.07);
+  border: 2px solid rgba(255, 255, 255, 0.22);
+}
+.cockpit-stick-knob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 46px;
+  height: 46px;
+  margin: -23px 0 0 -23px;
+  border-radius: 50%;
+  background: rgba(120, 200, 255, 0.55);
+  border: 2px solid rgba(180, 225, 255, 0.9);
+  box-shadow: 0 0 14px rgba(120, 200, 255, 0.65);
+}
+
+/* Points toward the dot the player's currently drawing to, or the nearest
+   unconnected one otherwise -- Relaxed always shows it, Normal after 3s
+   without a new connection, Intense never (see updateCockpitWaypointArrow).
+   Positioned near the screen edge and rotated in JS every frame; color is
+   set inline to match the target dot's own color. */
+#cockpit-waypoint-arrow {
+  position: fixed;
+  top: 0;
+  left: 0;
+  font-size: 34px;
+  line-height: 1;
+  display: none;
+  pointer-events: none;
+  z-index: 11;
+}
+#cockpit-waypoint-arrow.visible {
+  display: block;
+}
+
 #ui-overlay {
   position: fixed;
   top: 20px;
