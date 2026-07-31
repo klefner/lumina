@@ -373,6 +373,10 @@ const COCKPIT_CONFIG = {
                                 // updateCockpitWaypointArrow)
   WAYPOINT_ANGLE_SMOOTHING: 0.12, // per-frame chase rate for the edge-compass arrow's angle, only
                                     // used while the target is off-screen (see updateCockpitWaypointArrow)
+  WAYPOINT_MARKER_EDGE_MARGIN: 44, // px kept clear of every viewport edge for the on-screen waypoint
+                                     // marker -- covers its own ~34px height plus the 26px it's
+                                     // offset above the target, so it can never render partially or
+                                     // fully off-screen (review, #49)
   CONNECTION_STARS_PER_DOT: 20,     // mirrors classic mode's STARFIELD_CONFIG.STARS_PER_CONNECTION/2 --
                                      // no ambient background starfield here (see review feedback: it
                                      // read as a field of connectable objects) -- only a sparse halo
@@ -1101,6 +1105,7 @@ function updateCockpitWaypointArrow() {
   if (!STATE.cockpitMode || !STATE.cockpitShip || STATE.difficulty === 'intense') {
     el.classList.remove('visible');
     STATE.cockpitWaypointAngle = null;
+    STATE.cockpitWaypointTargetId = null;
     return;
   }
   const dueToIdle = STATE.difficulty === 'relaxed'
@@ -1108,13 +1113,26 @@ function updateCockpitWaypointArrow() {
   if (!dueToIdle) {
     el.classList.remove('visible');
     STATE.cockpitWaypointAngle = null;
+    STATE.cockpitWaypointTargetId = null;
     return;
   }
   const target = cockpitWaypointTarget();
   if (!target || !THREE_LIB || !COCKPIT.camera) {
     el.classList.remove('visible');
     STATE.cockpitWaypointAngle = null;
+    STATE.cockpitWaypointTargetId = null;
     return;
+  }
+  // The target's identity, not just whether it's currently null, has to
+  // reset the smoothed edge angle -- otherwise a target swap (the active
+  // connection's match changes, or "nearest unconnected" flips to a
+  // different dot) while both the old and new targets stay off-screen the
+  // whole time never hits the on-screen branch's own reset below, so the
+  // arrow instantly recolors to the new target but keeps sweeping from the
+  // old one's stale direction (review, #49).
+  if (STATE.cockpitWaypointTargetId !== target.id) {
+    STATE.cockpitWaypointAngle = null;
+    STATE.cockpitWaypointTargetId = target.id;
   }
 
   const THREE = THREE_LIB;
@@ -1135,8 +1153,17 @@ function updateCockpitWaypointArrow() {
   if (onScreen) {
     const px = (ndc.x * 0.5 + 0.5) * window.innerWidth;
     const py = (1 - (ndc.y * 0.5 + 0.5)) * window.innerHeight;
-    el.style.left = px + 'px';
-    el.style.top = (py - 26) + 'px'; // hovering just above the target, pointing down at it
+    // Clamped so the marker's own rendered footprint (a 34px-tall glyph,
+    // itself offset another 26px above the target) never goes off-edge --
+    // an unclamped target within ~9px of the top edge rendered the whole
+    // marker off-screen with nothing else shown either, since the onScreen
+    // test above only checks the target's own NDC position, not this
+    // element's footprint around it (review, #49).
+    const margin = COCKPIT_CONFIG.WAYPOINT_MARKER_EDGE_MARGIN;
+    const clampedPx = Math.min(Math.max(px, margin), window.innerWidth - margin);
+    const clampedPy = Math.min(Math.max(py, margin), window.innerHeight - margin);
+    el.style.left = clampedPx + 'px';
+    el.style.top = (clampedPy - 26) + 'px'; // hovering just above the target, pointing down at it
     el.style.transform = 'translate(-50%, -50%) rotate(180deg)';
     STATE.cockpitWaypointAngle = null; // re-enter edge mode fresh if it goes off-screen next
   } else {
@@ -1234,6 +1261,7 @@ function startCockpitWave(waveNumber) {
   STATE.cockpitTurnSmoothed = { x: 0, y: 0 };
   STATE.cockpitRevealDir = null;
   STATE.cockpitWaypointAngle = null;
+  STATE.cockpitWaypointTargetId = null;
   STATE.cockpitActiveDot = null;
   STATE.cockpitPath = [];
   STATE.cockpitLines = [];
@@ -2293,6 +2321,11 @@ const STATE = {
   // it to jump straight to the target instead of sweeping in from wherever
   // it last was, e.g. right after the target itself changes.
   cockpitWaypointAngle: null,
+  // The id of whichever dot cockpitWaypointAngle was last smoothing toward
+  // -- a target swap resets the angle even if it happens to occur while
+  // both the old and new targets are off-screen the whole time, which
+  // otherwise never reset it on its own (review, #49).
+  cockpitWaypointTargetId: null,
   cockpitActiveDot: null, // the dot a cockpit connection is currently being drawn from, or null
   cockpitPath: [],        // 3D points [{x,y,z}] recorded along the ship's own flight path since
                            // cockpitActiveDot was entered -- the 3D equivalent of STATE.currentPath
@@ -5805,6 +5838,15 @@ function checkWaveComplete() {
   // they're hidden the same way exiting to the title screen already does.
   if (STATE.cockpitMode) {
     STATE.cockpitRevealDir = null;
+    // updateCockpitShip (the only place that normally updates these) stops
+    // running the instant phase leaves PLAYING, but renderCockpitScene's
+    // visual bank roll keeps reading cockpitTurnSmoothed every frame
+    // regardless of phase -- without this, finishing the wave mid-turn
+    // freezes that roll at whatever it was and the entire reveal renders
+    // permanently tilted, never recovering even once the player lets go of
+    // the controls (review, #49).
+    STATE.cockpitThrottleSmoothed = 0;
+    STATE.cockpitTurnSmoothed = { x: 0, y: 0 };
     document.getElementById('cockpit-left-stick').classList.remove('visible');
     document.getElementById('cockpit-right-stick').classList.remove('visible');
   }
@@ -7860,6 +7902,7 @@ function exitToTitle() {
   STATE.cockpitTurnSmoothed = { x: 0, y: 0 };
   STATE.cockpitRevealDir = null;
   STATE.cockpitWaypointAngle = null;
+  STATE.cockpitWaypointTargetId = null;
   STATE.cockpitActiveDot = null;
   STATE.cockpitPath = [];
   STATE.cockpitLines = [];

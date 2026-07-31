@@ -4261,6 +4261,34 @@ test('the wave-complete reveal pulls the Cockpit Mode ship back from the finishe
   expect(errors).toEqual([]);
 });
 
+// Codex review, #49: updateCockpitShip (the only place that normally
+// updates cockpitTurnSmoothed) stops running the instant the wave
+// completes, but the camera's visual bank roll keeps reading it every
+// frame regardless of phase -- finishing mid-turn used to leave the whole
+// wave-complete reveal permanently tilted at whatever the last steering
+// value was, since nothing ever zeroed it going into WAVE_COMPLETE.
+test('finishing a Cockpit Mode wave mid-turn resets the smoothed bank instead of leaving the reveal permanently rolled', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#cockpit-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(200);
+
+  const result = await page.evaluate(() => {
+    STATE.cockpitTurnSmoothed = { x: 0.9, y: -0.4 }; // simulate mid-decay steering right before finishing
+    for (const dot of STATE.dots) dot.connected = true; // every dot already connected
+    checkWaveComplete();
+    return { turnSmoothed: { ...STATE.cockpitTurnSmoothed }, phase: STATE.phase };
+  });
+
+  expect(result.phase).toBe('WAVE_COMPLETE');
+  expect(result.turnSmoothed).toEqual({ x: 0, y: 0 });
+  expect(errors).toEqual([]);
+});
+
 // The 3D equivalent of "a line can't cross another line" -- classic mode's
 // real segment-intersection barrier checks don't translate to open 3D
 // space, so this is a proximity check instead (see updateCockpitDrawing's
