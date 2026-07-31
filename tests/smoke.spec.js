@@ -4194,6 +4194,63 @@ test('flying through two matching dots completes a real cockpit connection', asy
   expect(errors).toEqual([]);
 });
 
+// Player report (with screenshot): finishing a Cockpit Mode wave used to
+// just leave the ship frozen exactly where the final connection landed --
+// almost always embedded inside that dot's own sphere, an ugly close-up
+// instead of a payoff. updateCockpitWaveCompleteReveal should instead ease
+// the ship back out to a vantage point, and the joysticks (nothing left to
+// steer) should hide.
+test('the wave-complete reveal pulls the Cockpit Mode ship back from the finished constellation instead of leaving it frozen in the last dot', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#cockpit-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(200);
+
+  // Wave 1 has CONFIG.STARTING_PAIRS pairs (3), not just one -- every pair
+  // needs a completed connection before checkWaveComplete actually fires.
+  const setup = await page.evaluate(() => {
+    const pairIds = [...new Set(STATE.dots.map(d => d.pairId))];
+    return pairIds.map(pairId => {
+      const [a, b] = STATE.dots.filter(d => d.pairId === pairId);
+      return { a: { x: a.x, y: a.y, z: a.z }, b: { x: b.x, y: b.y, z: b.z } };
+    });
+  });
+
+  const result = await page.evaluate((pairs) => {
+    // Force the sticks visible first -- otherwise this desktop context
+    // never shows them at all, and the assertion below wouldn't prove
+    // checkWaveComplete actively hides them.
+    document.getElementById('cockpit-left-stick').classList.add('visible');
+    document.getElementById('cockpit-right-stick').classList.add('visible');
+    for (const { a, b } of pairs) {
+      STATE.cockpitShip.x = a.x; STATE.cockpitShip.y = a.y; STATE.cockpitShip.z = a.z;
+      updateCockpitDrawing();
+      STATE.cockpitShip.x = b.x; STATE.cockpitShip.y = b.y; STATE.cockpitShip.z = b.z;
+      updateCockpitDrawing();
+    }
+    return {
+      phase: STATE.phase,
+      distRightAfter: Math.hypot(STATE.cockpitShip.x, STATE.cockpitShip.y, STATE.cockpitShip.z),
+      leftStickVisible: document.getElementById('cockpit-left-stick').classList.contains('visible'),
+      rightStickVisible: document.getElementById('cockpit-right-stick').classList.contains('visible'),
+    };
+  }, setup);
+
+  expect(result.phase).toBe('WAVE_COMPLETE');
+  expect(result.leftStickVisible).toBe(false);
+  expect(result.rightStickVisible).toBe(false);
+
+  await page.waitForTimeout(1500); // let the reveal ease outward
+  const distAfterReveal = await page.evaluate(() =>
+    Math.hypot(STATE.cockpitShip.x, STATE.cockpitShip.y, STATE.cockpitShip.z));
+  expect(distAfterReveal).toBeGreaterThan(result.distRightAfter + 50); // clearly pulled back, not still parked in the dot
+  expect(errors).toEqual([]);
+});
+
 // The 3D equivalent of "a line can't cross another line" -- classic mode's
 // real segment-intersection barrier checks don't translate to open 3D
 // space, so this is a proximity check instead (see updateCockpitDrawing's
