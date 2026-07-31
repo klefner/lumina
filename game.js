@@ -4170,7 +4170,7 @@ canvas.addEventListener('wheel', onWheelZoom, { passive: false });
 // after canvas's own bubble-phase handler for any release that DID land
 // on canvas, so this is a no-op for a normal connection -- onInputEnd
 // has already cleared isDrawing by the time it runs.
-function cancelStaleDrawGesture() {
+function cancelStaleDrawGesture(e) {
   // Flight Mode deliberately leaves isDrawing true on a normal release so
   // the ship can coast toward/through a dot with the finger already up
   // (see onInputEnd's flight branch) -- this window-level 'mouseup' still
@@ -4206,11 +4206,21 @@ function cancelStaleDrawGesture() {
   STATE.cockpitKeys.zoomOut = false;
   STATE.cockpitMouseButtons.left = false;
   STATE.cockpitMouseButtons.right = false;
-  // Same reasoning as clearing the raw inputs above -- the smoothed values
-  // (see CONTROL_SMOOTHING) would otherwise keep chasing zero over the next
-  // several frames instead of actually stopping right now.
-  STATE.cockpitThrottleSmoothed = 0;
-  STATE.cockpitTurnSmoothed = { x: 0, y: 0 };
+  // Unlike the raw inputs above, the smoothed turn/throttle (see
+  // CONTROL_SMOOTHING) are only force-zeroed on a genuine interruption --
+  // this same handler also fires on every ordinary mouseup (see this
+  // function's own comment above), and an ordinary mouseup releasing the
+  // throttle button doesn't mean steering stopped too: mouse-position
+  // steering is a separate, still-active input. Zeroing turn unconditionally
+  // there dropped a steady turn to zero and back every time throttle was
+  // released, a visible ~200ms hitch on every single release (review, #47).
+  // A real interruption's raw inputs are already cleared above, so leaving
+  // this unset there just means a few frames of natural decay instead of an
+  // instant snap -- not a "keeps steering forever" regression.
+  if (e && (e.type === 'blur' || e.type === 'touchcancel')) {
+    STATE.cockpitThrottleSmoothed = 0;
+    STATE.cockpitTurnSmoothed = { x: 0, y: 0 };
+  }
 }
 window.addEventListener('mouseup', cancelStaleDrawGesture);
 window.addEventListener('blur', cancelStaleDrawGesture);

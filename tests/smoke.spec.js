@@ -4057,6 +4057,34 @@ test('holding a turn key ramps yaw up smoothly instead of snapping straight to f
   expect(errors).toEqual([]);
 });
 
+// Codex review, #47: the window-level 'mouseup' safety net (cancelStaleDrawGesture)
+// fires on every ordinary release, not just a genuinely interrupted gesture --
+// forcing the smoothed turn to zero there would drop a steady mouse-position
+// steer to zero and back every time the player merely let go of the throttle
+// button, a completely unrelated input. Only a real interruption (blur/
+// touchcancel) should do that.
+test('releasing the throttle mouse button does not reset in-progress mouse-position steering', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#cockpit-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(200);
+
+  await page.mouse.move(400, 200, { steps: 5 }); // steer via mouse position
+  await page.mouse.down({ button: 'right' }); // also thrust, independently
+  await page.waitForTimeout(1000); // let the smoothed turn converge well off zero
+  const beforeRelease = await page.evaluate(() => ({ ...STATE.cockpitTurnSmoothed }));
+  expect(Math.abs(beforeRelease.x) + Math.abs(beforeRelease.y)).toBeGreaterThan(0.5);
+
+  await page.mouse.up({ button: 'right' }); // release throttle only -- steering input is untouched
+  const afterRelease = await page.evaluate(() => ({ ...STATE.cockpitTurnSmoothed }));
+  expect(Math.abs(afterRelease.x) + Math.abs(afterRelease.y)).toBeGreaterThan(0.3); // not snapped to zero
+  expect(errors).toEqual([]);
+});
+
 // Touch device: two independent on-screen sticks, tracked by real
 // simultaneous touches with distinct identifiers -- left = throttle
 // (vertical deflection), right = steering direction. Verifies both fingers
