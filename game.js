@@ -341,6 +341,10 @@ const COCKPIT_CONFIG = {
   LINE_HIT_RADIUS: 10,         // ship-to-other-line distance that breaks an in-progress connection
   TURN_RATE: 0.045,            // radians/frame of yaw/pitch change at full joystick deflection
   MAX_PITCH: 1.5,              // radians, just under +/-90 degrees so the ship can never flip over
+  CONTROL_SMOOTHING: 0.18,     // how fast the effective throttle/turn chases the raw input each frame
+                                // (1 = instant, lower = smoother/slower) -- without this, small stick
+                                // jitter or overcorrection translated 1:1 into yaw/pitch/thrust every
+                                // single frame, which read as far too sensitive (player report)
   ACCEL: 0.06,                  // world units/frame^2 of thrust at full throttle
   DRAG: 0.985,                  // per-frame velocity retention -- close to 1 so the ship genuinely
                                  // drifts on release rather than stopping, per the player's own request
@@ -763,15 +767,26 @@ function updateCockpitShip() {
   // stick/up-down arrows/mouse buttons for throttle, right stick/WASD/
   // mouse position for direction (see computeCockpitThrottle/Turn and the
   // player's own request for this split).
-  const turn = computeCockpitTurn();
+  //
+  // Both raw readings are eased toward rather than applied directly -- see
+  // COCKPIT_CONFIG.CONTROL_SMOOTHING -- so a jittery stick or a snap
+  // correction doesn't turn/thrust the ship by the same amount in a single
+  // frame (player report: controls felt far too sensitive).
+  const rawTurn = computeCockpitTurn();
+  const smoothing = COCKPIT_CONFIG.CONTROL_SMOOTHING;
+  STATE.cockpitTurnSmoothed.x += (rawTurn.x - STATE.cockpitTurnSmoothed.x) * smoothing;
+  STATE.cockpitTurnSmoothed.y += (rawTurn.y - STATE.cockpitTurnSmoothed.y) * smoothing;
+  const turn = STATE.cockpitTurnSmoothed;
   if (turn.x !== 0 || turn.y !== 0) {
     ship.yaw += turn.x * COCKPIT_CONFIG.TURN_RATE;
     ship.pitch = Math.max(-COCKPIT_CONFIG.MAX_PITCH, Math.min(COCKPIT_CONFIG.MAX_PITCH,
       ship.pitch - turn.y * COCKPIT_CONFIG.TURN_RATE));
   }
 
-  const throttle = computeCockpitThrottle();
-  if (throttle !== 0) {
+  const rawThrottle = computeCockpitThrottle();
+  STATE.cockpitThrottleSmoothed += (rawThrottle - STATE.cockpitThrottleSmoothed) * smoothing;
+  const throttle = STATE.cockpitThrottleSmoothed;
+  if (Math.abs(throttle) > 0.001) {
     const dir = noseDirection(ship.yaw, ship.pitch);
     ship.vx += dir.x * COCKPIT_CONFIG.ACCEL * throttle;
     ship.vy += dir.y * COCKPIT_CONFIG.ACCEL * throttle;
@@ -1096,6 +1111,8 @@ function startCockpitWave(waveNumber) {
   STATE.cockpitRightStick = null;
   STATE.cockpitKeys = { w: false, a: false, s: false, d: false, up: false, down: false, zoomIn: false, zoomOut: false };
   STATE.cockpitMouseButtons = { left: false, right: false };
+  STATE.cockpitThrottleSmoothed = 0;
+  STATE.cockpitTurnSmoothed = { x: 0, y: 0 };
   STATE.cockpitActiveDot = null;
   STATE.cockpitPath = [];
   STATE.cockpitLines = [];
@@ -2135,6 +2152,13 @@ const STATE = {
   // Desktop: left button decelerates, right button accelerates -- see
   // handleCockpitMouseDown/Up.
   cockpitMouseButtons: { left: false, right: false },
+  // The actual throttle/turn applied to the ship each frame -- eases toward
+  // computeCockpitThrottle()/computeCockpitTurn()'s raw reading rather than
+  // snapping straight to it (see COCKPIT_CONFIG.CONTROL_SMOOTHING and
+  // updateCockpitShip), so small stick jitter or a fast correction doesn't
+  // translate 1:1 into an equally abrupt yaw/pitch/thrust change.
+  cockpitThrottleSmoothed: 0,
+  cockpitTurnSmoothed: { x: 0, y: 0 },
   cockpitActiveDot: null, // the dot a cockpit connection is currently being drawn from, or null
   cockpitPath: [],        // 3D points [{x,y,z}] recorded along the ship's own flight path since
                            // cockpitActiveDot was entered -- the 3D equivalent of STATE.currentPath
@@ -4182,6 +4206,11 @@ function cancelStaleDrawGesture() {
   STATE.cockpitKeys.zoomOut = false;
   STATE.cockpitMouseButtons.left = false;
   STATE.cockpitMouseButtons.right = false;
+  // Same reasoning as clearing the raw inputs above -- the smoothed values
+  // (see CONTROL_SMOOTHING) would otherwise keep chasing zero over the next
+  // several frames instead of actually stopping right now.
+  STATE.cockpitThrottleSmoothed = 0;
+  STATE.cockpitTurnSmoothed = { x: 0, y: 0 };
 }
 window.addEventListener('mouseup', cancelStaleDrawGesture);
 window.addEventListener('blur', cancelStaleDrawGesture);
@@ -7512,6 +7541,13 @@ function pauseGame() {
   STATE.cockpitRightStick = null;
   STATE.cockpitKeys = { w: false, a: false, s: false, d: false, up: false, down: false, zoomIn: false, zoomOut: false };
   STATE.cockpitMouseButtons = { left: false, right: false };
+  // Clearing the raw inputs above isn't enough on its own now that they're
+  // smoothed (see CONTROL_SMOOTHING) -- without also resetting the smoothed
+  // values, the ship would keep coasting through a few more frames of
+  // steering/thrust right after resuming, which is exactly what this
+  // function exists to prevent.
+  STATE.cockpitThrottleSmoothed = 0;
+  STATE.cockpitTurnSmoothed = { x: 0, y: 0 };
   if (STATE.audioCtx && STATE.masterGain) {
     const t = STATE.audioCtx.currentTime;
     STATE.masterGain.gain.cancelScheduledValues(t);
@@ -7662,6 +7698,8 @@ function exitToTitle() {
   STATE.cockpitKeys = { w: false, a: false, s: false, d: false, up: false, down: false, zoomIn: false, zoomOut: false };
   STATE.cockpitMousePos = null;
   STATE.cockpitMouseButtons = { left: false, right: false };
+  STATE.cockpitThrottleSmoothed = 0;
+  STATE.cockpitTurnSmoothed = { x: 0, y: 0 };
   STATE.cockpitActiveDot = null;
   STATE.cockpitPath = [];
   STATE.cockpitLines = [];
