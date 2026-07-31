@@ -23,6 +23,26 @@ html, body {
   display: block;
 }
 
+/* Cockpit Mode's Three.js target -- sits above #gameCanvas (unused while a
+   cockpit wave is active, see render()'s cockpitMode branch) but below
+   #ui-overlay/the pause and help panels, which stay usable the same way
+   they do over the 2D board. Hidden by default so the plain black body
+   background (not a blank WebGL canvas) shows through until Cockpit Mode
+   is actually toggled on (see startCockpitWave/teardownCockpitScene). */
+#cockpitCanvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: none;
+  background: #000000;
+  z-index: 1;
+}
+#cockpitCanvas.visible {
+  display: block;
+}
+
 #ui-overlay {
   position: fixed;
   top: 20px;
@@ -573,6 +593,34 @@ html, body {
   cursor: pointer;
 }
 #flight-mode-label input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: rgba(120, 200, 255, 0.85);
+}
+
+/* Title-screen-only Cockpit Mode toggle -- same pattern as #flight-mode-row
+   directly above, just its own row/setting (see startCockpitWave). */
+#cockpit-mode-row {
+  display: none;
+  margin-top: 4px;
+  pointer-events: auto;
+}
+#cockpit-mode-row.visible {
+  display: block;
+}
+#cockpit-mode-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+}
+#cockpit-mode-label input[type="checkbox"] {
   width: 14px;
   height: 14px;
   cursor: pointer;

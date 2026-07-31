@@ -3894,3 +3894,303 @@ test('generateSong can pick the supperclub family and produces notes that stay w
   expect(result.padCount).toBe(4); // seventh chord: root + 3 more chord tones
   expect(errors).toEqual([]);
 });
+
+// ------------------------------------------------------------
+// COCKPIT MODE
+//
+// These deliberately never wait on Three.js actually finishing its CDN
+// import (see ensureThreeLoaded) -- the simulation (ship physics, dot
+// generation, hit-detection, scoring) is fully independent of whether the
+// WebGL scene has been built yet (see updateCockpitShip/updateCockpitDrawing,
+// which never touch THREE_LIB/COCKPIT), and asserting on an external
+// network fetch actually completing would make CI flaky for reasons that
+// have nothing to do with whether the game logic itself is correct.
+// ------------------------------------------------------------
+
+test('the Cockpit Mode checkbox toggles STATE.cockpitMode and persists across a reload, mutually exclusive with Flight Mode', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await expect(page.locator('#cockpit-mode-row')).toBeVisible();
+  expect(await page.evaluate(() => STATE.cockpitMode)).toBe(false);
+
+  // Turning on Flight Mode first, then Cockpit Mode, must turn Flight Mode
+  // back off -- only one control scheme can actually pilot the next wave.
+  await page.click('#flight-mode-checkbox');
+  await page.click('#cockpit-mode-checkbox');
+  expect(await page.evaluate(() => ({ flight: STATE.flightMode, cockpit: STATE.cockpitMode }))).toEqual({ flight: false, cockpit: true });
+  await expect(page.locator('#flight-mode-checkbox')).not.toBeChecked();
+  await expect(page.locator('#cockpit-mode-checkbox')).toBeChecked();
+
+  await page.reload();
+  await page.waitForFunction(() => window.__lumina);
+  expect(await page.evaluate(() => STATE.cockpitMode)).toBe(true);
+  await expect(page.locator('#cockpit-mode-checkbox')).toBeChecked();
+
+  // And the reverse: enabling Flight Mode while Cockpit Mode is already on
+  // must turn Cockpit Mode back off.
+  await page.click('#flight-mode-checkbox');
+  expect(await page.evaluate(() => ({ flight: STATE.flightMode, cockpit: STATE.cockpitMode }))).toEqual({ flight: true, cockpit: false });
+  await expect(page.locator('#cockpit-mode-checkbox')).not.toBeChecked();
+  expect(errors).toEqual([]);
+});
+
+test('starting a Cockpit Mode wave generates 3D dots and a ship, and shows the cockpit canvas', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#cockpit-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(200);
+
+  const result = await page.evaluate(() => ({
+    shipExists: !!STATE.cockpitShip,
+    shipAtOrigin: STATE.cockpitShip.x === 0 && STATE.cockpitShip.y === 0 && STATE.cockpitShip.z > 0,
+    dotCount: STATE.dots.length,
+    pairCount: new Set(STATE.dots.map(d => d.pairId)).size,
+    everyDotHas3dPosition: STATE.dots.every(d => typeof d.z === 'number' && !Number.isNaN(d.z)),
+    everyPairHasTwoDots: [...new Set(STATE.dots.map(d => d.pairId))].every(
+      pid => STATE.dots.filter(d => d.pairId === pid).length === 2
+    ),
+    canvasVisible: document.getElementById('cockpitCanvas').classList.contains('visible'),
+  }));
+
+  expect(result.shipExists).toBe(true);
+  expect(result.shipAtOrigin).toBe(true);
+  expect(result.pairCount).toBe(3); // wave 1 -- CONFIG.STARTING_PAIRS
+  expect(result.dotCount).toBe(6);
+  expect(result.everyDotHas3dPosition).toBe(true);
+  expect(result.everyPairHasTwoDots).toBe(true);
+  expect(result.canvasVisible).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+// The joystick physics themselves, over real elapsed time: thrust turns the
+// nose and builds velocity while held, and releasing it removes the thrust
+// input without killing the existing velocity outright -- the "drift, not
+// an immediate stop" behavior that was explicitly requested for this mode
+// (see COCKPIT_CONFIG.DRAG's comment).
+test('the cockpit joystick steers the ship and lets it drift on release instead of stopping dead', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#cockpit-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(200);
+
+  const start = await page.evaluate(() => ({ ...STATE.cockpitShip }));
+  expect(start.vx).toBe(0);
+  expect(start.vy).toBe(0);
+  expect(start.vz).toBe(0);
+
+  // Anchor at (250, 450), drag up-and-right -- should yaw right, pitch up,
+  // and build thrust back toward the dot field centered on the origin
+  // (the ship starts on the +z axis facing -z, see startCockpitWave).
+  await page.evaluate(() => {
+    onInputStart({ preventDefault() {}, clientX: 250, clientY: 450 });
+    onInputMove({ preventDefault() {}, clientX: 320, clientY: 380 });
+  });
+  await page.waitForTimeout(500); // ~30 real frames of thrust
+
+  const thrusting = await page.evaluate(() => ({ ...STATE.cockpitShip }));
+  expect(thrusting.yaw).toBeGreaterThan(0);
+  expect(thrusting.pitch).toBeGreaterThan(0);
+  const speedWhileThrusting = Math.hypot(thrusting.vx, thrusting.vy, thrusting.vz);
+  expect(speedWhileThrusting).toBeGreaterThan(0);
+
+  await page.evaluate(() => { onInputEnd({ preventDefault() {} }); });
+  const justReleased = await page.evaluate(() => ({ ...STATE.cockpitShip }));
+  const speedJustAfterRelease = Math.hypot(justReleased.vx, justReleased.vy, justReleased.vz);
+  // Released, not stopped -- velocity survives the release itself.
+  expect(speedJustAfterRelease).toBeGreaterThan(speedWhileThrusting * 0.9);
+
+  await page.waitForTimeout(1000); // a real second of drift decay, no input held
+  const afterDrift = await page.evaluate(() => ({ ...STATE.cockpitShip }));
+  const speedAfterDrift = Math.hypot(afterDrift.vx, afterDrift.vy, afterDrift.vz);
+  // Decayed (DRAG < 1 every frame with no thrust), but still clearly
+  // drifting a second later, not an instant stop.
+  expect(speedAfterDrift).toBeLessThan(speedJustAfterRelease);
+  expect(speedAfterDrift).toBeGreaterThan(0.01);
+  expect(errors).toEqual([]);
+});
+
+// The actual flying-and-connecting mechanic, driven deterministically by
+// dropping the ship exactly on each dot in turn (see the Flight Mode tests
+// above for the same "STATE.ship.x = ...; updateShipDrawing()" pattern) --
+// this isolates the hit-detection/scoring logic from the joystick-to-heading
+// mapping, which the previous test already covers on its own.
+test('flying through two matching dots completes a real cockpit connection', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#cockpit-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(200);
+
+  const setup = await page.evaluate(() => {
+    const [a, b] = STATE.dots.filter(d => d.pairId === 0);
+    return { aId: a.id, bId: b.id, a: { x: a.x, y: a.y, z: a.z }, b: { x: b.x, y: b.y, z: b.z } };
+  });
+
+  const afterA = await page.evaluate(({ a }) => {
+    STATE.cockpitShip.x = a.x; STATE.cockpitShip.y = a.y; STATE.cockpitShip.z = a.z;
+    updateCockpitDrawing();
+    return { activeDotId: STATE.cockpitActiveDot && STATE.cockpitActiveDot.id };
+  }, setup);
+  expect(afterA.activeDotId).toBe(setup.aId);
+
+  const afterB = await page.evaluate(({ b, aId, bId }) => {
+    STATE.cockpitShip.x = b.x; STATE.cockpitShip.y = b.y; STATE.cockpitShip.z = b.z;
+    updateCockpitDrawing();
+    return {
+      line: STATE.cockpitLines[0],
+      dotAConnected: STATE.dots.find(d => d.id === aId).connected,
+      dotBConnected: STATE.dots.find(d => d.id === bId).connected,
+      score: STATE.score,
+      activeDot: STATE.cockpitActiveDot,
+    };
+  }, setup);
+
+  expect(afterB.line).toBeTruthy();
+  expect(afterB.line.pairId).toBe(0);
+  expect(afterB.dotAConnected).toBe(true); // cockpit groups are always plain pairs -- one link fully solves both
+  expect(afterB.dotBConnected).toBe(true);
+  expect(afterB.score).toBeGreaterThan(0);
+  expect(afterB.activeDot).toBeNull();
+  expect(errors).toEqual([]);
+});
+
+// The 3D equivalent of "a line can't cross another line" -- classic mode's
+// real segment-intersection barrier checks don't translate to open 3D
+// space, so this is a proximity check instead (see updateCockpitDrawing's
+// own comment). Flying back through an already-completed connection must
+// reject the one currently in progress, not silently ignore it.
+test('flying back through an already-completed cockpit line breaks the connection in progress', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#cockpit-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(200);
+
+  const result = await page.evaluate(() => {
+    const [a0, b0] = STATE.dots.filter(d => d.pairId === 0);
+    const [a1] = STATE.dots.filter(d => d.pairId === 1);
+
+    // Complete pair 0's connection first, same pattern as the test above.
+    STATE.cockpitShip.x = a0.x; STATE.cockpitShip.y = a0.y; STATE.cockpitShip.z = a0.z;
+    updateCockpitDrawing();
+    STATE.cockpitShip.x = b0.x; STATE.cockpitShip.y = b0.y; STATE.cockpitShip.z = b0.z;
+    updateCockpitDrawing();
+    const completedLinePoint = STATE.cockpitLines[0].points[0]; // dot a0's own position
+
+    // Start a fresh connection on a different pair, then fly the ship
+    // straight through the completed line's own recorded position.
+    STATE.cockpitShip.x = a1.x; STATE.cockpitShip.y = a1.y; STATE.cockpitShip.z = a1.z;
+    updateCockpitDrawing();
+    const activeDotAfterStart = STATE.cockpitActiveDot && STATE.cockpitActiveDot.id;
+
+    STATE.cockpitShip.x = completedLinePoint.x; STATE.cockpitShip.y = completedLinePoint.y; STATE.cockpitShip.z = completedLinePoint.z;
+    updateCockpitDrawing();
+
+    return {
+      activeDotAfterStart,
+      activeDotAfterCrossing: STATE.cockpitActiveDot,
+      pathAfterCrossing: STATE.cockpitPath.length,
+      dot1Connected: STATE.dots.find(d => d.id === a1.id).connected,
+    };
+  });
+
+  expect(result.activeDotAfterStart).not.toBeNull();
+  expect(result.activeDotAfterCrossing).toBeNull(); // rejected -- crossing the old line broke the new one
+  expect(result.pathAfterCrossing).toBe(0);
+  expect(result.dot1Connected).toBe(false); // never actually reached its match
+  expect(errors).toEqual([]);
+});
+
+test('the Cockpit Mode ship/joystick reset cleanly on a new wave and exiting to the title screen', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.cockpitMode = true;
+    startWave(1);
+    const shipAfterStart = !!STATE.cockpitShip;
+    STATE.cockpitShip.x = 12345; // mutate so a stale carry-over would be detectable
+    STATE.cockpitJoystick = { anchorX: 1, anchorY: 1, curX: 2, curY: 2 };
+    STATE.cockpitActiveDot = STATE.dots[0];
+    STATE.cockpitPath = [{ x: 1, y: 1, z: 1 }];
+    startWave(2);
+    const resetAfterNewWave = {
+      shipPosition: STATE.cockpitShip.x,
+      joystick: STATE.cockpitJoystick,
+      activeDot: STATE.cockpitActiveDot,
+      path: STATE.cockpitPath.length,
+      lines: STATE.cockpitLines.length,
+    };
+    exitToTitle();
+    const stateAfterExit = {
+      ship: STATE.cockpitShip,
+      joystick: STATE.cockpitJoystick,
+      activeDot: STATE.cockpitActiveDot,
+      canvasVisible: document.getElementById('cockpitCanvas').classList.contains('visible'),
+    };
+    STATE.cockpitMode = false;
+    startWave(1);
+    const shipWhenDisabled = STATE.cockpitShip;
+    return { shipAfterStart, resetAfterNewWave, stateAfterExit, shipWhenDisabled };
+  });
+
+  expect(result.shipAfterStart).toBe(true);
+  expect(result.resetAfterNewWave.shipPosition).not.toBe(12345); // startWave re-centers it, not carries the old position
+  expect(result.resetAfterNewWave.joystick).toBeNull();
+  expect(result.resetAfterNewWave.activeDot).toBeNull();
+  expect(result.resetAfterNewWave.path).toBe(0);
+  expect(result.resetAfterNewWave.lines).toBe(0);
+  expect(result.stateAfterExit.ship).toBeNull();
+  expect(result.stateAfterExit.joystick).toBeNull();
+  expect(result.stateAfterExit.activeDot).toBeNull();
+  expect(result.stateAfterExit.canvasVisible).toBe(false);
+  expect(result.shipWhenDisabled).toBeNull(); // no ship at all once cockpitMode is off
+  expect(errors).toEqual([]);
+});
+
+// A touch still down when the pause button is hit (or a keyboard pause
+// shortcut fires) must not keep thrusting once the game resumes -- same
+// reasoning as Flight Mode's window-level mouseup safety net, just for the
+// pause menu's own entry point instead (see pauseGame's own comment).
+test('pausing mid-steer clears the cockpit joystick so a stuck touch cannot keep thrusting once resumed', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#cockpit-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(200);
+
+  await page.evaluate(() => {
+    onInputStart({ preventDefault() {}, clientX: 250, clientY: 450 });
+    onInputMove({ preventDefault() {}, clientX: 320, clientY: 380 });
+  });
+  expect(await page.evaluate(() => !!STATE.cockpitJoystick)).toBe(true);
+
+  await page.click('#pause-button');
+  expect(await page.evaluate(() => STATE.cockpitJoystick)).toBeNull();
+
+  await page.click('#pause-resume');
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => STATE.cockpitJoystick)).toBeNull(); // still clear -- no residual touch to resume steering with
+  expect(errors).toEqual([]);
+});
