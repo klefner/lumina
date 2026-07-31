@@ -4085,6 +4085,16 @@ test('releasing the throttle mouse button does not reset in-progress mouse-posit
   expect(errors).toEqual([]);
 });
 
+// Player report: it wasn't obvious which pad was which.
+test('the Cockpit Mode joysticks are labeled Thrust (left) and Steer (right)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await expect(page.locator('#cockpit-left-stick .cockpit-stick-label')).toHaveText('THRUST');
+  await expect(page.locator('#cockpit-right-stick .cockpit-stick-label')).toHaveText('STEER');
+  expect(errors).toEqual([]);
+});
+
 // Touch device: two independent on-screen sticks, tracked by real
 // simultaneous touches with distinct identifiers -- left = throttle
 // (vertical deflection), right = steering direction. Verifies both fingers

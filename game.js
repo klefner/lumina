@@ -339,7 +339,10 @@ const COCKPIT_CONFIG = {
   DOT_RADIUS: 9,               // sphere radius, world units
   HIT_RADIUS: 20,              // ship-to-dot distance that counts as "flew through it"
   LINE_HIT_RADIUS: 10,         // ship-to-other-line distance that breaks an in-progress connection
-  TURN_RATE: 0.045,            // radians/frame of yaw/pitch change at full joystick deflection
+  TURN_RATE: 0.0225,           // radians/frame of yaw/pitch change at full joystick deflection --
+                                 // halved from 0.045 (player report, round 3: steering specifically,
+                                 // not throttle, was still too sensitive -- CONTROL_SMOOTHING below
+                                 // only softens how fast input ramps up, not the top turn speed itself)
   MAX_PITCH: 1.5,              // radians, just under +/-90 degrees so the ship can never flip over
   CONTROL_SMOOTHING: 0.09,     // how fast the effective throttle/turn chases the raw input each frame
                                 // (1 = instant, lower = smoother/slower) -- without this, small stick
@@ -368,6 +371,8 @@ const COCKPIT_CONFIG = {
   WAYPOINT_IDLE_MS: 3000,      // Normal difficulty: no new connection this long shows the waypoint
                                 // arrow -- Relaxed shows it always, Intense never (see
                                 // updateCockpitWaypointArrow)
+  WAYPOINT_ANGLE_SMOOTHING: 0.12, // per-frame chase rate for the edge-compass arrow's angle, only
+                                    // used while the target is off-screen (see updateCockpitWaypointArrow)
   CONNECTION_STARS_PER_DOT: 20,     // mirrors classic mode's STARFIELD_CONFIG.STARS_PER_CONNECTION/2 --
                                      // no ambient background starfield here (see review feedback: it
                                      // read as a field of connectable objects) -- only a sparse halo
@@ -1047,8 +1052,12 @@ function renderCockpitScene() {
   // Bank into turns -- purely visual (recomputed from scratch every frame,
   // so it never accumulates), proportional to the current steering input's
   // yaw component, from whichever source (stick/WASD/mouse) is active.
-  const turn = computeCockpitTurn();
-  COCKPIT.camera.rotateZ(-turn.x * 0.4);
+  // Uses the smoothed turn (see CONTROL_SMOOTHING/updateCockpitShip), not
+  // the raw reading -- the actual heading change was already smoothed, but
+  // this bank still jittered instantly with every bit of raw stick noise,
+  // shaking the whole view (and the waypoint arrow, which reads this same
+  // camera orientation) independent of that fix (player report).
+  COCKPIT.camera.rotateZ(-STATE.cockpitTurnSmoothed.x * 0.4);
 
   updateCockpitLineObjects();
 
@@ -1074,45 +1083,79 @@ function cockpitWaypointTarget() {
   return nearest;
 }
 
-// A compass-style arrow near the screen edge, always pointing the right
-// direction to turn -- including when the target is behind the ship, where
-// it correctly still resolves to "turn left" or "turn right" rather than
-// pointing somewhere nonsensical (camera-local x/y stay meaningful even
-// when local z, "in front vs. behind," goes positive). Difficulty-gated
-// per the player's own request: Relaxed always shows it, Normal only after
-// COCKPIT_CONFIG.WAYPOINT_IDLE_MS without a new connection, Intense never.
+// Two modes, depending on whether the target is actually visible:
+//  - On-screen: a marker glued to the target's own real projected position,
+//    hovering just above it and pointing straight down -- previously this
+//    always sat at the screen edge instead, rotated by a compass angle, so
+//    even a target dead-center on screen got an arrow off at the margin
+//    that only vaguely gestured toward it (player report: "it's like the
+//    arrows are only tied to the screen [rather than the object]").
+//  - Off-screen (or behind the ship): the original compass-style edge
+//    arrow, angle-smoothed (see COCKPIT_CONFIG.WAYPOINT_ANGLE_SMOOTHING)
+//    so it sweeps rather than snaps frame to frame.
+// Difficulty-gated per the player's own request: Relaxed always shows it,
+// Normal only after COCKPIT_CONFIG.WAYPOINT_IDLE_MS without a new
+// connection, Intense never.
 function updateCockpitWaypointArrow() {
   const el = document.getElementById('cockpit-waypoint-arrow');
   if (!STATE.cockpitMode || !STATE.cockpitShip || STATE.difficulty === 'intense') {
     el.classList.remove('visible');
+    STATE.cockpitWaypointAngle = null;
     return;
   }
   const dueToIdle = STATE.difficulty === 'relaxed'
     || (performance.now() - STATE.cockpitLastProgressTime >= COCKPIT_CONFIG.WAYPOINT_IDLE_MS);
   if (!dueToIdle) {
     el.classList.remove('visible');
+    STATE.cockpitWaypointAngle = null;
     return;
   }
   const target = cockpitWaypointTarget();
   if (!target || !THREE_LIB || !COCKPIT.camera) {
     el.classList.remove('visible');
+    STATE.cockpitWaypointAngle = null;
     return;
   }
 
   const THREE = THREE_LIB;
   const ship = STATE.cockpitShip;
-  const toTarget = new THREE.Vector3(target.x - ship.x, target.y - ship.y, target.z - ship.z);
-  const local = toTarget.applyQuaternion(COCKPIT.camera.quaternion.clone().invert());
-  const angle = Math.atan2(local.x, local.y); // 0 = target dead ahead-and-up on screen, clockwise from there
-
-  const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
-  const edgeRadius = Math.min(window.innerWidth, window.innerHeight) * 0.42;
-  el.style.left = (cx + Math.sin(angle) * edgeRadius) + 'px';
-  el.style.top = (cy - Math.cos(angle) * edgeRadius) + 'px';
-  el.style.transform = `translate(-50%, -50%) rotate(${angle}rad)`;
   const color = INSTRUMENTS[target.colorIndex].hex;
   el.style.color = color;
   el.style.textShadow = `0 0 14px ${color}`;
+
+  const toTarget = new THREE.Vector3(target.x - ship.x, target.y - ship.y, target.z - ship.z);
+  const local = toTarget.clone().applyQuaternion(COCKPIT.camera.quaternion.clone().invert());
+  // local.z < 0 is "in front of the camera" -- noseDirection's own
+  // convention (the ship faces -z at yaw=0/pitch=0), which the camera's
+  // orientation always matches (see renderCockpitScene).
+  const inFront = local.z < 0;
+  const ndc = new THREE.Vector3(target.x, target.y, target.z).project(COCKPIT.camera);
+  const onScreen = inFront && Math.abs(ndc.x) <= 1 && Math.abs(ndc.y) <= 1;
+
+  if (onScreen) {
+    const px = (ndc.x * 0.5 + 0.5) * window.innerWidth;
+    const py = (1 - (ndc.y * 0.5 + 0.5)) * window.innerHeight;
+    el.style.left = px + 'px';
+    el.style.top = (py - 26) + 'px'; // hovering just above the target, pointing down at it
+    el.style.transform = 'translate(-50%, -50%) rotate(180deg)';
+    STATE.cockpitWaypointAngle = null; // re-enter edge mode fresh if it goes off-screen next
+  } else {
+    const rawAngle = Math.atan2(local.x, local.y); // 0 = target dead ahead-and-up, clockwise from there
+    if (STATE.cockpitWaypointAngle == null) STATE.cockpitWaypointAngle = rawAngle;
+    // Shortest-path smoothing -- a plain lerp would sweep the long way
+    // around whenever raw/current straddle the +/-pi seam.
+    let diff = rawAngle - STATE.cockpitWaypointAngle;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    STATE.cockpitWaypointAngle += diff * COCKPIT_CONFIG.WAYPOINT_ANGLE_SMOOTHING;
+    const angle = STATE.cockpitWaypointAngle;
+
+    const cx = window.innerWidth / 2, cy = window.innerHeight / 2;
+    const edgeRadius = Math.min(window.innerWidth, window.innerHeight) * 0.42;
+    el.style.left = (cx + Math.sin(angle) * edgeRadius) + 'px';
+    el.style.top = (cy - Math.cos(angle) * edgeRadius) + 'px';
+    el.style.transform = `translate(-50%, -50%) rotate(${angle}rad)`;
+  }
   el.classList.add('visible');
 }
 
@@ -1190,6 +1233,7 @@ function startCockpitWave(waveNumber) {
   STATE.cockpitThrottleSmoothed = 0;
   STATE.cockpitTurnSmoothed = { x: 0, y: 0 };
   STATE.cockpitRevealDir = null;
+  STATE.cockpitWaypointAngle = null;
   STATE.cockpitActiveDot = null;
   STATE.cockpitPath = [];
   STATE.cockpitLines = [];
@@ -2244,6 +2288,11 @@ const STATE = {
   // embedded inside that dot's own sphere -- a jarring, ugly close-up
   // instead of a payoff (player report, screenshot).
   cockpitRevealDir: null,
+  // The waypoint arrow's own smoothed edge-compass angle -- only used while
+  // its target is off-screen (see updateCockpitWaypointArrow); null resets
+  // it to jump straight to the target instead of sweeping in from wherever
+  // it last was, e.g. right after the target itself changes.
+  cockpitWaypointAngle: null,
   cockpitActiveDot: null, // the dot a cockpit connection is currently being drawn from, or null
   cockpitPath: [],        // 3D points [{x,y,z}] recorded along the ship's own flight path since
                            // cockpitActiveDot was entered -- the 3D equivalent of STATE.currentPath
@@ -7810,6 +7859,7 @@ function exitToTitle() {
   STATE.cockpitThrottleSmoothed = 0;
   STATE.cockpitTurnSmoothed = { x: 0, y: 0 };
   STATE.cockpitRevealDir = null;
+  STATE.cockpitWaypointAngle = null;
   STATE.cockpitActiveDot = null;
   STATE.cockpitPath = [];
   STATE.cockpitLines = [];

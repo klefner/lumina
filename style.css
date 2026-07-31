@@ -97,6 +97,22 @@ html, body {
   border: 2px solid rgba(180, 225, 255, 0.9);
   box-shadow: 0 0 14px rgba(120, 200, 255, 0.65);
 }
+/* Which pad does which -- player report: without a label it wasn't obvious
+   left = throttle, right = steering. Centered above the pad rather than on
+   top of the knob, so it never gets covered by a thumb mid-drag. */
+.cockpit-stick-label {
+  position: absolute;
+  top: -22px;
+  left: 0;
+  width: 100%;
+  text-align: center;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.65);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
 
 /* Points toward the dot the player's currently drawing to, or the nearest
    unconnected one otherwise -- Relaxed always shows it, Normal after 3s
