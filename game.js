@@ -341,10 +341,12 @@ const COCKPIT_CONFIG = {
   LINE_HIT_RADIUS: 10,         // ship-to-other-line distance that breaks an in-progress connection
   TURN_RATE: 0.045,            // radians/frame of yaw/pitch change at full joystick deflection
   MAX_PITCH: 1.5,              // radians, just under +/-90 degrees so the ship can never flip over
-  CONTROL_SMOOTHING: 0.18,     // how fast the effective throttle/turn chases the raw input each frame
+  CONTROL_SMOOTHING: 0.09,     // how fast the effective throttle/turn chases the raw input each frame
                                 // (1 = instant, lower = smoother/slower) -- without this, small stick
                                 // jitter or overcorrection translated 1:1 into yaw/pitch/thrust every
-                                // single frame, which read as far too sensitive (player report)
+                                // single frame, which read as far too sensitive (player report). Lowered
+                                // from the initial 0.18 -- still too sensitive at that value (player
+                                // report, round 2) -- roughly doubles the ramp-up time to full response
   ACCEL: 0.06,                  // world units/frame^2 of thrust at full throttle
   DRAG: 0.985,                  // per-frame velocity retention -- close to 1 so the ship genuinely
                                  // drifts on release rather than stopping, per the player's own request
