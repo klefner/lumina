@@ -747,6 +747,128 @@ test('shiftWorldEntities moves both an active portal pair and a pending thread\'
   expect(errors).toEqual([]);
 });
 
+// ------------------------------------------------------------
+// Flight Mode: an alternate control scheme (see STATE.flightMode/
+// FLIGHT_CONFIG) where the player pilots a ship instead of dragging.
+// Exercised through the real input handlers and a real running game loop
+// (not a re-implementation) -- onInputStart/onInputMove set the ship's
+// steering target, and the ship has to actually fly there over real
+// elapsed frames before updateShipDrawing detects it's over a dot.
+// ------------------------------------------------------------
+
+test('the Flight Mode checkbox toggles STATE.flightMode and persists across a reload', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await expect(page.locator('#flight-mode-row')).toBeVisible();
+  expect(await page.evaluate(() => STATE.flightMode)).toBe(false);
+
+  await page.click('#flight-mode-checkbox');
+  expect(await page.evaluate(() => STATE.flightMode)).toBe(true);
+
+  await page.reload();
+  await page.waitForFunction(() => window.__lumina);
+  expect(await page.evaluate(() => STATE.flightMode)).toBe(true);
+  await expect(page.locator('#flight-mode-checkbox')).toBeChecked();
+  expect(errors).toEqual([]);
+});
+
+// The actual flying-and-connecting mechanic: steer toward dot A, let the
+// ship fly there and pick it up, then steer toward its match and let
+// momentum carry the ship through to complete the connection -- the same
+// checks (color match, crossing, stranding) and the same score/connection
+// bookkeeping a classic drag uses, just reached by flight instead.
+test('steering the ship through two matching dots completes a real connection', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#flight-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(500);
+
+  const setup = await page.evaluate(() => {
+    const dots = window.__lumina.getDots();
+    const byPair = {};
+    for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+    const [a, b] = Object.values(byPair).find(g => g.length >= 2);
+    return {
+      aId: a.id, bId: b.id, ax: a.x, ay: a.y, bx: b.x, by: b.y,
+      shipExists: !!STATE.ship,
+    };
+  });
+  expect(setup.shipExists).toBe(true);
+
+  // Steer toward dot A and give the ship real time to fly there.
+  await page.evaluate(({ ax, ay }) => {
+    onInputStart({ preventDefault() {}, clientX: ax, clientY: ay });
+  }, setup);
+  await page.waitForTimeout(2500);
+
+  const afterA = await page.evaluate(({ aId }) => ({
+    isDrawing: STATE.isDrawing,
+    activeDotId: STATE.activeDot && STATE.activeDot.id,
+    reachedA: STATE.activeDot && STATE.activeDot.id === aId,
+  }), setup);
+  expect(afterA.isDrawing).toBe(true);
+  expect(afterA.reachedA).toBe(true);
+
+  // Now steer toward its match and let momentum carry it the rest of the way.
+  await page.evaluate(({ bx, by }) => {
+    onInputMove({ preventDefault() {}, clientX: bx, clientY: by });
+  }, setup);
+  await page.waitForTimeout(2500);
+
+  const afterB = await page.evaluate(({ aId, bId }) => ({
+    connection: STATE.connections[0],
+    dotAConnected: STATE.dots.find(d => d.id === aId).connected,
+    dotBConnected: STATE.dots.find(d => d.id === bId).connected,
+    score: STATE.score,
+    isDrawing: STATE.isDrawing,
+  }), setup);
+  expect(afterB.connection).toBeTruthy();
+  expect(afterB.connection.dotA).toBe(setup.aId);
+  expect(afterB.connection.dotB).toBe(setup.bId);
+  expect(afterB.dotAConnected).toBe(true); // wave 1 groups are plain pairs -- one link fully solves both
+  expect(afterB.dotBConnected).toBe(true);
+  expect(afterB.score).toBeGreaterThan(0);
+  expect(afterB.isDrawing).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+// Flight Mode's ship must never survive past the wave/session it belongs
+// to -- same reasoning as every other per-wave reset (portals, lines,
+// connections) in startWave/exitToTitle.
+test('the Flight Mode ship resets cleanly on a new wave and exiting to the title screen', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.flightMode = true;
+    startWave(1);
+    const shipAfterStart = !!STATE.ship;
+    STATE.ship.x = 12345; // mutate so a stale carry-over would be detectable
+    startWave(2);
+    const shipResetPosition = STATE.ship ? { x: STATE.ship.x, y: STATE.ship.y } : null;
+    exitToTitle();
+    const shipAfterExit = STATE.ship;
+    STATE.flightMode = false;
+    startWave(1);
+    const shipWhenDisabled = STATE.ship;
+    return { shipAfterStart, shipResetPosition, shipAfterExit, shipWhenDisabled };
+  });
+
+  expect(result.shipAfterStart).toBe(true);
+  expect(result.shipResetPosition.x).not.toBe(12345); // startWave re-centers it, not carries the old position
+  expect(result.shipAfterExit).toBeNull();
+  expect(result.shipWhenDisabled).toBeNull(); // no ship at all once flightMode is off
+  expect(errors).toEqual([]);
+});
+
 test('a fact-box barrier is a real solid obstacle and displays one of the curated pause facts', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');

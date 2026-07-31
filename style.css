@@ -549,6 +549,36 @@ html, body {
   accent-color: rgba(120, 200, 255, 0.85);
 }
 
+/* Title-screen-only Flight Mode toggle (see showMessage's isTitleScreen
+   option and setupTitleLoadListeners) -- same checkbox+label pattern as
+   #autoload-label above, just its own row so it reads as an independent
+   preference rather than tied to loading a save. */
+#flight-mode-row {
+  display: none;
+  margin-top: 4px;
+  pointer-events: auto;
+}
+#flight-mode-row.visible {
+  display: block;
+}
+#flight-mode-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+}
+#flight-mode-label input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: rgba(120, 200, 255, 0.85);
+}
+
 /* Title-screen-only share prompt (see showMessage's isTitleScreen option
    and setupShareListeners) -- same pill styling as the load row above,
    just its own row so it reads as a separate action, not part of loading
