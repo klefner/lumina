@@ -297,6 +297,490 @@ function saveFlightModeSetting(enabled) {
   try { localStorage.setItem(FLIGHT_MODE_KEY, enabled ? 'true' : 'false'); } catch (e) { /* best-effort only */ }
 }
 
+// Cockpit Mode -- a third way to play the same wave progression (see
+// COCKPIT_CONFIG and the onInputStart/Move/End branches below): a genuinely
+// 3D first-person view, piloted with a virtual joystick, flying through
+// pairs of colored dots scattered in open space instead of dragging or
+// piloting a top-down ship. Mutually exclusive with Flight Mode (see
+// setupTitleLoadListeners) -- off by default, same reasoning as above.
+const COCKPIT_MODE_KEY = 'lumina_cockpitmode_v1';
+function loadCockpitModeSetting() {
+  try { return localStorage.getItem(COCKPIT_MODE_KEY) === 'true'; } catch (e) { return false; }
+}
+function saveCockpitModeSetting(enabled) {
+  try { localStorage.setItem(COCKPIT_MODE_KEY, enabled ? 'true' : 'false'); } catch (e) { /* best-effort only */ }
+}
+
+// ------------------------------------------------------------
+// COCKPIT MODE
+//
+// A third way to play the same wave progression as classic/Flight Mode
+// (same pair-count-by-wave scaling and color palette, see
+// getPairCountForWave/INSTRUMENTS) -- a genuinely 3D, first-person view,
+// piloted with a virtual joystick, flying through pairs of colored dots
+// scattered in open space. Rendered with Three.js into its own overlay
+// canvas (#cockpitCanvas) rather than the 2D board -- see render()'s
+// cockpitMode branch, which skips the classic canvas entirely while a
+// cockpit wave is active. Reuses the same union-find/scoring/wave-complete
+// plumbing as classic mode (ufUnion, markGroupIfFullySolved,
+// checkWaveComplete) since none of that cares about dot geometry, only
+// dot ids -- see completeCockpitConnection.
+//
+// Simplifications versus classic/Flight Mode, deliberate for this first
+// version: every color has exactly one pair (no 3+-dot groups), there are
+// no barriers or portals, and the only rejection rule is flying back
+// through a line already drawn (the 3D equivalent of "a line can't cross
+// another line") -- true 3D barrier/crossing geometry is a substantially
+// bigger problem than this first pass is trying to solve.
+// ------------------------------------------------------------
+const COCKPIT_CONFIG = {
+  DOT_FIELD_RADIUS: 260,      // dots are scattered within this radius of the origin
+  MIN_DOT_SPACING: 55,        // rejection-sampling floor between any two dot centers
+  DOT_RADIUS: 9,               // sphere radius, world units
+  HIT_RADIUS: 20,              // ship-to-dot distance that counts as "flew through it"
+  LINE_HIT_RADIUS: 10,         // ship-to-other-line distance that breaks an in-progress connection
+  TURN_RATE: 0.045,            // radians/frame of yaw/pitch change at full joystick deflection
+  MAX_PITCH: 1.5,              // radians, just under +/-90 degrees so the ship can never flip over
+  ACCEL: 0.06,                  // world units/frame^2 of thrust at full throttle
+  DRAG: 0.985,                  // per-frame velocity retention -- close to 1 so the ship genuinely
+                                 // drifts on release rather than stopping, per the player's own request
+  MAX_SPEED: 6,
+  SHIP_START_DISTANCE: 1.4,    // multiple of DOT_FIELD_RADIUS the ship starts out from the field,
+                                // looking back in toward it (yaw 0 / pitch 0 already faces -z)
+  MAX_FLIGHT_DISTANCE: 2.2,    // multiple of DOT_FIELD_RADIUS the soft boundary holds the ship within
+  JOYSTICK_MAX_RADIUS: 90,     // screen px of drag distance for full throttle
+  JOYSTICK_DEAD_ZONE: 4,       // screen px before any turn/thrust registers
+  STAR_COUNT: 1600,
+  STAR_FIELD_RADIUS: 900,
+  SCORE_PER_LINE_UNIT: 4,      // 3D world units are much smaller than 2D screen pixels -- scaled up
+                                // so a typical connection's score feels comparable to classic mode
+};
+
+// Loaded lazily, not from a <script> tag -- most players will never touch
+// Cockpit Mode, and this keeps the deploy pipeline (deploy-pages.yml's
+// explicit file allowlist) untouched, since nothing new needs to ship in
+// _site. Kicked off as soon as the title-screen checkbox is checked (see
+// setupTitleLoadListeners) so it's very likely already resolved by the
+// time a wave actually starts.
+let THREE_LIB = null;
+let threeLoadPromise = null;
+function ensureThreeLoaded() {
+  if (THREE_LIB) return Promise.resolve(THREE_LIB);
+  if (!threeLoadPromise) {
+    threeLoadPromise = import('https://unpkg.com/three@0.160.0/build/three.module.js')
+      .then(mod => { THREE_LIB = mod; return mod; })
+      .catch(e => {
+        console.error('Failed to load Three.js for Cockpit Mode:', e);
+        threeLoadPromise = null; // let the next attempt (e.g. next wave) retry rather than staying broken forever
+        throw e;
+      });
+  }
+  return threeLoadPromise;
+}
+
+// Three.js engine objects (renderer/scene/camera/meshes) live here, not on
+// STATE -- STATE.dots etc. are plain data (and, elsewhere, get walked by
+// code that has no reason to know Three.js exists), while these are
+// WebGL resources with their own lifecycle (see teardownCockpitScene).
+const COCKPIT = {
+  renderer: null, scene: null, camera: null,
+  dotMeshes: new Map(),    // dot.id -> THREE.Mesh
+  lineObjects: [],         // THREE.Line per completed STATE.cockpitLines entry
+  activeLineObject: null,  // THREE.Line for the connection currently being drawn, or null
+  starPoints: null,
+};
+
+function noseDirection(yaw, pitch) {
+  return {
+    x: Math.sin(yaw) * Math.cos(pitch),
+    y: Math.sin(pitch),
+    z: -Math.cos(yaw) * Math.cos(pitch),
+  };
+}
+
+function findValidCockpitPosition(existingDots) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    // Rejection-sample within a sphere (not a cube) so dots stay evenly
+    // distributed in every direction instead of clumping toward corners.
+    const r = COCKPIT_CONFIG.DOT_FIELD_RADIUS * Math.cbrt(Math.random());
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    const pos = {
+      x: r * Math.sin(phi) * Math.cos(theta),
+      y: r * Math.sin(phi) * Math.sin(theta),
+      z: r * Math.cos(phi),
+    };
+    const tooClose = existingDots.some(d => Math.hypot(pos.x - d.x, pos.y - d.y, pos.z - d.z) < COCKPIT_CONFIG.MIN_DOT_SPACING);
+    if (!tooClose) return pos;
+  }
+  // Extremely unlikely (would need dozens of dots packed into this small a
+  // volume) -- falls back to an unchecked random point rather than ever
+  // failing wave generation outright.
+  const spread = COCKPIT_CONFIG.DOT_FIELD_RADIUS;
+  return { x: (Math.random() - 0.5) * spread, y: (Math.random() - 0.5) * spread, z: (Math.random() - 0.5) * spread };
+}
+
+function generateCockpitDots(waveNumber) {
+  const pairCount = getPairCountForWave(waveNumber);
+  const shuffledInstruments = shuffleArray([...Array(INSTRUMENTS.length).keys()]).slice(0, pairCount);
+  const dots = [];
+  let idCounter = 0;
+  for (let pairId = 0; pairId < pairCount; pairId++) {
+    const colorIndex = shuffledInstruments[pairId];
+    for (let k = 0; k < 2; k++) {
+      const pos = findValidCockpitPosition(dots);
+      dots.push({
+        id: idCounter++,
+        x: pos.x, y: pos.y, z: pos.z,
+        colorIndex, pairId,
+        connected: false,
+        pulsePhase: Math.random() * Math.PI * 2,
+      });
+    }
+  }
+  return dots;
+}
+
+function cockpitInputStart(screenPos) {
+  STATE.cockpitJoystick = { anchorX: screenPos.x, anchorY: screenPos.y, curX: screenPos.x, curY: screenPos.y };
+}
+function cockpitInputMove(screenPos) {
+  if (!STATE.cockpitJoystick) return;
+  STATE.cockpitJoystick.curX = screenPos.x;
+  STATE.cockpitJoystick.curY = screenPos.y;
+}
+function cockpitInputEnd() {
+  STATE.cockpitJoystick = null;
+}
+
+function cockpitPathLength(points) {
+  let len = 0;
+  for (let i = 1; i < points.length; i++) {
+    len += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y, points[i].z - points[i - 1].z);
+  }
+  return len;
+}
+
+function completeCockpitConnection(dotA, dotB) {
+  ufUnion(dotA.id, dotB.id);
+  markGroupIfFullySolved(dotA.pairId);
+
+  const scoreAwarded = Math.round(cockpitPathLength(STATE.cockpitPath) * COCKPIT_CONFIG.SCORE_PER_LINE_UNIT);
+  STATE.cockpitLines.push({ pairId: dotA.pairId, colorIndex: dotA.colorIndex, points: STATE.cockpitPath });
+
+  unmuteChunk(dotA.pairId);
+  playConnectionChime(dotA.pairId);
+  haptic('connect');
+
+  STATE.score += scoreAwarded;
+  updateWaveDisplay();
+
+  STATE.cockpitActiveDot = null;
+  STATE.cockpitPath = [];
+
+  checkWaveComplete();
+}
+
+function rejectCockpitConnection() {
+  haptic('reject');
+  STATE.cockpitActiveDot = null;
+  STATE.cockpitPath = [];
+}
+
+function cancelCockpitConnection() {
+  STATE.cockpitActiveDot = null;
+  STATE.cockpitPath = [];
+}
+
+// Mirrors updateShipDrawing's role in Flight Mode: the ship's own position
+// each frame IS the line, not a separate pointer position (see
+// completeCockpitConnection/cockpitPath).
+function updateCockpitDrawing() {
+  const ship = STATE.cockpitShip;
+  if (!ship) return;
+
+  if (!STATE.cockpitActiveDot) {
+    for (const dot of STATE.dots) {
+      if (dot.connected) continue;
+      if (Math.hypot(ship.x - dot.x, ship.y - dot.y, ship.z - dot.z) <= COCKPIT_CONFIG.HIT_RADIUS) {
+        STATE.cockpitActiveDot = dot;
+        STATE.cockpitPath = [{ x: ship.x, y: ship.y, z: ship.z }];
+        break;
+      }
+    }
+    return;
+  }
+
+  const last = STATE.cockpitPath[STATE.cockpitPath.length - 1];
+  if (Math.hypot(ship.x - last.x, ship.y - last.y, ship.z - last.z) >= 4) {
+    STATE.cockpitPath.push({ x: ship.x, y: ship.y, z: ship.z });
+  }
+
+  // Flying back through an already-completed line breaks the connection in
+  // progress -- the 3D equivalent of "a line can't cross another line"
+  // (classic mode's actual segment-intersection barrier checks don't
+  // translate to open 3D space; this is a proximity check instead).
+  for (const line of STATE.cockpitLines) {
+    for (const p of line.points) {
+      if (Math.hypot(ship.x - p.x, ship.y - p.y, ship.z - p.z) <= COCKPIT_CONFIG.LINE_HIT_RADIUS) {
+        rejectCockpitConnection();
+        return;
+      }
+    }
+  }
+
+  for (const dot of STATE.dots) {
+    if (dot.id === STATE.cockpitActiveDot.id) continue;
+    if (Math.hypot(ship.x - dot.x, ship.y - dot.y, ship.z - dot.z) > COCKPIT_CONFIG.HIT_RADIUS) continue;
+
+    if (dot.colorIndex !== STATE.cockpitActiveDot.colorIndex) {
+      rejectCockpitConnection();
+      return;
+    }
+    if (ufConnected(STATE.cockpitActiveDot.id, dot.id)) {
+      cancelCockpitConnection(); // already linked -- nothing new this would add, same as classic mode
+      return;
+    }
+    completeCockpitConnection(STATE.cockpitActiveDot, dot);
+    return;
+  }
+}
+
+function updateCockpitShip() {
+  if (!STATE.cockpitMode || STATE.phase !== 'PLAYING' || !STATE.cockpitShip) return;
+  const ship = STATE.cockpitShip;
+  const joy = STATE.cockpitJoystick;
+
+  if (joy) {
+    const dx = joy.curX - joy.anchorX;
+    const dy = joy.curY - joy.anchorY;
+    const dist = Math.hypot(dx, dy);
+    if (dist > COCKPIT_CONFIG.JOYSTICK_DEAD_ZONE) {
+      const throttle = Math.min(1, dist / COCKPIT_CONFIG.JOYSTICK_MAX_RADIUS);
+      const nx = dx / dist, ny = dy / dist;
+      ship.yaw += nx * COCKPIT_CONFIG.TURN_RATE * throttle;
+      ship.pitch = Math.max(-COCKPIT_CONFIG.MAX_PITCH, Math.min(COCKPIT_CONFIG.MAX_PITCH,
+        ship.pitch - ny * COCKPIT_CONFIG.TURN_RATE * throttle));
+      const dir = noseDirection(ship.yaw, ship.pitch);
+      ship.vx += dir.x * COCKPIT_CONFIG.ACCEL * throttle;
+      ship.vy += dir.y * COCKPIT_CONFIG.ACCEL * throttle;
+      ship.vz += dir.z * COCKPIT_CONFIG.ACCEL * throttle;
+    }
+  }
+
+  // Drift, not a hard stop -- thrust only fires while the joystick is
+  // actively held past the dead zone (above); releasing it just removes
+  // that input; existing velocity keeps carrying the ship forward, decaying
+  // slowly via DRAG rather than snapping to zero.
+  ship.vx *= COCKPIT_CONFIG.DRAG;
+  ship.vy *= COCKPIT_CONFIG.DRAG;
+  ship.vz *= COCKPIT_CONFIG.DRAG;
+  const speed = Math.hypot(ship.vx, ship.vy, ship.vz);
+  if (speed > COCKPIT_CONFIG.MAX_SPEED) {
+    const k = COCKPIT_CONFIG.MAX_SPEED / speed;
+    ship.vx *= k; ship.vy *= k; ship.vz *= k;
+  }
+
+  ship.x += ship.vx;
+  ship.y += ship.vy;
+  ship.z += ship.vz;
+
+  // Soft boundary -- eases the ship back rather than a hard wall, so
+  // drifting out this far never feels like slamming into glass.
+  const distFromCenter = Math.hypot(ship.x, ship.y, ship.z);
+  const maxDist = COCKPIT_CONFIG.DOT_FIELD_RADIUS * COCKPIT_CONFIG.MAX_FLIGHT_DISTANCE;
+  if (distFromCenter > maxDist) {
+    const k = maxDist / distFromCenter;
+    ship.x *= k; ship.y *= k; ship.z *= k;
+    ship.vx *= 0.5; ship.vy *= 0.5; ship.vz *= 0.5;
+  }
+
+  updateCockpitDrawing();
+}
+
+function buildCockpitStarfield() {
+  const THREE = THREE_LIB;
+  const positions = new Float32Array(COCKPIT_CONFIG.STAR_COUNT * 3);
+  for (let i = 0; i < COCKPIT_CONFIG.STAR_COUNT; i++) {
+    const r = COCKPIT_CONFIG.STAR_FIELD_RADIUS * (0.3 + 0.7 * Math.random());
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+    positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+    positions[i * 3 + 2] = r * Math.cos(phi);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const material = new THREE.PointsMaterial({ color: 0xffffff, size: 1.6, sizeAttenuation: true });
+  COCKPIT.starPoints = new THREE.Points(geometry, material);
+  COCKPIT.scene.add(COCKPIT.starPoints);
+}
+
+function ensureCockpitScene() {
+  if (COCKPIT.scene) return;
+  const THREE = THREE_LIB;
+  const canvasEl = document.getElementById('cockpitCanvas');
+  COCKPIT.renderer = new THREE.WebGLRenderer({ canvas: canvasEl, antialias: true });
+  COCKPIT.renderer.setSize(window.innerWidth, window.innerHeight);
+  COCKPIT.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+
+  COCKPIT.scene = new THREE.Scene();
+  COCKPIT.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 4000);
+
+  COCKPIT.scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+  const point = new THREE.PointLight(0xffffff, 0.6);
+  point.position.set(0, 200, 200);
+  COCKPIT.scene.add(point);
+
+  buildCockpitStarfield();
+}
+
+function buildCockpitDotMeshes() {
+  const THREE = THREE_LIB;
+  for (const mesh of COCKPIT.dotMeshes.values()) {
+    COCKPIT.scene.remove(mesh);
+    mesh.geometry.dispose();
+    mesh.material.dispose();
+  }
+  COCKPIT.dotMeshes.clear();
+  for (const dot of STATE.dots) {
+    const geometry = new THREE.SphereGeometry(COCKPIT_CONFIG.DOT_RADIUS, 20, 20);
+    const color = new THREE.Color(INSTRUMENTS[dot.colorIndex].hex);
+    const material = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.6 });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(dot.x, dot.y, dot.z);
+    COCKPIT.scene.add(mesh);
+    COCKPIT.dotMeshes.set(dot.id, mesh);
+  }
+}
+
+function threeVectorsFrom(points) {
+  return points.map(p => new THREE_LIB.Vector3(p.x, p.y, p.z));
+}
+
+function updateCockpitLineObjects() {
+  const THREE = THREE_LIB;
+  // Completed lines: rebuilt only when the count changes -- cheap enough at
+  // this scale (a handful of pairs per wave) and simplest to keep in sync
+  // with STATE.cockpitLines without a separate dirty-tracking scheme.
+  if (COCKPIT.lineObjects.length !== STATE.cockpitLines.length) {
+    for (const obj of COCKPIT.lineObjects) { COCKPIT.scene.remove(obj); obj.geometry.dispose(); obj.material.dispose(); }
+    COCKPIT.lineObjects = STATE.cockpitLines.map(line => {
+      const geometry = new THREE.BufferGeometry().setFromPoints(threeVectorsFrom(line.points));
+      const material = new THREE.LineBasicMaterial({ color: new THREE.Color(INSTRUMENTS[line.colorIndex].hex) });
+      const obj = new THREE.Line(geometry, material);
+      COCKPIT.scene.add(obj);
+      return obj;
+    });
+  }
+
+  // The connection currently being drawn -- rebuilt every frame since it
+  // grows continuously; fine at these point counts (a wave never
+  // accumulates more than a few hundred).
+  if (COCKPIT.activeLineObject) {
+    COCKPIT.scene.remove(COCKPIT.activeLineObject);
+    COCKPIT.activeLineObject.geometry.dispose();
+    COCKPIT.activeLineObject.material.dispose();
+    COCKPIT.activeLineObject = null;
+  }
+  if (STATE.cockpitActiveDot && STATE.cockpitPath.length > 1) {
+    const geometry = new THREE.BufferGeometry().setFromPoints(threeVectorsFrom(STATE.cockpitPath));
+    const material = new THREE.LineBasicMaterial({ color: new THREE.Color(INSTRUMENTS[STATE.cockpitActiveDot.colorIndex].hex) });
+    COCKPIT.activeLineObject = new THREE.Line(geometry, material);
+    COCKPIT.scene.add(COCKPIT.activeLineObject);
+  }
+}
+
+function renderCockpitScene() {
+  if (!THREE_LIB || !COCKPIT.scene || !STATE.cockpitShip) return;
+  const ship = STATE.cockpitShip;
+
+  COCKPIT.camera.position.set(ship.x, ship.y, ship.z);
+  const dir = noseDirection(ship.yaw, ship.pitch);
+  COCKPIT.camera.lookAt(ship.x + dir.x, ship.y + dir.y, ship.z + dir.z);
+  // Bank into turns -- purely visual (recomputed from scratch every frame,
+  // so it never accumulates), proportional to how hard the joystick is
+  // currently pushed sideways.
+  const joy = STATE.cockpitJoystick;
+  const dx = joy ? joy.curX - joy.anchorX : 0;
+  COCKPIT.camera.rotateZ(Math.max(-0.5, Math.min(0.5, -dx * 0.006)));
+
+  updateCockpitLineObjects();
+
+  COCKPIT.renderer.render(COCKPIT.scene, COCKPIT.camera);
+}
+
+function teardownCockpitScene() {
+  // COCKPIT.scene itself is retained (ensureCockpitScene reuses it across
+  // waves/sessions), so disposing an object's GPU buffers is not enough on
+  // its own -- it has to be removed from the scene graph too, or it stays
+  // there, traversed and rendered (now with disposed/invalid buffers)
+  // alongside whatever the next session builds (review, #44).
+  if (COCKPIT.scene && THREE_LIB) {
+    for (const mesh of COCKPIT.dotMeshes.values()) {
+      COCKPIT.scene.remove(mesh);
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+    }
+    for (const obj of COCKPIT.lineObjects) {
+      COCKPIT.scene.remove(obj);
+      obj.geometry.dispose();
+      obj.material.dispose();
+    }
+    if (COCKPIT.activeLineObject) {
+      COCKPIT.scene.remove(COCKPIT.activeLineObject);
+      COCKPIT.activeLineObject.geometry.dispose();
+      COCKPIT.activeLineObject.material.dispose();
+    }
+  }
+  COCKPIT.dotMeshes.clear();
+  COCKPIT.lineObjects = [];
+  COCKPIT.activeLineObject = null;
+  document.getElementById('cockpitCanvas').classList.remove('visible');
+}
+
+function startCockpitWave(waveNumber) {
+  STATE.dots = generateCockpitDots(waveNumber);
+  STATE.cockpitShip = {
+    x: 0, y: 0, z: COCKPIT_CONFIG.DOT_FIELD_RADIUS * COCKPIT_CONFIG.SHIP_START_DISTANCE,
+    vx: 0, vy: 0, vz: 0,
+    yaw: 0, pitch: 0, // already faces -z, i.e. back in toward the dot field centered on the origin
+  };
+  STATE.cockpitJoystick = null;
+  STATE.cockpitActiveDot = null;
+  STATE.cockpitPath = [];
+  STATE.cockpitLines = [];
+  document.getElementById('cockpitCanvas').classList.add('visible');
+
+  ensureThreeLoaded().then(() => {
+    // A mode switch or exit-to-title could easily land before this
+    // resolves -- only build the scene if Cockpit Mode is still current.
+    // buildCockpitDotMeshes reads STATE.dots live, so even a wave advance
+    // in the meantime still builds the right (current) dots, not stale ones.
+    if (!STATE.cockpitMode || !STATE.cockpitShip) return;
+    ensureCockpitScene();
+    buildCockpitDotMeshes();
+  }).catch(() => { handleCockpitLoadFailure(); });
+}
+
+// Three.js genuinely failing to load (network issue, ad blocker, CDN
+// outage) would otherwise leave the player on a permanent black screen
+// (#cockpitCanvas made visible synchronously above, before this could ever
+// resolve) with an invisible, still-running simulation behind it -- the
+// ship keeps flying, dots keep being generated, none of it ever rendered.
+// Bailing out to the title screen with an explanation is a far less
+// confusing failure than that (review, #44). Also turns the persisted
+// setting off, since silently retrying and failing again next launch would
+// just repeat the same dead end -- the player can always re-check the box.
+function handleCockpitLoadFailure() {
+  if (!STATE.cockpitMode || !STATE.cockpitShip) return; // already left before this rejected
+  STATE.cockpitMode = false;
+  saveCockpitModeSetting(false);
+  exitToTitle();
+  document.getElementById('message-subtitle').textContent =
+    "Couldn't load Cockpit Mode (check your connection) — try again later, or play another mode.";
+}
+
 // Every-10th-wave milestone tiers, each fancier than the last. Cycles
 // through an escalating shimmer beyond the last named tier (wave 60+)
 // rather than capping out, so the milestone keeps feeling special forever.
@@ -1065,6 +1549,7 @@ function refreshTitleLoadRow() {
   document.getElementById('title-load-button').classList.toggle('visible', !!STATE.pendingResume);
   document.getElementById('autoload-checkbox').checked = STATE.autoLoadEnabled;
   document.getElementById('flight-mode-checkbox').checked = STATE.flightMode;
+  document.getElementById('cockpit-mode-checkbox').checked = STATE.cockpitMode;
 }
 
 // The title screen's own equivalent of the pause menu's Load Game: no
@@ -1117,6 +1602,25 @@ function setupTitleLoadListeners() {
   document.getElementById('flight-mode-checkbox').addEventListener('change', (e) => {
     STATE.flightMode = e.target.checked;
     saveFlightModeSetting(STATE.flightMode);
+    // Mutually exclusive with Cockpit Mode -- only one control scheme can
+    // actually be piloting the next wave.
+    if (STATE.flightMode && STATE.cockpitMode) {
+      STATE.cockpitMode = false;
+      saveCockpitModeSetting(false);
+      document.getElementById('cockpit-mode-checkbox').checked = false;
+    }
+  });
+  document.getElementById('cockpit-mode-checkbox').addEventListener('change', (e) => {
+    STATE.cockpitMode = e.target.checked;
+    saveCockpitModeSetting(STATE.cockpitMode);
+    if (STATE.cockpitMode) {
+      if (STATE.flightMode) {
+        STATE.flightMode = false;
+        saveFlightModeSetting(false);
+        document.getElementById('flight-mode-checkbox').checked = false;
+      }
+      ensureThreeLoaded(); // fire-and-forget -- kicked off now so it's very likely ready by "Start Game"
+    }
   });
 }
 
@@ -1247,6 +1751,17 @@ const STATE = {
   flightMode: false,   // persisted (see FLIGHT_MODE_KEY) -- picked on the title screen, alongside difficulty
   ship: null,           // { x, y, vx, vy, heading, hasTarget, targetX, targetY } while flightMode is active
                          // and a wave is in progress (see startWave/updateShip); null otherwise
+
+  cockpitMode: false,    // persisted (see COCKPIT_MODE_KEY) -- picked on the title screen; mutually
+                          // exclusive with flightMode (see setupTitleLoadListeners)
+  cockpitShip: null,      // { x, y, z, vx, vy, vz, yaw, pitch } while cockpitMode is active and a
+                           // wave is in progress (see startCockpitWave/updateCockpitShip); null otherwise
+  cockpitJoystick: null,  // { anchorX, anchorY, curX, curY } screen-space, while a touch/drag is down
+  cockpitActiveDot: null, // the dot a cockpit connection is currently being drawn from, or null
+  cockpitPath: [],        // 3D points [{x,y,z}] recorded along the ship's own flight path since
+                           // cockpitActiveDot was entered -- the 3D equivalent of STATE.currentPath
+  cockpitLines: [],       // completed 3D connections -- the 3D equivalent of STATE.connections/lines,
+                           // kept for rendering and for the fly-through-your-own-line rejection check
 };
 
 // ============================================================
@@ -2415,6 +2930,12 @@ function resizeCanvas() {
   const oldWidth = canvas.width, oldHeight = canvas.height;
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
+
+  if (COCKPIT.renderer) {
+    COCKPIT.renderer.setSize(window.innerWidth, window.innerHeight);
+    COCKPIT.camera.aspect = window.innerWidth / window.innerHeight;
+    COCKPIT.camera.updateProjectionMatrix();
+  }
   // The WAVE_COMPLETE starfield reveal (see fillBaseStarfield) fills
   // screen-space stars once, sized to the canvas at that exact moment.
   // Mobile browser chrome (address bar collapsing/reappearing on
@@ -3332,7 +3853,12 @@ function onInputStart(e) {
   e.preventDefault();
   if (STATE.paused) return; // pause menu handles its own input via real DOM buttons
 
-  if (STATE.phase === 'PLAYING' && e.touches && e.touches.length >= 2) {
+  // Cockpit Mode's joystick is single-touch only -- a second finger landing
+  // (accidentally or not) must never fall into the pinch-zoom path, which
+  // would leave the joystick's matching release unresolved (see
+  // onInputEnd's STATE.pinch check, which returns before ever reaching the
+  // cockpit branch below) and the ship stuck thrusting forever.
+  if (!STATE.cockpitMode && STATE.phase === 'PLAYING' && e.touches && e.touches.length >= 2) {
     beginPinch(e);
     return;
   }
@@ -3365,6 +3891,15 @@ function onInputStart(e) {
   // moment a second finger confirms it's a pinch, not a tap.
   if (STATE.eraseMode) {
     STATE.eraseArmed = true;
+    return;
+  }
+
+  // In Cockpit Mode a touch/drag anywhere is a virtual joystick -- wherever
+  // it first lands becomes the joystick's anchor (see cockpitInputStart);
+  // it never starts a drag-from-a-dot gesture or a camera pan the way
+  // classic mode's touch does.
+  if (STATE.cockpitMode) {
+    cockpitInputStart(getEventScreenPos(e));
     return;
   }
 
@@ -3434,8 +3969,13 @@ function onInputMove(e) {
   e.preventDefault();
   if (STATE.paused) return;
 
-  if (STATE.phase === 'PLAYING' && e.touches && e.touches.length >= 2) {
+  if (!STATE.cockpitMode && STATE.phase === 'PLAYING' && e.touches && e.touches.length >= 2) {
     updatePinch(e);
+    return;
+  }
+
+  if (STATE.cockpitMode && STATE.phase === 'PLAYING') {
+    cockpitInputMove(getEventScreenPos(e));
     return;
   }
 
@@ -3566,6 +4106,11 @@ function onInputEnd(e) {
       const conn = findConnectionAt(pos.x, pos.y);
       if (conn) eraseConnection(conn);
     }
+    return;
+  }
+
+  if (STATE.cockpitMode) {
+    cockpitInputEnd();
     return;
   }
 
@@ -4373,6 +4918,7 @@ function drawShip() {
   ctx.restore();
 }
 
+
 function pathToSegments(path) {
   const segments = [];
   for (let i = 1; i < path.length; i++) {
@@ -4712,6 +5258,47 @@ function checkWaveComplete() {
 function startWave(waveNumber) {
   STATE.wave = waveNumber;
   STATE.phase = 'PLAYING';
+
+  // Cockpit Mode's dots/ship live in real 3D space, not on the 2D board --
+  // generateDots/the camera-fit math below (world size, zoom, barriers) has
+  // no meaning for it, so it gets its own, much smaller setup path (see
+  // startCockpitWave) and this whole classic block is skipped entirely.
+  if (STATE.cockpitMode) {
+    STATE.ship = null;
+    STATE.barriers = [];
+    startCockpitWave(waveNumber);
+    STATE.pinch = null;
+    STATE.panDrag = null;
+    STATE.lastDrawScreenPos = null;
+    STATE.dotUnion = {};
+    for (const dot of STATE.dots) STATE.dotUnion[dot.id] = dot.id;
+    STATE.connections = [];
+    STATE.lines = [];
+    STATE.activeDot = null;
+    STATE.currentPath = [];
+    STATE.isDrawing = false;
+    STATE.eraseMode = false;
+    STATE.eraseArmed = false;
+    document.getElementById('erase-button').classList.remove('active');
+    STATE.portals = null;
+    STATE.portalThreads = [];
+    STATE.activePortalThread = null;
+    for (const entry of STATE.connectionPraise) entry.el.remove();
+    STATE.connectionPraise = [];
+    STATE.spaceObjects = [];
+    STATE.spaceSpawnTimer = 0;
+    STATE.celestialBodies = [];
+    STATE.stars = [];
+    STATE.waveStartScore = STATE.score;
+
+    const cockpitPairCount = getPairCountForWave(waveNumber);
+    STATE.song = generateSong(cockpitPairCount);
+    updateWaveDisplay();
+    if (!STATE.beatInterval) startBeat();
+    scheduleCurrentSongOnceReady();
+    return;
+  }
+
   STATE.dots = generateDots(waveNumber); // also sets STATE.world to fit this wave's dot count
   ensureAllDotsInWorldBounds(STATE.dots);
 
@@ -6492,6 +7079,7 @@ function maybeShowSaveTip() {
 function pauseGame() {
   if (STATE.paused || STATE.phase === 'TITLE') return; // nothing meaningful to pause from the title screen
   STATE.paused = true;
+  STATE.cockpitJoystick = null; // a touch still down when pause was triggered must not keep steering once resumed
   if (STATE.audioCtx && STATE.masterGain) {
     const t = STATE.audioCtx.currentTime;
     STATE.masterGain.gain.cancelScheduledValues(t);
@@ -6636,6 +7224,12 @@ function exitToTitle() {
   STATE.portalThreads = [];
   STATE.activePortalThread = null;
   STATE.ship = null;
+  STATE.cockpitShip = null;
+  STATE.cockpitJoystick = null;
+  STATE.cockpitActiveDot = null;
+  STATE.cockpitPath = [];
+  STATE.cockpitLines = [];
+  teardownCockpitScene();
   document.getElementById('erase-button').classList.remove('active');
   hideTutorialHint(true); // in-wave UI must never linger over the title screen
   document.getElementById('achievement-toast').classList.remove('visible');
@@ -6758,6 +7352,7 @@ function showMessage(title, subtitle, opts) {
   document.getElementById('sound-hint').classList.toggle('visible', isTitleScreen);
   document.getElementById('difficulty-selector').classList.toggle('visible', isTitleScreen);
   document.getElementById('flight-mode-row').classList.toggle('visible', isTitleScreen);
+  document.getElementById('cockpit-mode-row').classList.toggle('visible', isTitleScreen);
   document.getElementById('title-load-row').classList.toggle('visible', isTitleScreen);
   document.getElementById('share-row').classList.toggle('visible', isTitleScreen);
   document.getElementById('start-game-row').classList.toggle('visible', isTitleScreen);
@@ -6776,6 +7371,7 @@ function hideMessage() {
   // play starts.
   document.getElementById('difficulty-selector').classList.remove('visible');
   document.getElementById('flight-mode-row').classList.remove('visible');
+  document.getElementById('cockpit-mode-row').classList.remove('visible');
   document.getElementById('title-load-row').classList.remove('visible');
   document.getElementById('share-row').classList.remove('visible');
   document.getElementById('start-game-row').classList.remove('visible');
@@ -7158,12 +7754,16 @@ function updateWaveDisplay() {
   // hidden) in Intense too -- see triggerHintPulse, which explains why via
   // a toast on tap instead of silently doing nothing, rather than the
   // button just disappearing without a word.
-  document.getElementById('hint-button').classList.toggle('visible', STATE.phase !== 'TITLE');
+  // Neither has a Cockpit Mode equivalent yet -- HINT would pulse dots on
+  // a 2D board that isn't being rendered, and ERASE's tap-a-line gesture
+  // has no first-person analog (see updateCockpitDrawing's own, simpler
+  // rejection rule instead).
+  document.getElementById('hint-button').classList.toggle('visible', STATE.phase !== 'TITLE' && !STATE.cockpitMode);
   // Unlike HINT/pause, gated to PLAYING specifically, not just "not TITLE"
   // -- during WAVE_COMPLETE, canvas taps advance to the next wave before
   // ever reaching the erase-mode branch in onInputStart, so a lit ERASE
   // button there would toggle a mode that can't actually do anything.
-  document.getElementById('erase-button').classList.toggle('visible', STATE.phase === 'PLAYING' && STATE.difficulty === 'relaxed');
+  document.getElementById('erase-button').classList.toggle('visible', STATE.phase === 'PLAYING' && STATE.difficulty === 'relaxed' && !STATE.cockpitMode);
 }
 
 // ============================================================
@@ -7173,6 +7773,7 @@ function update() {
   enforceTutorialHintInvariant();
   updateEdgePan();
   updateShip();
+  updateCockpitShip();
   updateConnectionPraise();
 
   for (const dot of STATE.dots) {
@@ -7237,12 +7838,25 @@ function updateDrawScoreDisplay() {
   const el = document.getElementById('draw-score-display');
   if (STATE.isDrawing && STATE.phase === 'PLAYING') {
     el.textContent = '+' + Math.round(pathLength(STATE.currentPath) * SCORE_PER_LINE_PIXEL);
+  } else if (STATE.cockpitActiveDot && STATE.phase === 'PLAYING') {
+    el.textContent = '+' + Math.round(cockpitPathLength(STATE.cockpitPath) * COCKPIT_CONFIG.SCORE_PER_LINE_UNIT);
   } else if (el.textContent !== '') {
     el.textContent = '';
   }
 }
 
 function render() {
+  // Cockpit Mode renders into its own Three.js overlay canvas, not this
+  // one -- the 2D board never had geometry for these dots to begin with
+  // (see startCockpitWave/generateCockpitDots), so nothing below this
+  // branch is meaningful while a cockpit wave is active. drawFadeOverlay
+  // still runs so wave-transition fades work the same as classic mode.
+  if (STATE.cockpitMode && STATE.cockpitShip) {
+    renderCockpitScene();
+    drawFadeOverlay();
+    return;
+  }
+
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   // Background stays in screen space regardless of camera zoom, like a
@@ -7369,6 +7983,8 @@ function init() {
   STATE.difficulty = loadDifficulty();
   STATE.autoLoadEnabled = loadAutoLoadSetting();
   STATE.flightMode = loadFlightModeSetting();
+  STATE.cockpitMode = loadCockpitModeSetting();
+  if (STATE.cockpitMode) ensureThreeLoaded(); // preload -- the title screen may already be showing it as checked
   applyDifficulty(STATE.difficulty);
   setupDifficultySelectorListeners();
   setupTitleLoadListeners();

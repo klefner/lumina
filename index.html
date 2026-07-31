@@ -15,6 +15,7 @@
 </head>
 <body>
   <canvas id="gameCanvas"></canvas>
+  <canvas id="cockpitCanvas"></canvas>
   <div id="ui-overlay">
     <div id="wave-display"></div>
     <div id="right-col">
@@ -58,6 +59,7 @@
         <li>In Relaxed difficulty, tap ERASE, then tap any line you've drawn to remove it and redraw.</li>
         <li>Later waves can hide a dot behind its own sealed wall, reachable only through a swirling portal pair. Drag to one side to lock in, then start a fresh drag from the other side to reach its match.</li>
         <li>Flight Mode (title screen toggle): pilot a ship instead of dragging — hold anywhere to steer it, and fly through one dot then another to connect them, momentum and all.</li>
+        <li>Cockpit Mode (title screen toggle): a first-person 3D view — hold anywhere as a joystick to bank and thrust, and fly through one dot then another to connect them. The ship drifts on release instead of stopping dead.</li>
         <li>Tap the pause button any time to save your progress or adjust settings.</li>
       </ul>
     </div>
@@ -80,6 +82,12 @@
       <label id="flight-mode-label">
         <input type="checkbox" id="flight-mode-checkbox">
         Flight Mode — pilot a ship to connect dots
+      </label>
+    </div>
+    <div id="cockpit-mode-row">
+      <label id="cockpit-mode-label">
+        <input type="checkbox" id="cockpit-mode-checkbox">
+        Cockpit Mode — first-person 3D flight
       </label>
     </div>
     <div id="title-load-row">
