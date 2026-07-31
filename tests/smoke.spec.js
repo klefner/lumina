@@ -4220,6 +4220,7 @@ test('the Cockpit Mode ship/controls reset cleanly on a new wave and exiting to 
       canvasVisible: document.getElementById('cockpitCanvas').classList.contains('visible'),
       leftStickVisible: document.getElementById('cockpit-left-stick').classList.contains('visible'),
       waypointVisible: document.getElementById('cockpit-waypoint-arrow').classList.contains('visible'),
+      connectionStatusVisible: document.getElementById('cockpit-connection-status').classList.contains('visible'),
     };
     STATE.cockpitMode = false;
     startWave(1);
@@ -4242,7 +4243,50 @@ test('the Cockpit Mode ship/controls reset cleanly on a new wave and exiting to 
   expect(result.stateAfterExit.canvasVisible).toBe(false);
   expect(result.stateAfterExit.leftStickVisible).toBe(false);
   expect(result.stateAfterExit.waypointVisible).toBe(false);
+  expect(result.stateAfterExit.connectionStatusVisible).toBe(false);
   expect(result.shipWhenDisabled).toBeNull(); // no ship at all once cockpitMode is off
+  expect(errors).toEqual([]);
+});
+
+// The waypoint arrow is a difficulty-gated hint; this badge is baseline
+// feedback that should show regardless of difficulty any time a connection
+// is in progress -- the dot/line being dragged from is easy to lose behind
+// the ship while flying forward past it (player report).
+test('the Cockpit Mode connection-status badge shows while a line is being drawn, colored to match the active pair, and hides once idle', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.cockpitMode = true;
+    STATE.difficulty = 'intense'; // even on the difficulty that hides the waypoint arrow entirely
+    startWave(1);
+    const el = document.getElementById('cockpit-connection-status');
+    const hiddenBeforeDrawing = el.classList.contains('visible');
+
+    STATE.cockpitActiveDot = STATE.dots[0];
+    STATE.cockpitPath = [{ x: 1, y: 1, z: 1 }];
+    updateCockpitConnectionStatus();
+    const visibleWhileDrawing = el.classList.contains('visible');
+    const colorWhileDrawing = el.style.color;
+
+    STATE.cockpitActiveDot = null;
+    updateCockpitConnectionStatus();
+    const hiddenAfterLanding = el.classList.contains('visible');
+
+    // Browsers normalize an assigned hex color to rgb(...); round-trip the
+    // expected hex through a throwaway element to compare like with like.
+    const probe = document.createElement('div');
+    probe.style.color = INSTRUMENTS[STATE.dots[0].colorIndex].hex;
+    const expectedColor = probe.style.color;
+
+    return { hiddenBeforeDrawing, visibleWhileDrawing, colorWhileDrawing, hiddenAfterLanding, expectedColor };
+  });
+
+  expect(result.hiddenBeforeDrawing).toBe(false);
+  expect(result.visibleWhileDrawing).toBe(true);
+  expect(result.colorWhileDrawing).toBe(result.expectedColor);
+  expect(result.hiddenAfterLanding).toBe(false);
   expect(errors).toEqual([]);
 });
 
