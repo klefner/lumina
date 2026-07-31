@@ -4,7 +4,7 @@ Instantiated from [studio-ops/templates/SOURCE_OF_TRUTH_TEMPLATE.md](https://git
 See [studio-ops/AGENTS.md](https://github.com/klefner/studio-ops/blob/main/AGENTS.md) for the shared rules
 this file exists to support.
 
-## Current State As Of 2026-07-24
+## Current State As Of 2026-07-31
 
 | Layer | Current value | Meaning |
 | --- | --- | --- |
@@ -22,6 +22,7 @@ this file exists to support.
 - A commit existing on a feature branch is not the same as it being on `main`.
 - A file being on `main` is not the same as it being in the deployed site — only what `deploy-pages.yml`'s "Stage site files" step explicitly copies into `_site` ships. Adding a new player-facing file (a new asset, a new split-out JS module) to `main` without also adding it to that copy list will silently never go live. This file (`SOURCE_OF_TRUTH.md`) and `AGENTS.md` are deliberately **not** on that list — they're developer/agent docs, not meant to be served to players.
 - `main` being current is not the same as GitHub Pages having finished deploying it yet — always verify via `version.json`, not by assuming the push landed instantly.
+- The two deploy targets can go out of sync on their own: the PR #42 merge hit a transient Cloudflare API 522 on the "Deploy to Cloudflare Pages" step while the GitHub Pages step in the same job succeeded, leaving `lumina-8f0.pages.dev` briefly stale relative to `klefner.github.io/lumina/` even though both ran from the same `main` push. Neither `rerun_workflow_run` nor a `workflow_dispatch` retrigger were available (403, insufficient token scope) — the fix was a fresh push to `main` (any real commit, not an empty one) to re-run the whole job. Always diff `version.json` on *both* hosts against the latest `main` commit, not just one.
 - After a squash-merge, a local feature branch's pre-squash commits diverge from the new squashed commit on `main` (same content, different hash). Re-sync with `git fetch origin main --force && git checkout -B <branch> origin/main` before starting new work, rather than trying to rebase or reuse the old branch history.
 
 ## Known Open Risk Areas
