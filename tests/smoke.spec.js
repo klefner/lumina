@@ -4323,3 +4323,50 @@ test('left/right arrow keys and the mouse wheel zoom the cockpit camera via FOV,
   expect(errors).toEqual([]);
 });
 
+// A held key/mouse button or an in-progress stick touch has the same
+// "interrupted, no matching end event" problem window-level blur/touchcancel
+// already guards classic mode against: iOS can fire touchcancel instead of
+// touchend, and losing window focus entirely skips keyup/mouseup outright.
+// Without clearing cockpit control state too, the ship would keep steering/
+// thrusting after the player returns (review, #45).
+test('losing window focus mid-steer clears cockpit keys/mouse buttons/sticks, same as a stale draw gesture', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#cockpit-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(200);
+
+  await page.keyboard.down('w');
+  await page.mouse.down({ button: 'right' });
+  const before = await page.evaluate(() => {
+    STATE.cockpitLeftStick = { touchId: 1, curX: 5, curY: 5 };
+    STATE.cockpitRightStick = { touchId: 2, curX: 5, curY: 5 };
+    return { key: STATE.cockpitKeys.w, mouse: STATE.cockpitMouseButtons.right };
+  });
+  expect(before.key).toBe(true);
+  expect(before.mouse).toBe(true);
+
+  // The window-level safety net itself, exactly as the browser fires it on
+  // a real blur (not a direct function call -- same reasoning as every
+  // other cockpit input test in this suite).
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+
+  const after = await page.evaluate(() => ({
+    key: STATE.cockpitKeys.w,
+    mouse: STATE.cockpitMouseButtons.right,
+    leftStick: STATE.cockpitLeftStick,
+    rightStick: STATE.cockpitRightStick,
+  }));
+  expect(after.key).toBe(false);
+  expect(after.mouse).toBe(false);
+  expect(after.leftStick).toBeNull();
+  expect(after.rightStick).toBeNull();
+
+  await page.keyboard.up('w');
+  await page.mouse.up({ button: 'right' });
+  expect(errors).toEqual([]);
+});
+

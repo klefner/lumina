@@ -4161,6 +4161,27 @@ function cancelStaleDrawGesture() {
     cancelActiveLine();
   }
   STATE.eraseArmed = false;
+
+  // Cockpit Mode: a held key/mouse button or an in-progress stick touch has
+  // exactly the same "interrupted, no matching end event" problem -- iOS
+  // can fire touchcancel instead of touchend, and losing window focus
+  // entirely (alt-tab, another app) skips keyup/mouseup altogether. Without
+  // this, updateCockpitShip keeps steering/thrusting after the player
+  // returns, and a cancelled stick touch permanently blocks that side from
+  // ever accepting a new finger, since only a real touchend clears it
+  // (review, #45).
+  STATE.cockpitLeftStick = null;
+  STATE.cockpitRightStick = null;
+  STATE.cockpitKeys.w = false;
+  STATE.cockpitKeys.a = false;
+  STATE.cockpitKeys.s = false;
+  STATE.cockpitKeys.d = false;
+  STATE.cockpitKeys.up = false;
+  STATE.cockpitKeys.down = false;
+  STATE.cockpitKeys.zoomIn = false;
+  STATE.cockpitKeys.zoomOut = false;
+  STATE.cockpitMouseButtons.left = false;
+  STATE.cockpitMouseButtons.right = false;
 }
 window.addEventListener('mouseup', cancelStaleDrawGesture);
 window.addEventListener('blur', cancelStaleDrawGesture);
