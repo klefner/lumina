@@ -1048,6 +1048,28 @@ function updateCockpitWaypointArrow() {
   el.classList.add('visible');
 }
 
+// Unlike the waypoint arrow above, this isn't a difficulty-gated hint -- it's
+// baseline feedback that a connection is in progress at all. In cockpit mode
+// the dot/line you're dragging from is easy to lose behind the ship while
+// flying forward past it, so without this the player has no on-screen
+// confirmation they're still connected (player report, post-#45 playtest).
+function updateCockpitConnectionStatus() {
+  const el = document.getElementById('cockpit-connection-status');
+  if (!STATE.cockpitMode || !STATE.cockpitActiveDot) {
+    el.classList.remove('visible');
+    return;
+  }
+  const color = INSTRUMENTS[STATE.cockpitActiveDot.colorIndex].hex;
+  el.style.color = color;
+  // #top-buttons-row can wrap to a second line on narrow viewports (see its
+  // own comment) -- clear whatever it's actually rendering as right now
+  // instead of a fixed offset sized for one line, or the badge lands on top
+  // of the wrapped HELP/PAUSE row instead of below it (review, #46).
+  const overlayBottom = document.getElementById('ui-overlay').getBoundingClientRect().bottom;
+  el.style.top = Math.max(16, overlayBottom + 8) + 'px';
+  el.classList.add('visible');
+}
+
 function teardownCockpitScene() {
   // COCKPIT.scene itself is retained (ensureCockpitScene reuses it across
   // waves/sessions), so disposing an object's GPU buffers is not enough on
@@ -1079,6 +1101,7 @@ function teardownCockpitScene() {
   document.getElementById('cockpit-left-stick').classList.remove('visible');
   document.getElementById('cockpit-right-stick').classList.remove('visible');
   document.getElementById('cockpit-waypoint-arrow').classList.remove('visible');
+  document.getElementById('cockpit-connection-status').classList.remove('visible');
 }
 
 function startCockpitWave(waveNumber) {
@@ -8291,6 +8314,7 @@ function render() {
     renderCockpitScene();
     updateCockpitStickVisuals();
     updateCockpitWaypointArrow();
+    updateCockpitConnectionStatus();
     drawFadeOverlay();
     return;
   }

@@ -117,6 +117,50 @@ html, body {
   display: block;
 }
 
+/* Baseline "you're still connected" feedback, independent of the
+   difficulty-gated waypoint arrow above -- shown any time a cockpit
+   connection is in progress, since the dot/line being dragged from is easy
+   to lose behind the ship while flying forward past it. Color is set inline
+   to match the active pair's color (see updateCockpitConnectionStatus).
+   `top` is set inline too, not here -- same reasoning as #hint-toast above:
+   #top-buttons-row can wrap to a second line on narrow viewports, and a
+   fixed CSS offset sized for one line would sit the badge right on top of
+   the wrapped HELP/PAUSE row instead of clearing it (review, #46). */
+#cockpit-connection-status {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1.5px solid currentColor;
+  color: #7ac8ff;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 8px currentColor;
+  pointer-events: none;
+  z-index: 11;
+}
+#cockpit-connection-status.visible {
+  display: flex;
+}
+#cockpit-connection-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 10px currentColor;
+  animation: cockpit-connection-pulse 1s ease-in-out infinite;
+}
+@keyframes cockpit-connection-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.7); }
+}
+
 #ui-overlay {
   position: fixed;
   top: 20px;
