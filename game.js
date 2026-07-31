@@ -711,10 +711,27 @@ function renderCockpitScene() {
 }
 
 function teardownCockpitScene() {
+  // COCKPIT.scene itself is retained (ensureCockpitScene reuses it across
+  // waves/sessions), so disposing an object's GPU buffers is not enough on
+  // its own -- it has to be removed from the scene graph too, or it stays
+  // there, traversed and rendered (now with disposed/invalid buffers)
+  // alongside whatever the next session builds (review, #44).
   if (COCKPIT.scene && THREE_LIB) {
-    for (const mesh of COCKPIT.dotMeshes.values()) { mesh.geometry.dispose(); mesh.material.dispose(); }
-    for (const obj of COCKPIT.lineObjects) { obj.geometry.dispose(); obj.material.dispose(); }
-    if (COCKPIT.activeLineObject) { COCKPIT.activeLineObject.geometry.dispose(); COCKPIT.activeLineObject.material.dispose(); }
+    for (const mesh of COCKPIT.dotMeshes.values()) {
+      COCKPIT.scene.remove(mesh);
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+    }
+    for (const obj of COCKPIT.lineObjects) {
+      COCKPIT.scene.remove(obj);
+      obj.geometry.dispose();
+      obj.material.dispose();
+    }
+    if (COCKPIT.activeLineObject) {
+      COCKPIT.scene.remove(COCKPIT.activeLineObject);
+      COCKPIT.activeLineObject.geometry.dispose();
+      COCKPIT.activeLineObject.material.dispose();
+    }
   }
   COCKPIT.dotMeshes.clear();
   COCKPIT.lineObjects = [];
@@ -743,7 +760,25 @@ function startCockpitWave(waveNumber) {
     if (!STATE.cockpitMode || !STATE.cockpitShip) return;
     ensureCockpitScene();
     buildCockpitDotMeshes();
-  }).catch(() => { /* already logged in ensureThreeLoaded */ });
+  }).catch(() => { handleCockpitLoadFailure(); });
+}
+
+// Three.js genuinely failing to load (network issue, ad blocker, CDN
+// outage) would otherwise leave the player on a permanent black screen
+// (#cockpitCanvas made visible synchronously above, before this could ever
+// resolve) with an invisible, still-running simulation behind it -- the
+// ship keeps flying, dots keep being generated, none of it ever rendered.
+// Bailing out to the title screen with an explanation is a far less
+// confusing failure than that (review, #44). Also turns the persisted
+// setting off, since silently retrying and failing again next launch would
+// just repeat the same dead end -- the player can always re-check the box.
+function handleCockpitLoadFailure() {
+  if (!STATE.cockpitMode || !STATE.cockpitShip) return; // already left before this rejected
+  STATE.cockpitMode = false;
+  saveCockpitModeSetting(false);
+  exitToTitle();
+  document.getElementById('message-subtitle').textContent =
+    "Couldn't load Cockpit Mode (check your connection) — try again later, or play another mode.";
 }
 
 // Every-10th-wave milestone tiers, each fancier than the last. Cycles

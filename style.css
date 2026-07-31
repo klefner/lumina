@@ -28,7 +28,15 @@ html, body {
    #ui-overlay/the pause and help panels, which stay usable the same way
    they do over the 2D board. Hidden by default so the plain black body
    background (not a blank WebGL canvas) shows through until Cockpit Mode
-   is actually toggled on (see startCockpitWave/teardownCockpitScene). */
+   is actually toggled on (see startCockpitWave/teardownCockpitScene).
+   pointer-events:none is load-bearing, not cosmetic: onInputStart/Move/End
+   are registered only on #gameCanvas (game.js), and DOM events never
+   bubble between sibling elements, so a hit-testable canvas sitting on
+   top of it would silently swallow every real touch/click Cockpit Mode
+   needs (review, #44) -- getEventPos/getEventScreenPos read clientX/Y and
+   #gameCanvas's own bounding rect regardless of which element the event
+   actually landed on, so letting it all pass through is correct, not just
+   a workaround. */
 #cockpitCanvas {
   position: fixed;
   top: 0;
@@ -37,6 +45,7 @@ html, body {
   height: 100%;
   display: none;
   background: #000000;
+  pointer-events: none;
   z-index: 1;
 }
 #cockpitCanvas.visible {

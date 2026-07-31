@@ -3973,7 +3973,11 @@ test('starting a Cockpit Mode wave generates 3D dots and a ship, and shows the c
 // nose and builds velocity while held, and releasing it removes the thrust
 // input without killing the existing velocity outright -- the "drift, not
 // an immediate stop" behavior that was explicitly requested for this mode
-// (see COCKPIT_CONFIG.DRAG's comment).
+// (see COCKPIT_CONFIG.DRAG's comment). Driven by real dispatched mouse
+// events (page.mouse), not direct onInputStart/Move/End calls -- those
+// would still pass even with #cockpitCanvas sitting on top and silently
+// swallowing every real touch/click (review, #44: pointer-events:none is
+// what actually fixed it), so only a real event round-trip proves it.
 test('the cockpit joystick steers the ship and lets it drift on release instead of stopping dead', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
@@ -3992,10 +3996,10 @@ test('the cockpit joystick steers the ship and lets it drift on release instead 
   // Anchor at (250, 450), drag up-and-right -- should yaw right, pitch up,
   // and build thrust back toward the dot field centered on the origin
   // (the ship starts on the +z axis facing -z, see startCockpitWave).
-  await page.evaluate(() => {
-    onInputStart({ preventDefault() {}, clientX: 250, clientY: 450 });
-    onInputMove({ preventDefault() {}, clientX: 320, clientY: 380 });
-  });
+  await page.mouse.move(250, 450);
+  await page.mouse.down();
+  await page.mouse.move(320, 380, { steps: 5 });
+  expect(await page.evaluate(() => !!STATE.cockpitJoystick)).toBe(true); // the real event actually reached cockpitInputStart
   await page.waitForTimeout(500); // ~30 real frames of thrust
 
   const thrusting = await page.evaluate(() => ({ ...STATE.cockpitShip }));
@@ -4004,7 +4008,7 @@ test('the cockpit joystick steers the ship and lets it drift on release instead 
   const speedWhileThrusting = Math.hypot(thrusting.vx, thrusting.vy, thrusting.vz);
   expect(speedWhileThrusting).toBeGreaterThan(0);
 
-  await page.evaluate(() => { onInputEnd({ preventDefault() {} }); });
+  await page.mouse.up();
   const justReleased = await page.evaluate(() => ({ ...STATE.cockpitShip }));
   const speedJustAfterRelease = Math.hypot(justReleased.vx, justReleased.vy, justReleased.vz);
   // Released, not stopped -- velocity survives the release itself.
