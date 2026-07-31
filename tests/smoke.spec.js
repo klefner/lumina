@@ -4085,6 +4085,16 @@ test('releasing the throttle mouse button does not reset in-progress mouse-posit
   expect(errors).toEqual([]);
 });
 
+// Player report: it wasn't obvious which pad was which.
+test('the Cockpit Mode joysticks are labeled Thrust (left) and Steer (right)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await expect(page.locator('#cockpit-left-stick .cockpit-stick-label')).toHaveText('THRUST');
+  await expect(page.locator('#cockpit-right-stick .cockpit-stick-label')).toHaveText('STEER');
+  expect(errors).toEqual([]);
+});
+
 // Touch device: two independent on-screen sticks, tracked by real
 // simultaneous touches with distinct identifiers -- left = throttle
 // (vertical deflection), right = steering direction. Verifies both fingers
@@ -4248,6 +4258,34 @@ test('the wave-complete reveal pulls the Cockpit Mode ship back from the finishe
   const distAfterReveal = await page.evaluate(() =>
     Math.hypot(STATE.cockpitShip.x, STATE.cockpitShip.y, STATE.cockpitShip.z));
   expect(distAfterReveal).toBeGreaterThan(result.distRightAfter + 50); // clearly pulled back, not still parked in the dot
+  expect(errors).toEqual([]);
+});
+
+// Codex review, #49: updateCockpitShip (the only place that normally
+// updates cockpitTurnSmoothed) stops running the instant the wave
+// completes, but the camera's visual bank roll keeps reading it every
+// frame regardless of phase -- finishing mid-turn used to leave the whole
+// wave-complete reveal permanently tilted at whatever the last steering
+// value was, since nothing ever zeroed it going into WAVE_COMPLETE.
+test('finishing a Cockpit Mode wave mid-turn resets the smoothed bank instead of leaving the reveal permanently rolled', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#cockpit-mode-checkbox');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(200);
+
+  const result = await page.evaluate(() => {
+    STATE.cockpitTurnSmoothed = { x: 0.9, y: -0.4 }; // simulate mid-decay steering right before finishing
+    for (const dot of STATE.dots) dot.connected = true; // every dot already connected
+    checkWaveComplete();
+    return { turnSmoothed: { ...STATE.cockpitTurnSmoothed }, phase: STATE.phase };
+  });
+
+  expect(result.phase).toBe('WAVE_COMPLETE');
+  expect(result.turnSmoothed).toEqual({ x: 0, y: 0 });
   expect(errors).toEqual([]);
 });
 
