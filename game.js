@@ -380,6 +380,12 @@ const COCKPIT_CONFIG = {
                                 // invisible -- see review feedback)
   SCORE_PER_LINE_UNIT: 4,      // 3D world units are much smaller than 2D screen pixels -- scaled up
                                 // so a typical connection's score feels comparable to classic mode
+  REVEAL_DISTANCE_MULTIPLIER: 2.0, // multiple of DOT_FIELD_RADIUS the ship eases back to for the
+                                     // wave-complete reveal -- far enough to frame the whole finished
+                                     // constellation inside COCKPIT_CONFIG.FOV_DEFAULT
+  REVEAL_EASE: 0.045,           // per-frame chase rate for the wave-complete pull-back/look-back --
+                                  // slower than CONTROL_SMOOTHING on purpose, this is a cinematic
+                                  // camera move, not a control response
 };
 
 // Loaded lazily, not from a <script> tag -- most players will never touch
@@ -825,6 +831,51 @@ function updateCockpitShip() {
   updateCockpitDrawing();
 }
 
+// The wave-complete payoff shot: instead of leaving the ship frozen exactly
+// where the final connection landed (almost always embedded inside that
+// dot's own sphere -- an ugly close-up, not a reward), ease it back along
+// the direction it already happens to be from the field's center, out to a
+// vantage point that frames the whole finished constellation, while turning
+// to look back at it. Flight input is already ignored during WAVE_COMPLETE
+// (see updateCockpitShip's own phase check), so this has the ship entirely
+// to itself -- a guided camera move, not physics.
+function updateCockpitWaveCompleteReveal() {
+  if (!STATE.cockpitMode || !STATE.cockpitShip || STATE.phase !== 'WAVE_COMPLETE') return;
+  const ship = STATE.cockpitShip;
+
+  if (!STATE.cockpitRevealDir) {
+    const dist = Math.hypot(ship.x, ship.y, ship.z);
+    // A dead-center finish (dist ~0) has no meaningful outward direction to
+    // pull back along -- fall back to slightly-above-level along the ship's
+    // original start-facing axis, which reads better than a flat horizon.
+    STATE.cockpitRevealDir = dist > 1
+      ? { x: ship.x / dist, y: ship.y / dist, z: ship.z / dist }
+      : { x: 0, y: 0.15, z: 1 };
+  }
+  const dir = STATE.cockpitRevealDir;
+  const targetDist = COCKPIT_CONFIG.DOT_FIELD_RADIUS * COCKPIT_CONFIG.REVEAL_DISTANCE_MULTIPLIER;
+  const rate = COCKPIT_CONFIG.REVEAL_EASE;
+
+  ship.x += (dir.x * targetDist - ship.x) * rate;
+  ship.y += (dir.y * targetDist - ship.y) * rate;
+  ship.z += (dir.z * targetDist - ship.z) * rate;
+  ship.vx = 0; ship.vy = 0; ship.vz = 0; // a guided shot, not drift
+
+  // Look back at the origin -- noseDirection() inverted (see its own
+  // comment for the yaw/pitch <-> direction convention).
+  const len = Math.hypot(ship.x, ship.y, ship.z) || 1;
+  const ndx = -ship.x / len, ndy = -ship.y / len, ndz = -ship.z / len;
+  const targetPitch = Math.max(-COCKPIT_CONFIG.MAX_PITCH, Math.min(COCKPIT_CONFIG.MAX_PITCH, Math.asin(ndy)));
+  const targetYaw = Math.atan2(ndx, -ndz);
+  // Shortest-path yaw interpolation -- a plain lerp would spin the long way
+  // around whenever the raw target/current angles straddle the +/-pi seam.
+  let yawDiff = targetYaw - ship.yaw;
+  while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
+  while (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
+  ship.yaw += yawDiff * rate;
+  ship.pitch += (targetPitch - ship.pitch) * rate;
+}
+
 // A soft round sprite for star points -- THREE.PointsMaterial with no map
 // renders plain GL squares (the "stars look too large and perfectly
 // square, like connectable objects" review feedback), not circles. Built
@@ -1138,6 +1189,7 @@ function startCockpitWave(waveNumber) {
   STATE.cockpitMouseButtons = { left: false, right: false };
   STATE.cockpitThrottleSmoothed = 0;
   STATE.cockpitTurnSmoothed = { x: 0, y: 0 };
+  STATE.cockpitRevealDir = null;
   STATE.cockpitActiveDot = null;
   STATE.cockpitPath = [];
   STATE.cockpitLines = [];
@@ -2184,6 +2236,14 @@ const STATE = {
   // translate 1:1 into an equally abrupt yaw/pitch/thrust change.
   cockpitThrottleSmoothed: 0,
   cockpitTurnSmoothed: { x: 0, y: 0 },
+  // The direction (from the dot field's center) the wave-complete reveal
+  // eases the ship back along -- computed once, the first frame WAVE_COMPLETE
+  // starts, from wherever the ship actually finished (see
+  // updateCockpitWaveCompleteReveal). Previously the ship just stopped dead
+  // exactly where the final connection landed, which is almost always
+  // embedded inside that dot's own sphere -- a jarring, ugly close-up
+  // instead of a payoff (player report, screenshot).
+  cockpitRevealDir: null,
   cockpitActiveDot: null, // the dot a cockpit connection is currently being drawn from, or null
   cockpitPath: [],        // 3D points [{x,y,z}] recorded along the ship's own flight path since
                            // cockpitActiveDot was entered -- the 3D equivalent of STATE.currentPath
@@ -5686,6 +5746,20 @@ function checkWaveComplete() {
   STATE.phase = 'WAVE_COMPLETE';
   STATE.waveCompleteAdvancing = false;
 
+  // Cockpit Mode's own reveal: the ship would otherwise just sit frozen
+  // exactly where the final connection landed (updateCockpitShip ignores
+  // input once phase leaves PLAYING) -- almost always embedded inside that
+  // dot's own sphere. cockpitRevealDir = null makes
+  // updateCockpitWaveCompleteReveal compute a fresh pull-back direction
+  // from wherever the ship actually finished, starting next frame. The
+  // on-screen sticks have nothing left to control during this phase, so
+  // they're hidden the same way exiting to the title screen already does.
+  if (STATE.cockpitMode) {
+    STATE.cockpitRevealDir = null;
+    document.getElementById('cockpit-left-stick').classList.remove('visible');
+    document.getElementById('cockpit-right-stick').classList.remove('visible');
+  }
+
   // Whatever zoom/pan the player was using to land the final connection
   // is exactly what they'd otherwise be stuck looking at for the reveal
   // below -- the payoff moment (the full starfield, every connected line
@@ -7735,6 +7809,7 @@ function exitToTitle() {
   STATE.cockpitMouseButtons = { left: false, right: false };
   STATE.cockpitThrottleSmoothed = 0;
   STATE.cockpitTurnSmoothed = { x: 0, y: 0 };
+  STATE.cockpitRevealDir = null;
   STATE.cockpitActiveDot = null;
   STATE.cockpitPath = [];
   STATE.cockpitLines = [];
@@ -8283,6 +8358,7 @@ function update() {
   updateEdgePan();
   updateShip();
   updateCockpitShip();
+  updateCockpitWaveCompleteReveal();
   updateConnectionPraise();
 
   for (const dot of STATE.dots) {
