@@ -642,6 +642,8 @@ html, body {
 }
 #difficulty-selector.visible {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
 }
 .difficulty-btn {
   font-family: 'Courier New', monospace;
