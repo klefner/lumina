@@ -3602,6 +3602,59 @@ test('a mid-wave audio context rebuild (initAudio after a wedge) reschedules the
   expect(errors).toEqual([]);
 });
 
+// Regression guard for a real user-reported defect: "no music is heard on
+// a wave, most often wave 1." Wave 1 is also the very first sample decode
+// ever (every real instrument still has to be fetched/decoded), so a
+// small, fast wave 1 could be fully solved -- moving STATE.song on to
+// wave 2 -- before that decode resolved. scheduleCurrentSongOnceReady used
+// to only schedule the exact song object its own call started for, so
+// that first call's callback found STATE.song had already moved on and
+// silently dropped it -- wave 1 got no music at all, and only wave 2
+// onward (whose own call finds decoding already resolved) played
+// anything.
+test('scheduleCurrentSongOnceReady schedules whichever song is actually current, even if the wave it originally started for already finished before decoding resolved', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const result = await page.evaluate(async () => {
+    await STATE.samplesReadyPromise; // real decode already finished -- isolate this test to the race itself
+    STATE.songScheduledFor = null;
+    STATE.songStartTime = null;
+
+    // Reproduce the exact race: a call starts scheduling for "wave 1"'s
+    // song while decoding is still pending, but by the time it resolves,
+    // the wave has already finished and moved on to a different song.
+    let resolveDecode;
+    STATE.samplesReadyPromise = new Promise(r => { resolveDecode = r; });
+
+    const wave1Song = generateSong(1);
+    STATE.song = wave1Song;
+    scheduleCurrentSongOnceReady(); // starts waiting on the still-pending promise
+
+    const wave2Song = generateSong(2);
+    STATE.song = wave2Song; // wave 1 "finished" -- superseded before decode resolved
+
+    resolveDecode();
+    await new Promise(r => setTimeout(r, 50));
+
+    return {
+      scheduledWave2: STATE.songScheduledFor === wave2Song,
+      songStarted: STATE.songStartTime !== null,
+      chunkCount: STATE.chunkGains.length,
+      wave2PairCount: wave2Song.pairCount,
+    };
+  });
+
+  expect(result.scheduledWave2).toBe(true);
+  expect(result.songStarted).toBe(true);
+  expect(result.chunkCount).toBe(result.wave2PairCount); // wave 2's own chunk layout, not wave 1's stale one
+  expect(errors).toEqual([]);
+});
+
 // ------------------------------------------------------------
 // Social share: a plain link from the title screen, and a composited
 // wave postcard offered only when a completed wave actually earned an
@@ -3743,7 +3796,7 @@ test('the top button row reads ERASE, HINT, HELP, PAUSE left to right', async ({
   expect(errors).toEqual([]);
 });
 
-test('buildWavePostcard composites the game canvas with a banner sized to the canvas width', async ({ page }) => {
+test('buildWavePostcard renders a fixed-size stylized postcard, independent of the player\'s actual canvas size', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
@@ -3755,17 +3808,45 @@ test('buildWavePostcard composites the game canvas with a banner sized to the ca
     const pc = buildWavePostcard();
     return {
       width: pc.width,
-      canvasWidth: canvas.width,
-      tallerThanGameCanvas: pc.height > canvas.height,
+      height: pc.height,
+      configWidth: POSTCARD_CONFIG.WIDTH,
+      configHeight: POSTCARD_CONFIG.HEIGHT,
     };
   });
 
-  expect(result.width).toBe(result.canvasWidth);
-  expect(result.tallerThanGameCanvas).toBe(true);
+  // A shareable image shouldn't vary by device/window the way the live
+  // game canvas does -- it's always the same fixed postcard dimensions.
+  expect(result.width).toBe(result.configWidth);
+  expect(result.height).toBe(result.configHeight);
   expect(errors).toEqual([]);
 });
 
-test('shareOrSaveWavePostcard shares a file when the browser supports it, and falls back to a download otherwise', async ({ page }) => {
+test('the postcard photo is a centered crop of the board, not the whole canvas', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const markerFound = await page.evaluate(() => {
+    // A distinct marker painted in the extreme corner of the real
+    // gameplay canvas -- if buildWavePostcard copied the whole canvas
+    // instead of a centered subset, this exact color would show up
+    // somewhere in the output; a centered crop should never reach it.
+    ctx.fillStyle = 'rgb(1,222,3)';
+    ctx.fillRect(0, 0, 4, 4);
+
+    const pc = buildWavePostcard();
+    const data = pc.getContext('2d').getImageData(0, 0, pc.width, pc.height).data;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] === 1 && data[i + 1] === 222 && data[i + 2] === 3) return true;
+    }
+    return false;
+  });
+
+  expect(markerFound).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('shareOrSaveWavePostcard shares a file with the play link included, and copies the link on fallback', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
@@ -3781,18 +3862,34 @@ test('shareOrSaveWavePostcard shares a file when the browser supports it, and fa
     return {
       toastText: document.getElementById('share-toast').textContent,
       sharedFileType: window.__lastShareData && window.__lastShareData.files && window.__lastShareData.files[0].type,
+      sharedUrl: window.__lastShareData && window.__lastShareData.url,
+      sharedTextHasLink: !!(window.__lastShareData && window.__lastShareData.text.includes(CANONICAL_SHARE_URL)),
     };
   });
   expect(shareSupported.toastText).toBe('Shared!');
   expect(shareSupported.sharedFileType).toBe('image/png');
+  expect(shareSupported.sharedUrl).toBe('https://lumina-8f0.pages.dev/');
+  expect(shareSupported.sharedTextHasLink).toBe(true);
 
+  // No native share sheet (desktop, mainly) -- the download still has to
+  // come with a way to hand someone the link, so it lands on the
+  // clipboard right behind it.
   const shareUnsupported = await page.evaluate(async () => {
     navigator.share = undefined;
     navigator.canShare = undefined;
+    window.__clipboardText = null;
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: (t) => { window.__clipboardText = t; return Promise.resolve(); } },
+      configurable: true,
+    });
     await shareOrSaveWavePostcard();
-    return document.getElementById('share-toast').textContent;
+    return {
+      toastText: document.getElementById('share-toast').textContent,
+      clipboardHasLink: window.__clipboardText && window.__clipboardText.includes(CANONICAL_SHARE_URL),
+    };
   });
-  expect(shareUnsupported).toBe('Postcard Saved');
+  expect(shareUnsupported.toastText).toBe('Postcard Saved + Link Copied');
+  expect(shareUnsupported.clipboardHasLink).toBe(true);
   expect(errors).toEqual([]);
 });
 
@@ -4869,6 +4966,191 @@ test('losing window focus mid-steer clears cockpit keys/mouse buttons/sticks, sa
 
   await page.keyboard.up('w');
   await page.mouse.up({ button: 'right' });
+  expect(errors).toEqual([]);
+});
+
+// Relaxed-mode-only assist: while a line is being drawn, every dot outside
+// the group being connected dims to make the matching dot easy to spot.
+// Drives the real input handler (onInputStart) to start a genuine drag,
+// same as the portal-drawing test above, then renders through the real
+// drawDot/ctx.fill path (same interception technique as the hint-pulse
+// test above) rather than re-testing the gating logic in isolation.
+test('relaxed mode dims every dot outside the matching group while a line is being drawn, and undims once the drag ends', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.click('.difficulty-btn[data-difficulty="relaxed"]');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const setup = await page.evaluate(() => {
+    const dots = window.__lumina.getDots();
+    const byPair = {};
+    for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+    const groups = Object.values(byPair);
+    const originGroup = groups.find(g => g.length >= 2);
+    const otherGroup = groups.find(g => g !== originGroup);
+    return {
+      origin: originGroup[0],
+      groupmate: originGroup[1],
+      other: otherGroup[0],
+    };
+  });
+
+  const alphaOf = async (dotId) => {
+    return page.evaluate((id) => {
+      const dot = STATE.dots.find(d => d.id === id);
+      const fills = [];
+      const origFill = ctx.fill.bind(ctx);
+      ctx.fill = function (...args) { fills.push(ctx.globalAlpha); return origFill(...args); };
+      drawDot(dot);
+      ctx.fill = origFill;
+      return fills[0]; // base color fill, the one shouldDimForActiveDraw scales
+    }, dotId);
+  };
+
+  const beforeDrag = { groupmate: await alphaOf(setup.groupmate.id), other: await alphaOf(setup.other.id) };
+
+  await page.evaluate(({ x, y }) => {
+    onInputStart({ preventDefault() {}, clientX: x, clientY: y });
+  }, { x: setup.origin.x, y: setup.origin.y });
+  expect(await page.evaluate(() => STATE.isDrawing)).toBe(true);
+
+  const duringDrag = { groupmate: await alphaOf(setup.groupmate.id), other: await alphaOf(setup.other.id) };
+  // Same group as the dot being dragged from: brightness unchanged.
+  expect(duringDrag.groupmate).toBeCloseTo(beforeDrag.groupmate, 5);
+  // Different group: dimmed to exactly half its normal brightness.
+  expect(duringDrag.other).toBeCloseTo(beforeDrag.other * 0.5, 5);
+
+  // Releasing off any dot cancels the gesture -- isDrawing goes false and,
+  // being computed live off STATE each frame, dimming clears on its own.
+  await page.evaluate(() => onInputEnd({ preventDefault() {}, clientX: -9999, clientY: -9999 }));
+  expect(await page.evaluate(() => STATE.isDrawing)).toBe(false);
+  const afterDrag = { groupmate: await alphaOf(setup.groupmate.id), other: await alphaOf(setup.other.id) };
+  expect(afterDrag.groupmate).toBeCloseTo(beforeDrag.groupmate, 5);
+  expect(afterDrag.other).toBeCloseTo(beforeDrag.other, 5);
+
+  expect(errors).toEqual([]);
+});
+
+// Same drag mechanics as above, but confirms the assist is genuinely
+// gated to Relaxed -- Normal/Intense should never dim anything, even
+// mid-drag, since the erase-button/other relaxed-only affordances use the
+// same STATE.difficulty === 'relaxed' gate and this should match them.
+test('the relaxed-mode dimming assist never activates outside relaxed difficulty', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.click('.difficulty-btn[data-difficulty="normal"]');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const result = await page.evaluate(() => {
+    const dots = STATE.dots;
+    const byPair = {};
+    for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+    const groups = Object.values(byPair);
+    const origin = groups[0][0];
+    const other = groups.find(g => g[0].pairId !== origin.pairId)[0];
+
+    onInputStart({ preventDefault() {}, clientX: origin.x, clientY: origin.y });
+    const dimming = shouldDimForActiveDraw(other);
+    onInputEnd({ preventDefault() {}, clientX: -9999, clientY: -9999 });
+    return dimming;
+  });
+  expect(result).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+// Codex review (#52): the dimming assist's multiplier only ever touched
+// the base color fill -- the hint-pulse flash overlay and the final white
+// core circle both assign globalAlpha directly rather than multiply it,
+// so at every flash peak an unrelated dot briefly popped back to full
+// brightness, defeating the assist for most of the animation. Verifies
+// all three of drawDot's fill() calls (base, hint overlay, core) scale
+// identically by the same 0.5 dim factor, not just the first one.
+test('the dimming assist also dims a dot during its hint-pulse flash peak, not just its base fill', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const dot = { x: 100, y: 100, colorIndex: 0, pairId: 5, connected: false, pulsePhase: 0 };
+    const activeDot = { pairId: 9 }; // a different group -- `dot` should be dimmed
+
+    // hintPulseBrightness is a plain top-level function declaration, so it's
+    // a real property of window -- reassigning it here redirects drawDot's
+    // own call to it, same as a real hint pulse sitting at its exact peak.
+    const origHintPulseBrightness = window.hintPulseBrightness;
+    window.hintPulseBrightness = () => 1;
+
+    const captureFills = () => {
+      const fills = [];
+      const origFill = ctx.fill.bind(ctx);
+      ctx.fill = function (...args) { fills.push(ctx.globalAlpha); return origFill(...args); };
+      drawDot(dot);
+      ctx.fill = origFill;
+      return fills;
+    };
+
+    STATE.difficulty = 'relaxed';
+    STATE.isDrawing = false;
+    STATE.activeDot = null;
+    const undimmed = captureFills();
+
+    STATE.isDrawing = true;
+    STATE.activeDot = activeDot;
+    const dimmed = captureFills();
+
+    STATE.isDrawing = false;
+    STATE.activeDot = null;
+    window.hintPulseBrightness = origHintPulseBrightness;
+
+    return { undimmed, dimmed };
+  });
+
+  expect(result.undimmed).toHaveLength(3); // base fill, hint-flash overlay, white core
+  expect(result.dimmed).toHaveLength(3);
+  for (let i = 0; i < 3; i++) {
+    expect(result.dimmed[i]).toBeCloseTo(result.undimmed[i] * 0.5, 5);
+  }
+  expect(errors).toEqual([]);
+});
+
+// Codex review (#52): a milestone wave can earn all three achievements at
+// once, joining into one long caption that -- undimmed -- exceeds the
+// postcard card's own width. Verifies the actually-drawn caption (via the
+// real fillText call, not a re-implementation of the sizing math) fits
+// within the card once shrunk.
+test('buildWavePostcard shrinks a long multi-achievement caption to fit the card, instead of overflowing it', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.wave = 10;
+    STATE.score = 9999;
+    STATE.lastWavePostcardLabels = ['Wave 10 Cleared', 'New Highest Wave', 'Best Wave Score'];
+
+    const calls = [];
+    const origFillText = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y) {
+      calls.push({ text, width: this.measureText(text).width });
+      return origFillText.call(this, text, x, y);
+    };
+    buildWavePostcard();
+    CanvasRenderingContext2D.prototype.fillText = origFillText;
+
+    const captionCall = calls.find(c => c.text.startsWith('Lumina —'));
+    const cardW = POSTCARD_CONFIG.WIDTH - POSTCARD_CONFIG.BORDER * 2;
+    return {
+      captionWidth: captionCall ? captionCall.width : null,
+      maxCaptionWidth: cardW - POSTCARD_CONFIG.BORDER,
+    };
+  });
+
+  expect(result.captionWidth).not.toBeNull();
+  expect(result.captionWidth).toBeLessThanOrEqual(result.maxCaptionWidth + 1); // +1 float-rounding slack
   expect(errors).toEqual([]);
 });
 
