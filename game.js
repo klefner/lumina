@@ -1666,6 +1666,19 @@ const SAMPLE_MANIFEST = {
 // know the difference.
 const SYNTHESIZED_INSTRUMENTS = new Set(['rhodes', 'lofibass', 'lofikit']);
 
+// A kit's pieces (kick/snare/hihat) aren't different pitches of the same
+// sound the way a melody instrument's notes are -- they're intentionally
+// voiced at different relative loudnesses, same as a real drum mix (kick
+// punchy and up front, hihat naturally sitting under it). Per-sample
+// loudness normalization (see registerSampleGain) is right for correcting
+// ACCIDENTAL note-to-note recording variance in a melody instrument, but
+// applying it independently to each kit piece would erase that ON-PURPOSE
+// balance -- the same mistake as flattening melody/pad/drone to one
+// identical volume, just at the level of a drum kit instead of a scale
+// role (review, #51). Kit instruments get one shared gain instead (see
+// registerKitGain), anchored on their own loudest piece.
+const DRUM_KIT_INSTRUMENTS = new Set(['lofikit']);
+
 const STARFIELD_CONFIG = {
   // Density-based, not a fixed count — a fixed star count looks fine on a
   // narrow phone screen and leaves huge empty gaps on a wide desktop one.
@@ -2561,12 +2574,41 @@ function registerSampleGain(instrument, key, buffer) {
   (STATE.sampleGain[instrument] = STATE.sampleGain[instrument] || {})[key] = rms > 0 ? TARGET_SAMPLE_RMS / rms : 1;
 }
 
+// One shared gain for every piece of a kit instrument (see
+// DRUM_KIT_INSTRUMENTS' own comment) -- anchored on whichever piece
+// measures loudest, matching the previous hardcoded convention (kick was
+// always the anchor) but computed automatically instead.
+function registerKitGain(instrument, buffers) {
+  let anchorRms = 0;
+  for (const key in buffers) {
+    if (!buffers[key]) continue;
+    STATE.sampleBuffers[instrument][key] = buffers[key];
+    anchorRms = Math.max(anchorRms, computeAttackRms(buffers[key]));
+  }
+  const gain = anchorRms > 0 ? TARGET_SAMPLE_RMS / anchorRms : 1;
+  const gains = STATE.sampleGain[instrument] = STATE.sampleGain[instrument] || {};
+  for (const key in buffers) {
+    if (buffers[key]) gains[key] = gain;
+  }
+}
+
 async function decodeAllSamples() {
   const jobs = [];
   for (const instrument in SAMPLE_MANIFEST) {
     STATE.sampleBuffers[instrument] = {};
 
     if (SYNTHESIZED_INSTRUMENTS.has(instrument)) {
+      if (DRUM_KIT_INSTRUMENTS.has(instrument)) {
+        jobs.push((async () => {
+          const buffers = {};
+          for (const key of SAMPLE_MANIFEST[instrument]) {
+            try { buffers[key] = await synthesizeInstrumentSample(instrument, key); }
+            catch (e) { /* skip — playDrumHit falls back gracefully */ }
+          }
+          registerKitGain(instrument, buffers);
+        })());
+        continue;
+      }
       for (const key of SAMPLE_MANIFEST[instrument]) {
         jobs.push((async () => {
           try {

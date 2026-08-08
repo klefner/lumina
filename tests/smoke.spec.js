@@ -3924,6 +3924,50 @@ test('per-sample gain normalization brings flute\'s quietest and loudest real re
   expect(errors).toEqual([]);
 });
 
+// Codex review, #51: a drum kit's pieces (kick/snare/hihat) aren't
+// different pitches of the same sound the way a melody instrument's notes
+// are -- they're intentionally voiced at different relative loudnesses,
+// same as a real kit mix. Per-piece normalization (treating lofikit like
+// any pitched instrument) would have erased that on-purpose balance,
+// making the constantly-triggered hihat as loud as the kick. Kit
+// instruments get one shared gain instead (registerKitGain), so their
+// relative balance survives even though the absolute level is still
+// auto-computed rather than hardcoded.
+test('drum kit pieces keep their relative loudness balance instead of each normalizing to the same target', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+
+  const result = await page.evaluate(async () => {
+    await STATE.samplesReadyPromise;
+    const pieces = ['kick', 'snare', 'hihat'];
+    return pieces.map(p => {
+      const buffer = STATE.sampleBuffers.lofikit[p];
+      const rawRms = buffer ? computeAttackRms(buffer) : null;
+      const gain = sampleGainFor('lofikit', p);
+      return { piece: p, rawRms, gain, effectivePeak: rawRms != null ? rawRms * gain : null };
+    });
+  });
+
+  expect(result.every(r => r.rawRms != null)).toBe(true);
+  // Every piece gets the exact same multiplier (the shared kit gain) --
+  // not independently normalized, which is the whole point of this fix.
+  expect(result[0].gain).toBeCloseTo(result[1].gain, 6);
+  expect(result[1].gain).toBeCloseTo(result[2].gain, 6);
+  // The kit's own loudest piece (kick, in the real recordings) lands right
+  // on the target; the others stay proportionally quieter, same relative
+  // shape as the raw recordings, not flattened to match it.
+  const kick = result.find(r => r.piece === 'kick');
+  const quieter = result.filter(r => r.piece !== 'kick');
+  for (const r of quieter) {
+    expect(r.rawRms).toBeLessThan(kick.rawRms);
+    expect(r.effectivePeak).toBeLessThan(kick.effectivePeak);
+  }
+  expect(errors).toEqual([]);
+});
+
 test('generateSong can pick the supperclub family and produces notes that stay within the folded instrument ranges', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
