@@ -2878,6 +2878,20 @@ function nearestSampleNote(instrument, targetMidi) {
 // nearest sample independently and play simultaneously at different
 // speeds — the same recording layered against itself, phasing into an
 // unnatural honk instead of a clean chord.
+//
+// DISTINCT_SAMPLE_MAX_REACH bounds how far a target is ever pushed just to
+// stay unique: with a sparse instrument (rhodes has only 3 unique pitches
+// per octave, 9 samples total), a busy lofi downbeat can stack up to 7
+// simultaneous targets on it (melody + arpeggio + a 4-note pad chord +
+// accent) -- greedily assigning them in order lets the first few claim
+// every nearby sample, leaving later ones with nothing close left and
+// forcing a reach of 20+ semitones into a completely different octave
+// (verified: up to 30 semitones before this fix, across 200 generated lofi
+// songs) -- an unmistakably wrong-sounding note, not a chord tone anymore.
+// Reusing another note's sample (letting them phase against each other,
+// the exact thing distinctness exists to avoid) is the lesser problem once
+// the alternative is a note this far from anything it's supposed to be.
+const DISTINCT_SAMPLE_MAX_REACH = 6; // semitones -- matches foldToInstrumentRange's own headroom
 function nearestDistinctSampleNotes(instrument, midiList) {
   const notes = SAMPLE_MANIFEST[instrument];
   if (!notes) return midiList.map(() => null);
@@ -2889,7 +2903,9 @@ function nearestDistinctSampleNotes(instrument, midiList) {
       const dist = Math.abs(noteNameToMidi(name) - targetMidi);
       if (dist < bestDist) { bestDist = dist; best = name; }
     }
-    if (best === null) best = nearestSampleNote(instrument, targetMidi); // more chord tones than samples — reuse
+    // No unused sample at all, or the only ones left are too far away to
+    // still sound like this target -- reuse the actual nearest sample.
+    if (best === null || bestDist > DISTINCT_SAMPLE_MAX_REACH) best = nearestSampleNote(instrument, targetMidi);
     used.add(best);
     return best;
   });

@@ -4002,6 +4002,74 @@ test('generateSong keeps every melody/accent note close to its instrument\'s rea
   expect(errors).toEqual([]);
 });
 
+// Codex review, #50 (P1): a busy lofi downbeat can stack up to 7
+// simultaneous targets onto rhodes (melody + arpeggio + a 4-note pad chord
+// + accent), which only has 9 samples across 3 sparse octaves (C/Eb/G).
+// Greedily assigning them in role order let early notes claim every nearby
+// sample, leaving later ones (verified: mostly accent, sometimes a pad
+// tone) with nothing close left -- forced reaches of up to 30 semitones
+// (2.5 octaves) into a completely different register, measured across 200
+// real generateSong() calls before this fix. This directly stress-tests
+// nearestDistinctSampleNotes with that exact worst-case shape.
+test('nearestDistinctSampleNotes never reaches more than a bounded distance from a target, even with more competing targets than an instrument has nearby samples', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // rhodes: 9 samples, 3 unique pitch classes (C/Eb/G) per octave.
+    // Mirrors the real lofi worst case: melody+arpeggio landing on the same
+    // pitch class, a 4-note pad chord clustered nearby, and an accent note
+    // -- 7 targets total, all within about an octave and a half.
+    const targets = [71, 71, 59, 62, 66, 69, 76];
+    const resolved = nearestDistinctSampleNotes('rhodes', targets);
+    const distances = targets.map((t, i) => Math.abs(t - noteNameToMidi(resolved[i])));
+    return { resolved, distances, maxDistance: Math.max(...distances) };
+  });
+
+  expect(result.resolved.every(r => r != null)).toBe(true);
+  expect(result.maxDistance).toBeLessThanOrEqual(6); // DISTINCT_SAMPLE_MAX_REACH
+  expect(errors).toEqual([]);
+});
+
+// Same broad sweep as the melody/accent overshoot test above, but checking
+// ground truth: the ACTUAL resolved sample every note in every role ends
+// up playing (via resolveInstrumentCollisions, called inside generateSong
+// itself), not just the pre-collision theoretical target. This is what
+// the player actually hears.
+test('generateSong never resolves any note to a sample more than a bounded distance from its target, across every family', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    let maxDistance = 0;
+    let worstExample = null;
+    for (let i = 0; i < 80; i++) {
+      const song = generateSong(6);
+      for (const note of song.notes) {
+        if (note.role === 'drum') continue;
+        const pairs = note.midiList
+          ? note.midiList.map((m, idx) => [m, note.resolvedSamples && note.resolvedSamples[idx]])
+          : [[note.midi, note.resolvedSample]];
+        for (const [target, sampleName] of pairs) {
+          if (target == null) continue;
+          const resolvedName = sampleName || nearestSampleNote(note.instrument, target);
+          const dist = Math.abs(target - noteNameToMidi(resolvedName));
+          if (dist > maxDistance) {
+            maxDistance = dist;
+            worstExample = { instrument: note.instrument, role: note.role, target, resolvedName, dist };
+          }
+        }
+      }
+    }
+    return { maxDistance, worstExample };
+  });
+
+  expect(result.maxDistance, JSON.stringify(result.worstExample)).toBeLessThanOrEqual(6);
+  expect(errors).toEqual([]);
+});
+
 // Player request: show which specific generated song (family + seed name)
 // is playing each wave, so playtest feedback like "this one didn't come
 // together" can name the actual song instead of staying anecdotal.
