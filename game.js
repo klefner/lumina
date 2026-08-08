@@ -8549,7 +8549,11 @@ function rectOutOfBounds(rect) {
 // same as being off-screen: never an acceptable landing spot at all.
 function rectOverlapsHud(rect) {
   const margin = 4;
-  for (const id of ['wave-display', 'right-col']) {
+  // 'left-col' (wave number + song-name-display stacked together), not
+  // the narrower 'wave-display' alone -- checking only the first line
+  // left the tutorial hint's search free to land right on top of the
+  // song name line underneath it.
+  for (const id of ['left-col', 'right-col']) {
     const el = document.getElementById(id);
     if (!el) continue;
     const r = el.getBoundingClientRect();

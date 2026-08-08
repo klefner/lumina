@@ -10,7 +10,16 @@
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="icon" href="icons/icon-192.png">
-  <link rel="stylesheet" href="style.css">
+  <!-- Cache-busted the same way game.js already is (see deploy-pages.yml's
+       __BUILD__ substitution) -- without a versioned query string here, a
+       browser that already had an old style.css cached keeps serving it
+       forever regardless of how new game.js is, since a plain reload
+       doesn't necessarily revalidate an unversioned cached resource. Any
+       deploy that changes CSS alongside JS (e.g. adding a new HUD element
+       with its own rules) leaves returning players with new markup paired
+       against old, non-matching styles -- exactly the "buttons/HUD went
+       missing" symptom this was built to prevent (player report). -->
+  <link rel="stylesheet" href="style.css?v=__BUILD__">
   <title>Lumina</title>
 </head>
 <body>

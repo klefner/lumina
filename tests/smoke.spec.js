@@ -4969,6 +4969,32 @@ test('losing window focus mid-steer clears cockpit keys/mouse buttons/sticks, sa
   expect(errors).toEqual([]);
 });
 
+// Regression guard for a real player-reported defect: HUD buttons/layout
+// went missing on a device that had loaded the game before -- caused by
+// style.css having no cache-busting query string the way game.js already
+// does (see deploy-pages.yml's __BUILD__ substitution), so a returning
+// player's already-cached, now-stale stylesheet stayed paired with a
+// freshly-fetched game.js as soon as any deploy changed CSS, and a plain
+// reload didn't fix it since the cached CSS was still "fresh" by cache
+// headers. Checked structurally against the raw HTML (both deployed
+// __BUILD__-substituted and the literal placeholder served locally are
+// valid outcomes) rather than requiring an actual second deploy to prove.
+test('the stylesheet link is cache-busted the same way game.js already is', async ({ page }) => {
+  const errors = trackErrors(page);
+  const res = await page.goto('/index.html');
+  const html = await res.text();
+
+  const scriptMatch = html.match(/<script src="game\.js\?v=([^"]+)"><\/script>/);
+  const linkMatch = html.match(/<link rel="stylesheet" href="style\.css\?v=([^"]+)">/);
+
+  expect(scriptMatch).not.toBeNull();
+  expect(linkMatch).not.toBeNull();
+  // Same build identifier on both -- a CSS-only deploy always ships under
+  // the same cache-busted key as the JS it's paired with.
+  expect(linkMatch[1]).toBe(scriptMatch[1]);
+  expect(errors).toEqual([]);
+});
+
 // Relaxed-mode-only assist: while a line is being drawn, every dot outside
 // the group being connected dims to make the matching dot easy to spot.
 // Drives the real input handler (onInputStart) to start a genuine drag,
