@@ -1648,7 +1648,18 @@ const GENRE_FAMILIES = [
         roles: [
           { kind: 'melody',   instrument: 'musicbox' },
           { kind: 'arpeggio', instrument: 'vibraphone' },
-          { kind: 'pad',      instrument: 'cello' },
+          // pad and drone MUST stay on different instruments here -- both
+          // land on the exact same un-humanized downbeat, so sharing one
+          // instrument stacks 4 correlated sustained notes (a 3-tone chord
+          // plus a pedal tone) firing at the identical instant. That's the
+          // precise pattern behind an earlier "car horn" complaint (see
+          // 9f2a3d1/654e8f6): every other family in this file still keeps
+          // cello out of pad/drone entirely for the same reason (see the
+          // spa family's "temporarily off cello" seeds above, never
+          // reverted). Player report: "drift off has a horn that sounds
+          // like a bus or truck or train horn" -- this seed was the only
+          // lullaby seed pairing cello with itself on both roles.
+          { kind: 'pad',      instrument: 'vibraphone' },
           { kind: 'drone',    instrument: 'cello' },
           { kind: 'accent',   instrument: 'musicbox' },
           { kind: 'accent',   instrument: 'vibraphone' },
@@ -1661,7 +1672,9 @@ const GENRE_FAMILIES = [
         roles: [
           { kind: 'melody',   instrument: 'vibraphone' },
           { kind: 'arpeggio', instrument: 'musicbox' },
-          { kind: 'pad',      instrument: 'cello' },
+          // See drift off above -- pad moved off cello so it never shares
+          // an instrument with drone's simultaneous downbeat note.
+          { kind: 'pad',      instrument: 'vibraphone' },
           { kind: 'drone',    instrument: 'cello' },
           { kind: 'accent',   instrument: 'musicbox' },
           { kind: 'accent',   instrument: 'vibraphone' },

@@ -5297,6 +5297,40 @@ test('lullaby roles are restricted to gentle, non-percussive instruments only', 
   expect(errors).toEqual([]);
 });
 
+// Regression test for player report: "Lullaby - draft off has a horn that
+// again sounds like a bus or truck or train horn." Root cause: pad and
+// drone both land on the exact same un-humanized downbeat (see
+// generateSong), so any seed pairing them on the SAME instrument stacks 4
+// correlated sustained notes (a 3-tone chord plus a pedal tone) firing at
+// the identical instant -- the precise pattern behind an earlier "car
+// horn" complaint (see 9f2a3d1/654e8f6 in git history). Every family
+// already avoids this EXCEPT the two lullaby seeds this regressed on
+// ('drift off' and 'starlight cradle' both had pad+drone on cello). Checks
+// every seed in every family, not just lullaby, so nothing can reintroduce
+// this shape unnoticed.
+test('no genre seed ever puts pad and drone on the same instrument', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const offenders = await page.evaluate(() => {
+    const bad = [];
+    for (const family of GENRE_FAMILIES) {
+      for (const seed of family.seeds) {
+        const pad = seed.roles.find(r => r.kind === 'pad');
+        const drone = seed.roles.find(r => r.kind === 'drone');
+        if (pad && drone && pad.instrument === drone.instrument) {
+          bad.push(`${family.name}/${seed.name}: both on ${pad.instrument}`);
+        }
+      }
+    }
+    return bad;
+  });
+
+  expect(offenders).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
 test('synthesizeMusicboxNote renders a finite, non-silent buffer for a real note', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
