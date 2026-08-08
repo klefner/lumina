@@ -2232,6 +2232,9 @@ const STATE = {
   beatTick: 0,         // Increments each beat
 
   song: null,          // Procedurally generated song for the current wave
+  songScheduledFor: null, // the song object scheduleLoopingSong was last actually called with —
+                           // lets scheduleCurrentSongOnceReady skip a redundant re-schedule of a
+                           // song that's already playing (see its own comment)
   songStartTime: null, // audioCtx.currentTime the current song loop was scheduled from — lets
                         // unmuteChunk find the next clean note onset instead of a mid-decay moment
   songNextLoopIndex: 0, // how many loop passes have been scheduled so far — incremented as
@@ -2410,7 +2413,15 @@ function initAudio() {
   // transition -- exactly the "only a reload brings the music back"
   // symptom this was built to fix. No-ops harmlessly if there's no
   // current song yet (e.g. this is the very first tap, still on TITLE).
-  if (hadNoContext) scheduleCurrentSongOnceReady();
+  // songScheduledFor is reset first -- it only remembers the song object,
+  // not which audioCtx it was scheduled against, so a same-song rebuild
+  // (this branch) needs the explicit nudge or the guard in
+  // scheduleCurrentSongOnceReady would wrongly think this exact song was
+  // already handled and skip scheduling it on the new context entirely.
+  if (hadNoContext) {
+    STATE.songScheduledFor = null;
+    scheduleCurrentSongOnceReady();
+  }
 }
 
 // Waits for sample decoding (async) before scheduling STATE.song onto
@@ -2420,10 +2431,24 @@ function initAudio() {
 // connected gets silently skipped" guarantee scheduleLoopingSong provides.
 function scheduleCurrentSongOnceReady() {
   if (!STATE.audioCtx || !STATE.song) return;
-  const songForThisCall = STATE.song;
+  const ctxForThisCall = STATE.audioCtx;
   Promise.resolve(STATE.samplesReadyPromise).then(() => {
-    if (STATE.song === songForThisCall && STATE.audioCtx) {
-      scheduleLoopingSong(songForThisCall);
+    if (STATE.audioCtx !== ctxForThisCall || !STATE.song) return;
+    // The wave this call was scheduling for can already be finished and
+    // replaced by the time decoding resolves — small waves (wave 1 most
+    // of all, since it's also the very first decode ever, with every real
+    // instrument sample still to fetch/decode) can be solved faster than
+    // that. This used to only schedule the exact song this call started
+    // for, so a wave finished under those conditions got dropped and
+    // never scheduled at all — "no music heard on a wave, most often wave
+    // 1". Always scheduling whatever's actually STATE.song right now
+    // means the player ends up with the music for the wave they're
+    // really on, never silence; songScheduledFor just skips a harmless
+    // but pointless duplicate reschedule when another call already beat
+    // this one to the same song.
+    if (STATE.songScheduledFor !== STATE.song) {
+      STATE.songScheduledFor = STATE.song;
+      scheduleLoopingSong(STATE.song);
     }
   });
 }
@@ -2456,7 +2481,12 @@ function recoverAudioAfterVisible() {
       // reschedule fresh from right now rather than trust old scheduling
       // survived. scheduleLoopingSong immediately re-unmutes every pair
       // already connected, so nothing the player already earned goes quiet.
+      // songScheduledFor is reset first so scheduleCurrentSongOnceReady's
+      // guard doesn't see the same still-current song and skip -- the
+      // sources just got stopped above, so this song genuinely does need
+      // a fresh schedule despite its identity not having changed.
       stopAllScheduledAudio(ctx.currentTime);
+      STATE.songScheduledFor = null;
       scheduleCurrentSongOnceReady();
     } else {
       // Wedged -- drop it so the next tap (initAudio) builds a completely
@@ -3929,6 +3959,17 @@ function hintPulseBrightness() {
   return Math.pow(raw, 3);
 }
 
+// Relaxed mode only: while a line is being drawn, every dot outside the
+// group being connected dims to make the matching dot(s) easy to spot.
+// Driven entirely off live STATE each frame (no separate on/off state to
+// set or clear), so it can't get stuck dim if a drag is cancelled, a
+// stale gesture is cleared on focus loss, etc. -- the moment isDrawing
+// goes false, drawDot stops calling this and brightness is back to normal.
+function shouldDimForActiveDraw(dot) {
+  return STATE.difficulty === 'relaxed' && STATE.isDrawing && !STATE.cockpitMode
+    && STATE.activeDot && dot.pairId !== STATE.activeDot.pairId;
+}
+
 function drawDot(dot) {
   const instrument = INSTRUMENTS[dot.colorIndex];
   const shape = DOT_SHAPES[dot.colorIndex] || 'circle';
@@ -3972,6 +4013,7 @@ function drawDot(dot) {
   } else {
     ctx.shadowBlur = 35;
   }
+  if (shouldDimForActiveDraw(dot)) ctx.globalAlpha *= 0.5;
   ctx.shadowColor = instrument.hex;
   ctx.beginPath();
   traceDotShapePath(shape, dot.x, dot.y, radius);
@@ -6179,10 +6221,12 @@ function startWave(waveNumber) {
   // Sample decoding is async; scheduleLoopingSong calls playSample
   // synchronously for every note up front, so it must wait for decoding
   // to finish or the whole wave's real-instrument notes would silently
-  // never play. scheduleCurrentSongOnceReady's own staleness guard skips
-  // scheduling if this wave was already superseded by the time decoding
-  // resolves (shouldn't normally happen — decode is fast — but keeps this
-  // safe regardless).
+  // never play. A small wave can be solved faster than that decode
+  // finishes -- wave 1 most of all, since it's also the very first decode
+  // ever -- in which case STATE.song has already moved on by the time
+  // this call's promise resolves; scheduleCurrentSongOnceReady handles
+  // that by scheduling whatever's actually current at that point, so the
+  // wave the player ends up on still gets its music instead of silence.
   scheduleCurrentSongOnceReady();
 }
 
@@ -8231,53 +8275,89 @@ async function shareGameLink() {
 }
 
 const POSTCARD_CONFIG = {
-  BASE_BANNER_HEIGHT: 96, // at REFERENCE_WIDTH; scaled with the actual canvas below
-  REFERENCE_WIDTH: 500,
-  MIN_SCALE: 0.75,
-  MAX_SCALE: 1.7,
+  WIDTH: 640,
+  HEIGHT: 720,
+  BORDER: 26,          // white polaroid border around the cropped photo
+  CAPTION_HEIGHT: 60,  // polaroid's own caption strip, inside the white card, below the photo
+  FOOTER_HEIGHT: 56,
+  TILT_DEG: -2.5,
+  CROP_FRACTION: 0.75, // the photo is a centered SUBSET of the board, not the whole canvas
 };
 
-// Composites the just-completed board -- exactly as the player sees it at
-// the reveal, stars and all -- with a branded banner naming what was
-// earned. A raw canvas.toDataURL() screenshot alone would carry no
-// context once shared outside the game (no title, no score, nothing
-// saying what game this even is), which is the whole point of a postcard
-// over a plain screenshot.
+// Composites a small, centered SUBSET of the just-completed board (most of
+// a wave's canvas is empty background, so a full screenshot reads as
+// mostly nothing) into a tilted, white-bordered "photo", on a starfield
+// card that echoes the game's own night-sky look -- so a shared image
+// reads at a glance as a moment from THIS relaxing musical game, not a
+// generic screenshot. The play link is baked directly into the pixels as
+// a footer stamp -- the one piece of text guaranteed to survive even if
+// this gets re-shared as a bare image with no caption.
 function buildWavePostcard() {
-  const scale = Math.max(POSTCARD_CONFIG.MIN_SCALE, Math.min(POSTCARD_CONFIG.MAX_SCALE, canvas.width / POSTCARD_CONFIG.REFERENCE_WIDTH));
-  const bannerHeight = Math.round(POSTCARD_CONFIG.BASE_BANNER_HEIGHT * scale);
-
+  const { WIDTH: W, HEIGHT: H, BORDER, CAPTION_HEIGHT, FOOTER_HEIGHT, TILT_DEG, CROP_FRACTION } = POSTCARD_CONFIG;
   const pc = document.createElement('canvas');
-  pc.width = canvas.width;
-  pc.height = canvas.height + bannerHeight;
+  pc.width = W;
+  pc.height = H;
   const pctx = pc.getContext('2d');
 
-  pctx.fillStyle = '#000';
-  pctx.fillRect(0, 0, pc.width, pc.height);
-  pctx.drawImage(canvas, 0, 0);
+  const bg = pctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, '#0d0a24');
+  bg.addColorStop(1, '#1c1440');
+  pctx.fillStyle = bg;
+  pctx.fillRect(0, 0, W, H);
 
-  const bannerY = canvas.height;
-  const fade = pctx.createLinearGradient(0, bannerY - 24 * scale, 0, bannerY);
-  fade.addColorStop(0, 'rgba(5,5,10,0)');
-  fade.addColorStop(1, 'rgba(5,5,10,0.92)');
-  pctx.fillStyle = fade;
-  pctx.fillRect(0, bannerY - 24 * scale, pc.width, 24 * scale);
-  pctx.fillStyle = 'rgba(5,5,10,0.92)';
-  pctx.fillRect(0, bannerY, pc.width, bannerHeight);
+  // Cheap deterministic decorative stars behind the photo -- not
+  // STATE.stars (that's live gameplay state), just enough sparkle for the
+  // card to read as "space" through the gaps around the tilted photo.
+  let seed = 42;
+  const rand = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+  pctx.fillStyle = '#ffffff';
+  for (let i = 0; i < 60; i++) {
+    pctx.globalAlpha = rand() * 0.6 + 0.15;
+    pctx.beginPath();
+    pctx.arc(rand() * W, rand() * H, rand() * 1.3 + 0.3, 0, Math.PI * 2);
+    pctx.fill();
+  }
+  pctx.globalAlpha = 1;
+
+  const photoSize = W - BORDER * 4;
+  const cardW = photoSize + BORDER * 2;
+  const cardH = photoSize + BORDER * 2 + CAPTION_HEIGHT;
+  const cardX = (W - cardW) / 2;
+  const cardY = (H - FOOTER_HEIGHT - cardH) / 2;
+
+  pctx.save();
+  pctx.translate(cardX + cardW / 2, cardY + cardH / 2);
+  pctx.rotate(TILT_DEG * Math.PI / 180);
+  pctx.translate(-(cardX + cardW / 2), -(cardY + cardH / 2));
+
+  pctx.shadowColor = 'rgba(0,0,0,0.5)';
+  pctx.shadowBlur = 26;
+  pctx.shadowOffsetY = 12;
+  pctx.fillStyle = '#fdfaf3';
+  pctx.fillRect(cardX, cardY, cardW, cardH);
+  pctx.shadowColor = 'transparent';
+  pctx.shadowBlur = 0;
+  pctx.shadowOffsetY = 0;
+
+  // The photo: a centered square SUBSET of the actual board, cropped in
+  // from the middle where the dots/connections actually are.
+  const cropSize = Math.min(canvas.width, canvas.height) * CROP_FRACTION;
+  const cropX = (canvas.width - cropSize) / 2;
+  const cropY = (canvas.height - cropSize) / 2;
+  pctx.drawImage(canvas, cropX, cropY, cropSize, cropSize, cardX + BORDER, cardY + BORDER, photoSize, photoSize);
+
+  pctx.fillStyle = '#2a2440';
+  pctx.textAlign = 'center';
+  pctx.font = `italic 24px "Segoe Script", "Bradley Hand", cursive`;
+  const labels = STATE.lastWavePostcardLabels.length ? STATE.lastWavePostcardLabels.join(' • ') : `Wave ${STATE.wave} cleared`;
+  pctx.fillText(`Lumina — ${labels} ♪`, cardX + cardW / 2, cardY + BORDER + photoSize + CAPTION_HEIGHT / 2 + 8);
+  pctx.restore();
 
   pctx.textAlign = 'center';
-  pctx.fillStyle = 'rgba(255,255,255,0.92)';
-  pctx.font = `700 ${Math.round(22 * scale)}px "Courier New", monospace`;
-  pctx.fillText('LUMINA', pc.width / 2, bannerY + 34 * scale);
-
-  const labels = STATE.lastWavePostcardLabels.length ? STATE.lastWavePostcardLabels.join('  •  ') : `Wave ${STATE.wave} Cleared`;
   pctx.fillStyle = 'rgba(255,214,120,0.95)';
-  pctx.font = `${Math.round(13 * scale)}px "Courier New", monospace`;
-  pctx.fillText(`Wave ${STATE.wave} — ${labels}`, pc.width / 2, bannerY + 58 * scale);
-
-  pctx.fillStyle = 'rgba(255,255,255,0.4)';
-  pctx.font = `${Math.round(10 * scale)}px "Courier New", monospace`;
-  pctx.fillText(`${STATE.score} pts — play free at lumina-8f0.pages.dev`, pc.width / 2, bannerY + 80 * scale);
+  pctx.font = `700 17px "Courier New", monospace`;
+  const linkLabel = CANONICAL_SHARE_URL.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  pctx.fillText(`${STATE.score} pts — play free at ${linkLabel}`, W / 2, H - FOOTER_HEIGHT / 2 + 6);
 
   return pc;
 }
@@ -8287,14 +8367,14 @@ function buildWavePostcard() {
 // the game's link. Returns false (never throws) for anything short of a
 // clean, completed share, including the player cancelling their own
 // share sheet, so the caller can fall back to a plain download.
-async function tryShareCanvasImage(canvasEl, filename, title, text) {
+async function tryShareCanvasImage(canvasEl, filename, title, text, url) {
   if (!navigator.share || !navigator.canShare) return false;
   try {
     const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
     if (!blob) return false;
     const file = new File([blob], filename, { type: 'image/png' });
     if (!navigator.canShare({ files: [file] })) return false;
-    await navigator.share({ files: [file], title, text });
+    await navigator.share({ files: [file], title, text, url });
     return true;
   } catch (e) {
     return false;
@@ -8311,14 +8391,30 @@ function downloadCanvasImage(canvasEl, filename) {
 async function shareOrSaveWavePostcard() {
   const pc = buildWavePostcard();
   const filename = `lumina-wave-${STATE.wave}.png`;
-  const shareText = `I just hit Wave ${STATE.wave} in Lumina! ${STATE.lastWavePostcardLabels.join(', ')}`.trim();
+  const labels = STATE.lastWavePostcardLabels.join(', ');
+  // The link is folded into the shareable text itself, not left to the
+  // separate `url` field alone -- several share targets that accept a
+  // file drop a same-call `url` on the floor, and this is the one piece
+  // of text a recipient actually needs in order to go play it themselves.
+  const shareText = `I just hit Wave ${STATE.wave} in Lumina! ${labels ? labels + '. ' : ''}Play free: ${CANONICAL_SHARE_URL}`;
 
-  const shared = await tryShareCanvasImage(pc, filename, 'Lumina', shareText);
+  const shared = await tryShareCanvasImage(pc, filename, 'Lumina', shareText, CANONICAL_SHARE_URL);
   if (shared) {
     showShareToast('Shared!');
     return;
   }
   downloadCanvasImage(pc, filename);
+  // No native share sheet here (desktop browsers, mainly) -- the link
+  // still has to reach the player somehow, so it goes on the clipboard
+  // right behind the image, ready to paste wherever the image itself
+  // ends up getting posted.
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(shareText);
+      showShareToast('Postcard Saved + Link Copied');
+      return;
+    } catch (e) { /* fall through to the plain save toast below */ }
+  }
   showShareToast('Postcard Saved');
 }
 
