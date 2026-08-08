@@ -5273,7 +5273,7 @@ test('generateSong only ever draws lullaby music in Sleep difficulty, and never 
   expect(errors).toEqual([]);
 });
 
-test('lullaby roles are restricted to gentle, non-percussive instruments only', async ({ page }) => {
+test('lullaby roles are restricted to gentle, non-percussive, non-continuous-tone instruments only', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
@@ -5291,9 +5291,13 @@ test('lullaby roles are restricted to gentle, non-percussive instruments only', 
   });
 
   expect(result.hasDrumRole).toBe(false);
-  // Explicitly never the brighter/percussive-attack voices -- musicbox,
-  // vibraphone, and cello only.
-  expect(result.instruments).toEqual(['cello', 'musicbox', 'vibraphone']);
+  // Explicitly never the brighter/percussive-attack voices (flute, trumpet,
+  // piano, marimba), AND never cello -- every "sounds like a horn" report
+  // this game has ever had (flute, then cello twice) was a continuous-tone
+  // real instrument; musicbox/vibraphone are decay-enveloped and have never
+  // been implicated even when stacked into simultaneous chords (see the
+  // 'yacht horn' player report and 34976c5's follow-up fix).
+  expect(result.instruments).toEqual(['musicbox', 'vibraphone']);
   expect(errors).toEqual([]);
 });
 
