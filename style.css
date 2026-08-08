@@ -201,6 +201,22 @@ html, body {
   gap: 6px;
 }
 
+#left-col {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* The song's family + seed name (e.g. "lofi — late study") for this wave --
+   a debugging/feedback aid so a playtester can name which specific
+   generated songs land and which don't, not a permanent gameplay HUD
+   element. Inherits #ui-overlay's own small/dim/uppercase styling (no
+   override here) rather than #wave-display's bold white treatment, so it
+   reads as secondary information under the wave number. */
+#song-name-display {
+  min-height: 14px;
+}
+
 /* wrap + right-align rather than a fixed no-wrap row: with all four
    controls spelled out as words (see below), the row can exceed
    available width on narrow viewports (flagged by review, ~300px CSS

@@ -2737,6 +2737,46 @@ function scaleMidi(genre, degreeIndex, octaveOffset) {
   return genre.rootMidi + octave * 12 + genre.scaleIntervals[degree];
 }
 
+// Melody/accent notes are voiced an octave above the rest of the harmony by
+// default (octaveOffset 1) -- good practice, a melody singing above its
+// chords -- but only sounds good if the instrument actually HAS real
+// samples up there. That convention was tuned against wide acoustic ranges
+// like flute/trumpet; a narrow synthesized voice like rhodes (only 3
+// octaves, topping out at G5) gets pushed well past its own samples by the
+// same +1 octave, and even after foldToInstrumentRange's headroom, still
+// lands several semitones above the nearest real recording -- an audibly
+// pitch-shifted, artificial "chipmunk" tone (player report: high-pitched
+// sounds were unpleasant enough to make people want to stop playing).
+// Picks whichever octave (0 or 1) leaves the target closer to the
+// instrument's own sampled range, so the fold/pitch-shift safety net
+// rarely has to do more than a semitone or two of work.
+function melodyOctaveOffset(genre, instrument, degreeIndex) {
+  const range = instrumentMidiRange(instrument);
+  if (!range) return 1;
+  const overshoot = (m) => Math.max(0, m - range.max, range.min - m);
+  const raised = scaleMidi(genre, degreeIndex, 1);
+  const level = scaleMidi(genre, degreeIndex, 0);
+  return overshoot(raised) <= overshoot(level) ? 1 : 0;
+}
+
+// A neighbor tone landing a half-step from a note the chord underneath it
+// is simultaneously sounding is the textbook "avoid note" -- it reads as a
+// wrong note, not an intentional passing tone. Whether baseDeg+/-1 lands a
+// half or whole step away depends entirely on which two scale degrees
+// happen to be adjacent (a major scale mixes both), so scale-degree math
+// alone can't tell a pleasant neighbor from a clashing one -- this checks
+// the actual resulting pitch class against the chord actually sounding
+// underneath it (player report: some songs "just don't come together").
+function neighborToneClashes(genre, degreeIndex, chordDegrees) {
+  const scaleLen = genre.scaleIntervals.length;
+  const pitchClass = (idx) => genre.scaleIntervals[((idx % scaleLen) + scaleLen) % scaleLen];
+  const neighborPc = pitchClass(degreeIndex);
+  return chordDegrees.some(cd => {
+    const diff = Math.abs(neighborPc - pitchClass(cd)) % 12;
+    return diff === 1 || diff === 11;
+  });
+}
+
 // Registers a scheduled source node so a wave transition can hard-stop it
 // later, even if it was scheduled far in the future (the whole song is
 // scheduled up front). Without this, notes queued for beats past the
@@ -3064,10 +3104,16 @@ function generateSong(pairCount) {
           if (Math.random() < melodyWeights[step]) {
             const baseDeg = chordDegrees[Math.floor(Math.random() * chordDegrees.length)];
             const useChordTone = Math.random() < 0.8;
-            const deg = useChordTone ? baseDeg : baseDeg + (Math.random() < 0.5 ? 1 : -1);
+            let deg = baseDeg;
+            if (!useChordTone) {
+              const candidate = baseDeg + (Math.random() < 0.5 ? 1 : -1);
+              // Half-step "avoid note" against the sounding chord -- fall
+              // back to a chord tone instead (see neighborToneClashes).
+              deg = neighborToneClashes(genre, candidate, chordDegrees) ? baseDeg : candidate;
+            }
             notes.push({
               beat: humanizeBeat(barStartBeat + stepBeat(step, genre.groove), 0.03),
-              midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 1)),
+              midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, melodyOctaveOffset(genre, instrument, deg))),
               role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
             });
             barHadNote = true;
@@ -3080,7 +3126,7 @@ function generateSong(pairCount) {
         if (!barHadNote) {
           notes.push({
             beat: barStartBeat,
-            midi: foldToInstrumentRange(instrument, scaleMidi(genre, chordRoot, 1)),
+            midi: foldToInstrumentRange(instrument, scaleMidi(genre, chordRoot, melodyOctaveOffset(genre, instrument, chordRoot))),
             role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
           });
         }
@@ -3137,7 +3183,7 @@ function generateSong(pairCount) {
         const deg = chordDegrees[Math.floor(Math.random() * chordDegrees.length)];
         notes.push({
           beat: humanizeBeat(barStartBeat + stepBeat(step, genre.groove), 0.04),
-          midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, 1)),
+          midi: foldToInstrumentRange(instrument, scaleMidi(genre, deg, melodyOctaveOffset(genre, instrument, deg))),
           role: kind, instrument, vel: humanizeVelocity(), chunkIndex,
         });
       } else if (kind === 'drum') {
@@ -8421,6 +8467,12 @@ function enforceTutorialHintInvariant() {
 function updateWaveDisplay() {
   document.getElementById('wave-display').textContent = 'wave ' + STATE.wave;
   document.getElementById('score-display').textContent = STATE.score > 0 ? `Score: ${STATE.score}` : '';
+  // Playtest feedback aid, not a permanent gameplay element -- lets a
+  // player name which specific generated song (family + seed) they're
+  // hearing, so "this one didn't come together" is reportable instead of
+  // anecdotal (player request).
+  document.getElementById('song-name-display').textContent =
+    STATE.song ? `${STATE.song.genre.family} — ${STATE.song.genre.name}` : '';
   // The button was always visible, including on the title screen, where
   // togglePause() is a deliberate no-op (nothing to pause before the game
   // has started) — that reads as a broken button rather than an
