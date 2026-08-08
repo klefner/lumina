@@ -1630,11 +1630,24 @@ const GENRE_FAMILIES = [
   // Sleep difficulty never selects anything else. Tempo (50-54 BPM) is
   // deliberately even slower than 'spa' (52-56), toward the low end of the
   // 60-80 BPM range sleep research associates with a calming effect, since
-  // the goal here is actually falling asleep, not just relaxing. Every
-  // role is one of musicbox/vibraphone/cello -- explicitly never flute,
-  // trumpet, piano, or marimba (the brighter/more percussive-attack
-  // voices), and hasDrumRole stays false, so a lullaby arrangement can
-  // never contain a single bright or percussive note.
+  // the goal here is actually falling asleep, not just relaxing.
+  //
+  // Every role is musicbox or vibraphone ONLY -- no cello (and, as
+  // before, never flute/trumpet/piano/marimba/drums). This family
+  // originally included cello, moved off the risky pad+drone-together
+  // combination in an earlier fix (see git history: 9f2a3d1/654e8f6/
+  // 34976c5), but a follow-up player report ("all of the lullabies...
+  // yacht horn") made clear that containing cello's collision pattern
+  // wasn't enough -- cello is a bowed, continuously-sustained real
+  // recording, and every "sounds like a horn" complaint this game has
+  // ever had (flute, originally; cello, twice) has been a continuous-tone
+  // instrument, never a decay/mallet one. Vibraphone has been layered
+  // into chords, drones, and simultaneous same-instrument roles all over
+  // the spa family for as long as this game has existed with zero horn
+  // reports; musicbox is synthesized (sine + soft overtone, see
+  // synthesizeMusicboxNote) so it can't carry an acoustic recording
+  // artifact at all. Dropping cello removes the failure mode at its root
+  // instead of continuing to contain it seed by seed.
   {
     name: 'lullaby',
     chordVocabulary: 'triad',
@@ -1648,8 +1661,8 @@ const GENRE_FAMILIES = [
         roles: [
           { kind: 'melody',   instrument: 'musicbox' },
           { kind: 'arpeggio', instrument: 'vibraphone' },
-          { kind: 'pad',      instrument: 'cello' },
-          { kind: 'drone',    instrument: 'cello' },
+          { kind: 'pad',      instrument: 'vibraphone' },
+          { kind: 'drone',    instrument: 'musicbox' },
           { kind: 'accent',   instrument: 'musicbox' },
           { kind: 'accent',   instrument: 'vibraphone' },
         ],
@@ -1661,8 +1674,8 @@ const GENRE_FAMILIES = [
         roles: [
           { kind: 'melody',   instrument: 'vibraphone' },
           { kind: 'arpeggio', instrument: 'musicbox' },
-          { kind: 'pad',      instrument: 'cello' },
-          { kind: 'drone',    instrument: 'cello' },
+          { kind: 'pad',      instrument: 'musicbox' },
+          { kind: 'drone',    instrument: 'vibraphone' },
           { kind: 'accent',   instrument: 'musicbox' },
           { kind: 'accent',   instrument: 'vibraphone' },
         ],
@@ -1672,10 +1685,10 @@ const GENRE_FAMILIES = [
         scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
         chordProgression: [0, 3, 4, 0],
         roles: [
-          { kind: 'melody',   instrument: 'musicbox' },
-          { kind: 'arpeggio', instrument: 'cello' },
+          { kind: 'melody',   instrument: 'vibraphone' },
+          { kind: 'arpeggio', instrument: 'musicbox' },
           { kind: 'pad',      instrument: 'vibraphone' },
-          { kind: 'drone',    instrument: 'cello' },
+          { kind: 'drone',    instrument: 'musicbox' },
           { kind: 'accent',   instrument: 'vibraphone' },
           { kind: 'accent',   instrument: 'musicbox' },
         ],
