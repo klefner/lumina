@@ -6451,22 +6451,18 @@ function drawFadeOverlay() {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
-// Sleep mode: a warm, dim color-grade over the whole scene, screen-space
-// (drawn last, on top of everything, same as drawFadeOverlay) rather than
-// a rewrite of every dot/instrument color -- nothing else has to
-// special-case Sleep mode's palette. Evening blue light measurably
-// suppresses melatonin; this wash cuts down the board's own neon-blue
-// content and lowers overall brightness, the same logic a phone's
-// night-shift mode runs on. Two passes (a warm near-black wash, then a
-// faint amber tint) rather than one dark-amber fill: dimming and warming
-// are separate effects, and stacking them keeps each one legible on its
-// own instead of just picking a single muddy middle color.
-function drawSleepModeTint() {
-  if (STATE.difficulty !== 'sleep') return;
-  ctx.fillStyle = 'rgba(15, 4, 0, 0.32)';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = 'rgba(255, 150, 60, 0.06)';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+// Sleep mode: a warm, dim color-grade over the whole scene. A DOM overlay
+// (see #sleep-mode-tint in index.html/style.css) rather than a canvas
+// fillRect -- #cockpitCanvas sits above #gameCanvas with an opaque
+// background, so anything drawn onto the 2D canvas's own context is
+// completely hidden the instant Cockpit Mode is active (review, #54); a
+// plain div above both canvases works identically for classic and
+// cockpit rendering alike, with no rewrite of every dot/instrument color
+// needed either way. Evening blue light measurably suppresses melatonin;
+// this wash cuts down the board's own neon-blue content and lowers
+// overall brightness, the same logic a phone's night-shift mode runs on.
+function updateSleepModeTint() {
+  document.getElementById('sleep-mode-tint').classList.toggle('visible', STATE.difficulty === 'sleep');
 }
 
 // ============================================================
@@ -8942,6 +8938,12 @@ function updateDrawScoreDisplay() {
 }
 
 function render() {
+  // A DOM overlay, not a canvas draw -- see updateSleepModeTint's own
+  // comment for why -- so one call up front covers both the cockpit and
+  // classic branches below identically, unlike drawFadeOverlay which
+  // genuinely is per-rendering-path.
+  updateSleepModeTint();
+
   // Cockpit Mode renders into its own Three.js overlay canvas, not this
   // one -- the 2D board never had geometry for these dots to begin with
   // (see startCockpitWave/generateCockpitDots), so nothing below this
@@ -8952,7 +8954,6 @@ function render() {
     updateCockpitStickVisuals();
     updateCockpitWaypointArrow();
     updateCockpitConnectionStatus();
-    drawSleepModeTint();
     drawFadeOverlay();
     return;
   }
@@ -8986,7 +8987,6 @@ function render() {
 
   ctx.restore();
 
-  drawSleepModeTint();
   drawFadeOverlay();
 }
 

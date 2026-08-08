@@ -5352,26 +5352,59 @@ test('Sleep mode gets the same QOL affordances as Relaxed: erase button visible,
   expect(errors).toEqual([]);
 });
 
-test('drawSleepModeTint only paints the warm overlay in Sleep difficulty', async ({ page }) => {
+test('updateSleepModeTint toggles the tint overlay only in Sleep difficulty', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
 
   const result = await page.evaluate(() => {
-    const countFillsFor = (difficulty) => {
+    const visibleFor = (difficulty) => {
       STATE.difficulty = difficulty;
-      let fills = 0;
-      const origFillRect = ctx.fillRect.bind(ctx);
-      ctx.fillRect = function (...args) { fills++; return origFillRect(...args); };
-      drawSleepModeTint();
-      ctx.fillRect = origFillRect;
-      return fills;
+      updateSleepModeTint();
+      return document.getElementById('sleep-mode-tint').classList.contains('visible');
     };
-    return { normalFills: countFillsFor('normal'), sleepFills: countFillsFor('sleep') };
+    return { normal: visibleFor('normal'), sleep: visibleFor('sleep') };
   });
 
-  expect(result.normalFills).toBe(0);
-  expect(result.sleepFills).toBeGreaterThan(0);
+  expect(result.normal).toBe(false);
+  expect(result.sleep).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+// Codex review (#54): the tint used to be a canvas fillRect on
+// #gameCanvas, but #cockpitCanvas sits above it at z-index 1 with an
+// opaque background, so the wash was completely invisible the instant
+// Cockpit Mode was active -- a real regression for a combination this
+// mode is actually meant to support (see QOL_DIFFICULTIES). Now a DOM
+// overlay; this verifies it's actually stacked above both canvases (not
+// just toggled correctly) via a real render() call in a real cockpit+
+// sleep session, not just a computed-style comparison.
+test('the sleep-mode tint overlay is stacked above the cockpit canvas, not hidden behind it', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.click('.difficulty-btn[data-difficulty="sleep"]');
+  await page.click('#cockpit-mode-checkbox');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const result = await page.evaluate(() => {
+    render(); // real render() call -- exercises the actual cockpit branch, not a re-implementation
+    const tint = document.getElementById('sleep-mode-tint');
+    const cockpit = document.getElementById('cockpitCanvas');
+    return {
+      cockpitModeActive: STATE.cockpitMode && !!STATE.cockpitShip,
+      tintVisible: tint.classList.contains('visible'),
+      tintZIndex: Number(getComputedStyle(tint).zIndex),
+      cockpitZIndex: Number(getComputedStyle(cockpit).zIndex),
+      cockpitIsShown: getComputedStyle(cockpit).display !== 'none',
+    };
+  });
+
+  expect(result.cockpitModeActive).toBe(true);
+  expect(result.cockpitIsShown).toBe(true); // confirms this test actually exercises the hiding scenario
+  expect(result.tintVisible).toBe(true);
+  expect(result.tintZIndex).toBeGreaterThan(result.cockpitZIndex); // the actual fix -- paints on top, not underneath
   expect(errors).toEqual([]);
 });
 
