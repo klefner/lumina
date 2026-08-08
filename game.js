@@ -3995,6 +3995,11 @@ function drawDot(dot) {
   // at a glance, independent of where each dot's pulse phase happens to be.
   ctx.save();
   const hintBrightness = dot.connected ? null : hintPulseBrightness();
+  // Computed once and applied everywhere globalAlpha gets set below --
+  // the hint-flash overlay and the final white core circle both assign
+  // globalAlpha directly (not multiply), so without this they'd ignore
+  // the dimming assist entirely at every flash peak (review, #52).
+  const dimMultiplier = shouldDimForActiveDraw(dot) ? 0.5 : 1;
   if (hintBrightness !== null) {
     // Dim between flashes (same idle baseline as the plain unconnected
     // case below), full brightness right at each flash's peak -- so each
@@ -4013,7 +4018,7 @@ function drawDot(dot) {
   } else {
     ctx.shadowBlur = 35;
   }
-  if (shouldDimForActiveDraw(dot)) ctx.globalAlpha *= 0.5;
+  ctx.globalAlpha *= dimMultiplier;
   ctx.shadowColor = instrument.hex;
   ctx.beginPath();
   traceDotShapePath(shape, dot.x, dot.y, radius);
@@ -4030,14 +4035,14 @@ function drawDot(dot) {
     // tinted the dot's own color even while the shape itself goes white,
     // and the flash reads as "colored glow, white middle" instead of
     // "this whole dot is now white".
-    ctx.globalAlpha = hintBrightness;
+    ctx.globalAlpha = hintBrightness * dimMultiplier;
     ctx.shadowColor = '#ffffff';
     ctx.shadowBlur = 18 + hintBrightness * 25;
     ctx.beginPath();
     traceDotShapePath(shape, dot.x, dot.y, radius);
     ctx.fillStyle = '#ffffff';
     ctx.fill();
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = dimMultiplier;
   }
 
   ctx.shadowBlur = 12;
@@ -8348,9 +8353,22 @@ function buildWavePostcard() {
 
   pctx.fillStyle = '#2a2440';
   pctx.textAlign = 'center';
-  pctx.font = `italic 24px "Segoe Script", "Bradley Hand", cursive`;
   const labels = STATE.lastWavePostcardLabels.length ? STATE.lastWavePostcardLabels.join(' • ') : `Wave ${STATE.wave} cleared`;
-  pctx.fillText(`Lumina — ${labels} ♪`, cardX + cardW / 2, cardY + BORDER + photoSize + CAPTION_HEIGHT / 2 + 8);
+  const captionText = `Lumina — ${labels} ♪`;
+  // A milestone wave can earn all three achievements at once, joining
+  // into one long caption -- shrink the font to fit the card's own
+  // width instead of letting it overflow past the white card's edge
+  // (review, #52). Floored so it never shrinks to the point of being
+  // unreadable on a genuinely enormous caption.
+  const maxCaptionWidth = cardW - BORDER;
+  let captionFontSize = 24;
+  pctx.font = `italic ${captionFontSize}px "Segoe Script", "Bradley Hand", cursive`;
+  const captionWidth = pctx.measureText(captionText).width;
+  if (captionWidth > maxCaptionWidth) {
+    captionFontSize = Math.max(13, Math.floor(captionFontSize * maxCaptionWidth / captionWidth));
+    pctx.font = `italic ${captionFontSize}px "Segoe Script", "Bradley Hand", cursive`;
+  }
+  pctx.fillText(captionText, cardX + cardW / 2, cardY + BORDER + photoSize + CAPTION_HEIGHT / 2 + 8);
   pctx.restore();
 
   pctx.textAlign = 'center';

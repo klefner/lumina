@@ -5062,3 +5062,95 @@ test('the relaxed-mode dimming assist never activates outside relaxed difficulty
   expect(errors).toEqual([]);
 });
 
+// Codex review (#52): the dimming assist's multiplier only ever touched
+// the base color fill -- the hint-pulse flash overlay and the final white
+// core circle both assign globalAlpha directly rather than multiply it,
+// so at every flash peak an unrelated dot briefly popped back to full
+// brightness, defeating the assist for most of the animation. Verifies
+// all three of drawDot's fill() calls (base, hint overlay, core) scale
+// identically by the same 0.5 dim factor, not just the first one.
+test('the dimming assist also dims a dot during its hint-pulse flash peak, not just its base fill', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const dot = { x: 100, y: 100, colorIndex: 0, pairId: 5, connected: false, pulsePhase: 0 };
+    const activeDot = { pairId: 9 }; // a different group -- `dot` should be dimmed
+
+    // hintPulseBrightness is a plain top-level function declaration, so it's
+    // a real property of window -- reassigning it here redirects drawDot's
+    // own call to it, same as a real hint pulse sitting at its exact peak.
+    const origHintPulseBrightness = window.hintPulseBrightness;
+    window.hintPulseBrightness = () => 1;
+
+    const captureFills = () => {
+      const fills = [];
+      const origFill = ctx.fill.bind(ctx);
+      ctx.fill = function (...args) { fills.push(ctx.globalAlpha); return origFill(...args); };
+      drawDot(dot);
+      ctx.fill = origFill;
+      return fills;
+    };
+
+    STATE.difficulty = 'relaxed';
+    STATE.isDrawing = false;
+    STATE.activeDot = null;
+    const undimmed = captureFills();
+
+    STATE.isDrawing = true;
+    STATE.activeDot = activeDot;
+    const dimmed = captureFills();
+
+    STATE.isDrawing = false;
+    STATE.activeDot = null;
+    window.hintPulseBrightness = origHintPulseBrightness;
+
+    return { undimmed, dimmed };
+  });
+
+  expect(result.undimmed).toHaveLength(3); // base fill, hint-flash overlay, white core
+  expect(result.dimmed).toHaveLength(3);
+  for (let i = 0; i < 3; i++) {
+    expect(result.dimmed[i]).toBeCloseTo(result.undimmed[i] * 0.5, 5);
+  }
+  expect(errors).toEqual([]);
+});
+
+// Codex review (#52): a milestone wave can earn all three achievements at
+// once, joining into one long caption that -- undimmed -- exceeds the
+// postcard card's own width. Verifies the actually-drawn caption (via the
+// real fillText call, not a re-implementation of the sizing math) fits
+// within the card once shrunk.
+test('buildWavePostcard shrinks a long multi-achievement caption to fit the card, instead of overflowing it', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.wave = 10;
+    STATE.score = 9999;
+    STATE.lastWavePostcardLabels = ['Wave 10 Cleared', 'New Highest Wave', 'Best Wave Score'];
+
+    const calls = [];
+    const origFillText = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y) {
+      calls.push({ text, width: this.measureText(text).width });
+      return origFillText.call(this, text, x, y);
+    };
+    buildWavePostcard();
+    CanvasRenderingContext2D.prototype.fillText = origFillText;
+
+    const captionCall = calls.find(c => c.text.startsWith('Lumina —'));
+    const cardW = POSTCARD_CONFIG.WIDTH - POSTCARD_CONFIG.BORDER * 2;
+    return {
+      captionWidth: captionCall ? captionCall.width : null,
+      maxCaptionWidth: cardW - POSTCARD_CONFIG.BORDER,
+    };
+  });
+
+  expect(result.captionWidth).not.toBeNull();
+  expect(result.captionWidth).toBeLessThanOrEqual(result.maxCaptionWidth + 1); // +1 float-rounding slack
+  expect(errors).toEqual([]);
+});
+
