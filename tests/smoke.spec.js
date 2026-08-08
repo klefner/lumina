@@ -3861,6 +3861,69 @@ test('trumpet and double bass samples decode successfully alongside the rest of 
   expect(errors).toEqual([]);
 });
 
+test('computeAttackRms measures a known sine wave\'s RMS correctly', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const sampleRate = ctx.sampleRate;
+    const buffer = ctx.createBuffer(1, sampleRate, sampleRate); // 1 second, mono
+    const data = buffer.getChannelData(0);
+    const amplitude = 0.5;
+    for (let i = 0; i < data.length; i++) {
+      data[i] = amplitude * Math.sin(2 * Math.PI * 440 * i / sampleRate);
+    }
+    // A full-amplitude sine wave's RMS is amplitude/sqrt(2) -- a
+    // well-known, independently-verifiable ground truth to check the
+    // measurement itself against, not just its downstream effects.
+    return { measured: computeAttackRms(buffer), expected: amplitude / Math.sqrt(2) };
+  });
+
+  expect(result.measured).toBeGreaterThan(result.expected * 0.99);
+  expect(result.measured).toBeLessThan(result.expected * 1.01);
+  expect(errors).toEqual([]);
+});
+
+// Player report: spa/serenity had a jarringly loud flute note. Measured
+// directly off the real recordings (ffmpeg volumedetect): flute's mean
+// volume spans a full ~15dB across its range, with the loudest notes
+// clustered in the exact upper octaves melody spends most of its time in
+// -- the previous single flat per-instrument gain multiplier corrected for
+// loudness differences BETWEEN instruments but was blind to this WITHIN
+// one instrument's own recordings. Every real sample should now normalize
+// to the same effective loudness regardless of how loud it was actually
+// recorded.
+test('per-sample gain normalization brings flute\'s quietest and loudest real recordings to the same effective loudness', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700); // unlocks audio + kicks off decodeAllSamples, same as the trumpet/bass test
+
+  const result = await page.evaluate(async () => {
+    await STATE.samplesReadyPromise;
+    // Ab4 (quietest measured) vs G6 (loudest measured, ~15dB apart raw).
+    const notes = ['Ab4', 'G6'];
+    return notes.map(n => {
+      const buffer = STATE.sampleBuffers.flute[n];
+      const rawRms = buffer ? computeAttackRms(buffer) : null;
+      const gain = sampleGainFor('flute', n);
+      return { note: n, rawRms, gain, normalizedPeak: rawRms != null ? rawRms * gain : null };
+    });
+  });
+
+  expect(result.every(r => r.rawRms != null)).toBe(true);
+  // The raw recordings really do differ substantially -- otherwise this
+  // test would trivially pass without the fix doing anything.
+  const rawRatio = result[1].rawRms / result[0].rawRms;
+  expect(rawRatio).toBeGreaterThan(2);
+  // But after normalization, both land on the exact same effective loudness.
+  expect(result[0].normalizedPeak).toBeCloseTo(result[1].normalizedPeak, 3);
+  expect(errors).toEqual([]);
+});
+
 test('generateSong can pick the supperclub family and produces notes that stay within the folded instrument ranges', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');

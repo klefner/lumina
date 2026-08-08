@@ -2235,6 +2235,10 @@ const STATE = {
                         // so the whole song builds up in place rather than replaying from scratch.
 
   sampleBuffers: {},   // { piano: { A3: AudioBuffer, ... }, flute: {...}, ... } — decoded lazily
+  sampleGain: {},       // { piano: { A3: 1.4, ... }, flute: {...}, ... } — per-sample loudness
+                         // normalization multiplier, computed once each buffer decodes (see
+                         // computeAttackRms/sampleGainFor) so every real note plays at the same
+                         // target loudness regardless of which instrument or pitch it is
   sampleBytesLoaded: false, // raw fetch finished (kicked off at page load)
 
   stars: [],           // Background starfield for the current wave — resets each wave
@@ -2547,6 +2551,16 @@ function preloadSampleBytes() {
 // in SAMPLE_MANIFEST) delayed every instrument after it even once its own
 // fetch had actually landed, compounding the same real-world network
 // variance the polling loop above was already vulnerable to.
+// Measures the just-decoded buffer's own attack loudness and stores the
+// multiplier that brings it to TARGET_SAMPLE_RMS, so a real recording's
+// natural per-note loudness swings (see sampleGainFor's own comment) never
+// reach playback -- computed once here per sample, not per note played.
+function registerSampleGain(instrument, key, buffer) {
+  if (!buffer) return;
+  const rms = computeAttackRms(buffer);
+  (STATE.sampleGain[instrument] = STATE.sampleGain[instrument] || {})[key] = rms > 0 ? TARGET_SAMPLE_RMS / rms : 1;
+}
+
 async function decodeAllSamples() {
   const jobs = [];
   for (const instrument in SAMPLE_MANIFEST) {
@@ -2556,7 +2570,9 @@ async function decodeAllSamples() {
       for (const key of SAMPLE_MANIFEST[instrument]) {
         jobs.push((async () => {
           try {
-            STATE.sampleBuffers[instrument][key] = await synthesizeInstrumentSample(instrument, key);
+            const buffer = await synthesizeInstrumentSample(instrument, key);
+            STATE.sampleBuffers[instrument][key] = buffer;
+            registerSampleGain(instrument, key, buffer);
           } catch (e) { /* skip — playSample/playDrumHit fall back gracefully */ }
         })());
       }
@@ -2568,7 +2584,9 @@ async function decodeAllSamples() {
         const raw = await samplePromises[instrument][note];
         if (!raw) return;
         try {
-          STATE.sampleBuffers[instrument][note] = await STATE.audioCtx.decodeAudioData(raw.slice(0));
+          const buffer = await STATE.audioCtx.decodeAudioData(raw.slice(0));
+          STATE.sampleBuffers[instrument][note] = buffer;
+          registerSampleGain(instrument, note, buffer);
         } catch (e) { /* skip — playSample falls back gracefully */ }
       })());
     }
@@ -2913,35 +2931,47 @@ function nearestDistinctSampleNotes(instrument, midiList) {
 
 // The source recordings themselves were captured at wildly different
 // dynamics (see sounds/CREDITS.md: piano/cello at mf, marimba/vibraphone
-// at ff, flute deliberately re-extracted at pp) — measured directly from
-// the actual sample files (0.3s attack-window RMS, averaged per
-// instrument): flute ~0.020, piano ~0.023, cello ~0.085, marimba ~0.214,
-// vibraphone ~0.308. Applying the same role-based peak/velocity gain on
-// top of that meant, e.g., an "accent" vibraphone note could come out
-// roughly 8-9x louder than a "melody" flute note despite flute's peak
-// being higher on paper — the role/velocity multiplier was never the
-// only thing determining loudness. These factors renormalize every
-// instrument to the same target RMS (~0.15) BEFORE role/velocity are
-// applied, so a given role/velocity now means the same actual loudness
-// regardless of which instrument is playing it. Verified worst-case
-// (melody role, max velocity, that instrument's loudest sampled note)
-// stays under 0.65 peak for every instrument — comfortable headroom
-// under the master limiter.
-const INSTRUMENT_GAIN_COMPENSATION = {
-  flute: 7.575,
-  piano: 6.422,
-  cello: 1.764,
-  marimba: 0.701,
-  vibraphone: 0.487,
-  // Same methodology, applied to the synthesized instruments: measured
-  // raw 0.3s-attack-window RMS was rhodes ~0.364, lofibass ~0.307,
-  // lofikit ~0.205 (kick — the loudest of its three pieces, used as the
-  // anchor so kick lands at the ~0.15 target and snare/hihat naturally
-  // sit a bit under it, same as a real kit mix).
-  rhodes: 0.412,
-  lofibass: 0.488,
-  lofikit: 0.732,
-};
+// at ff, flute deliberately re-extracted at pp) -- but that's not the only
+// variance: even within ONE instrument, real recordings swing loudness by
+// a lot across the range (measured directly off the actual flute files:
+// mean volume spans a full ~15dB from the quietest low note to the
+// loudest, which happens to sit in the exact upper octaves melody spends
+// most of its time in -- player report: "sounds like a flute and its
+// volume is higher than the other notes"). A single instrument-wide
+// average (the previous approach here) corrects the FIRST kind of
+// variance but is blind to the second -- it's still just one number, so
+// any one instrument's own loud outlier note plays through unchanged.
+// sampleGainFor() instead measures each individual decoded buffer's own
+// RMS (see computeAttackRms/decodeAllSamples) and normalizes every real
+// note to the same target loudness, whichever instrument or pitch it is.
+const TARGET_SAMPLE_RMS = 0.15;
+
+// Matches the attack-window methodology this instrument-level system was
+// originally tuned with: loudness is judged by a note's first ~0.3s (its
+// attack/onset), not its full decay tail, since that's what a listener's
+// ear actually weights and what determines how a note reads next to
+// others hitting on nearby beats. Falls back to the whole buffer for
+// anything shorter (e.g. a drum one-shot).
+const ATTACK_WINDOW_SEC = 0.3;
+function computeAttackRms(buffer) {
+  const windowSamples = Math.min(buffer.length, Math.round(ATTACK_WINDOW_SEC * buffer.sampleRate));
+  if (windowSamples <= 0) return 0;
+  let sumSquares = 0, count = 0;
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    const data = buffer.getChannelData(ch);
+    for (let i = 0; i < windowSamples; i++) { sumSquares += data[i] * data[i]; count++; }
+  }
+  return count > 0 ? Math.sqrt(sumSquares / count) : 0;
+}
+
+// The multiplier that brings one specific decoded sample up (or down) to
+// TARGET_SAMPLE_RMS -- computed once per sample right after it decodes
+// (see decodeAllSamples), not per note at playback time.
+function sampleGainFor(instrument, name) {
+  const gains = STATE.sampleGain[instrument];
+  const g = gains && gains[name];
+  return g != null ? g : 1; // not measured yet (shouldn't happen once decode finishes) -- unity gain
+}
 
 function playResolvedSample(instrument, nearestName, targetMidi, t, peak, dest) {
   const buffers = STATE.sampleBuffers[instrument];
@@ -2955,7 +2985,7 @@ function playResolvedSample(instrument, nearestName, targetMidi, t, peak, dest) 
   src.playbackRate.value = Math.pow(2, (targetMidi - noteNameToMidi(nearestName)) / 12);
 
   const gain = ctx.createGain();
-  gain.gain.value = peak * (INSTRUMENT_GAIN_COMPENSATION[instrument] || 1);
+  gain.gain.value = peak * sampleGainFor(instrument, nearestName);
 
   src.connect(gain);
   gain.connect(dest);
@@ -2997,7 +3027,7 @@ function playDrumHit(instrument, piece, t, peak, dest) {
   src.buffer = buffer;
 
   const gain = ctx.createGain();
-  gain.gain.value = peak * (INSTRUMENT_GAIN_COMPENSATION[instrument] || 1);
+  gain.gain.value = peak * sampleGainFor(instrument, piece);
 
   src.connect(gain);
   gain.connect(dest);
