@@ -3926,7 +3926,7 @@ test('the premium supperclub family is well-formed and only reachable while PREM
   expect(result.seedCount).toBeGreaterThanOrEqual(3);
   expect(result.usesOnlySourcedInstruments).toBe(true);
   expect(result.referencesTrumpetAndBass).toBe(true);
-  expect(result.nonPremiumNames).toEqual(['spa', 'lofi']); // the "flag off" pool
+  expect(result.nonPremiumNames).toEqual(['spa', 'lofi', 'lullaby']); // the "flag off" pool
   expect(result.availableWhileUnlocked).toContain('supperclub'); // the "flag on" pool, exercised via the real function
   expect(errors).toEqual([]);
 });
