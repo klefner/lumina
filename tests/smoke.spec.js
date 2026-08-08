@@ -3895,6 +3895,202 @@ test('generateSong can pick the supperclub family and produces notes that stay w
   expect(errors).toEqual([]);
 });
 
+// Player report: high-pitched sounds were unpleasant enough to make people
+// want to stop playing. Root cause: melody/accent always voiced an octave
+// above the harmony (octaveOffset 1) regardless of whether the assigned
+// instrument's real samples reach that high -- rhodes (lofi's melody
+// instrument) only goes up to G5, so notes landed several semitones past
+// its own samples, pitch-shifted into an artificial "chipmunk" tone.
+// melodyOctaveOffset should now pick whichever octave actually fits.
+test('melodyOctaveOffset keeps rhodes melody notes closer to its real sample range than the old fixed +1 octave', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const family = GENRE_FAMILIES.find(f => f.name === 'lofi');
+    const seed = family.seeds.find(s => s.name === 'late study'); // rootMidi 62, the highest of the three
+    const genre = { ...seed, family: family.name, chordVocabulary: family.chordVocabulary, groove: family.groove };
+    const buildChord = CHORD_VOCABULARIES[genre.chordVocabulary];
+    const range = instrumentMidiRange('rhodes');
+    const overshoot = (m) => Math.max(0, m - range.max, range.min - m);
+
+    let anyImproved = false;
+    let worstOldOvershoot = 0, worstNewOvershoot = 0;
+    for (const chordRoot of genre.chordProgression) {
+      for (const deg of buildChord(chordRoot)) {
+        const oldMidi = scaleMidi(genre, deg, 1); // the previous hardcoded octaveOffset
+        const newOffset = melodyOctaveOffset(genre, 'rhodes', deg);
+        const newMidi = scaleMidi(genre, deg, newOffset);
+        const oldOvershoot = overshoot(oldMidi), newOvershoot = overshoot(newMidi);
+        if (newOvershoot < oldOvershoot) anyImproved = true;
+        worstOldOvershoot = Math.max(worstOldOvershoot, oldOvershoot);
+        worstNewOvershoot = Math.max(worstNewOvershoot, newOvershoot);
+      }
+    }
+    return { rangeFound: !!range, anyImproved, worstOldOvershoot, worstNewOvershoot };
+  });
+
+  expect(result.rangeFound).toBe(true);
+  expect(result.anyImproved).toBe(true);
+  expect(result.worstNewOvershoot).toBeLessThan(result.worstOldOvershoot);
+  expect(errors).toEqual([]);
+});
+
+// Player report: some songs "just don't come together." Root cause:
+// melody's neighbor-tone excursion picked baseDeg+/-1 blindly -- in a
+// major scale, some adjacent scale degrees are a whole step apart (a
+// pleasant passing tone) and some are a half step apart (a dissonant
+// "avoid note" clash), purely by luck of which degree got picked.
+// neighborToneClashes should catch only the half-step case.
+test('neighborToneClashes flags a half-step neighbor against the chord but allows a whole-step one', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const genre = { scaleIntervals: [0, 2, 4, 5, 7, 9, 11] }; // Ionian/major
+    // Scale degree 3 = F (semitone 5). Degree 2 = E (semitone 4, a half
+    // step below F -- should clash). Degree 4 = G (semitone 7, a whole
+    // step above F -- should not clash).
+    return {
+      halfStepClashes: neighborToneClashes(genre, 2, [3]),
+      wholeStepClashes: neighborToneClashes(genre, 4, [3]),
+    };
+  });
+
+  expect(result.halfStepClashes).toBe(true);
+  expect(result.wholeStepClashes).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+// Broad regression sweep across every family/seed, not just one hand-picked
+// case -- generateSong() itself (not the helpers directly) should never
+// produce a melody/accent note that needs more than a modest pitch-shift
+// to reach a real sample, for any instrument any current genre assigns to
+// those roles.
+test('generateSong keeps every melody/accent note close to its instrument\'s real sample range, across every family', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const worstByInstrument = {};
+    // generateSong() picks its own random family/seed each call -- run it
+    // many times so every family gets exercised by ordinary random play,
+    // not a hand-picked case.
+    for (let i = 0; i < 60; i++) {
+      const song = generateSong(6);
+      for (const note of song.notes) {
+        if (note.role !== 'melody' && note.role !== 'accent') continue;
+        if (note.midi == null) continue;
+        const range = instrumentMidiRange(note.instrument);
+        if (!range) continue;
+        const overshoot = Math.max(0, note.midi - range.max, range.min - note.midi);
+        worstByInstrument[note.instrument] = Math.max(worstByInstrument[note.instrument] || 0, overshoot);
+      }
+    }
+    return worstByInstrument;
+  });
+
+  for (const [instrument, worst] of Object.entries(result)) {
+    // A tritone (6 semitones) is foldToInstrumentRange's own absolute
+    // ceiling -- this asserts the melody/accent register fix keeps every
+    // instrument comfortably under that ceiling, not right up against it.
+    expect(worst, `${instrument} worst-case overshoot`).toBeLessThanOrEqual(4);
+  }
+  expect(errors).toEqual([]);
+});
+
+// Codex review, #50 (P1): a busy lofi downbeat can stack up to 7
+// simultaneous targets onto rhodes (melody + arpeggio + a 4-note pad chord
+// + accent), which only has 9 samples across 3 sparse octaves (C/Eb/G).
+// Greedily assigning them in role order let early notes claim every nearby
+// sample, leaving later ones (verified: mostly accent, sometimes a pad
+// tone) with nothing close left -- forced reaches of up to 30 semitones
+// (2.5 octaves) into a completely different register, measured across 200
+// real generateSong() calls before this fix. This directly stress-tests
+// nearestDistinctSampleNotes with that exact worst-case shape.
+test('nearestDistinctSampleNotes never reaches more than a bounded distance from a target, even with more competing targets than an instrument has nearby samples', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // rhodes: 9 samples, 3 unique pitch classes (C/Eb/G) per octave.
+    // Mirrors the real lofi worst case: melody+arpeggio landing on the same
+    // pitch class, a 4-note pad chord clustered nearby, and an accent note
+    // -- 7 targets total, all within about an octave and a half.
+    const targets = [71, 71, 59, 62, 66, 69, 76];
+    const resolved = nearestDistinctSampleNotes('rhodes', targets);
+    const distances = targets.map((t, i) => Math.abs(t - noteNameToMidi(resolved[i])));
+    return { resolved, distances, maxDistance: Math.max(...distances) };
+  });
+
+  expect(result.resolved.every(r => r != null)).toBe(true);
+  expect(result.maxDistance).toBeLessThanOrEqual(6); // DISTINCT_SAMPLE_MAX_REACH
+  expect(errors).toEqual([]);
+});
+
+// Same broad sweep as the melody/accent overshoot test above, but checking
+// ground truth: the ACTUAL resolved sample every note in every role ends
+// up playing (via resolveInstrumentCollisions, called inside generateSong
+// itself), not just the pre-collision theoretical target. This is what
+// the player actually hears.
+test('generateSong never resolves any note to a sample more than a bounded distance from its target, across every family', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    let maxDistance = 0;
+    let worstExample = null;
+    for (let i = 0; i < 80; i++) {
+      const song = generateSong(6);
+      for (const note of song.notes) {
+        if (note.role === 'drum') continue;
+        const pairs = note.midiList
+          ? note.midiList.map((m, idx) => [m, note.resolvedSamples && note.resolvedSamples[idx]])
+          : [[note.midi, note.resolvedSample]];
+        for (const [target, sampleName] of pairs) {
+          if (target == null) continue;
+          const resolvedName = sampleName || nearestSampleNote(note.instrument, target);
+          const dist = Math.abs(target - noteNameToMidi(resolvedName));
+          if (dist > maxDistance) {
+            maxDistance = dist;
+            worstExample = { instrument: note.instrument, role: note.role, target, resolvedName, dist };
+          }
+        }
+      }
+    }
+    return { maxDistance, worstExample };
+  });
+
+  expect(result.maxDistance, JSON.stringify(result.worstExample)).toBeLessThanOrEqual(6);
+  expect(errors).toEqual([]);
+});
+
+// Player request: show which specific generated song (family + seed name)
+// is playing each wave, so playtest feedback like "this one didn't come
+// together" can name the actual song instead of staying anecdotal.
+test('the song name display shows the current song\'s family and seed name, and clears on exit to title', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await expect(page.locator('#song-name-display')).toHaveText(''); // nothing playing yet on the title screen
+
+  await page.click('#start-game-button');
+  await page.waitForTimeout(200);
+
+  const expected = await page.evaluate(() => `${STATE.song.genre.family} — ${STATE.song.genre.name}`);
+  await expect(page.locator('#song-name-display')).toHaveText(expected);
+
+  await page.evaluate(() => exitToTitle());
+  await expect(page.locator('#song-name-display')).toHaveText('');
+  expect(errors).toEqual([]);
+});
+
 // ------------------------------------------------------------
 // COCKPIT MODE
 //
