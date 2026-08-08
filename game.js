@@ -1108,7 +1108,7 @@ function updateCockpitWaypointArrow() {
     STATE.cockpitWaypointTargetId = null;
     return;
   }
-  const dueToIdle = STATE.difficulty === 'relaxed'
+  const dueToIdle = QOL_DIFFICULTIES.has(STATE.difficulty)
     || (performance.now() - STATE.cockpitLastProgressTime >= COCKPIT_CONFIG.WAYPOINT_IDLE_MS);
   if (!dueToIdle) {
     el.classList.remove('visible');
@@ -1625,6 +1625,63 @@ const GENRE_FAMILIES = [
       },
     ],
   },
+  // Sleep mode's only genre family (sleepOnly: true — see
+  // availableGenreFamilies) — never selected outside Sleep difficulty, and
+  // Sleep difficulty never selects anything else. Tempo (50-54 BPM) is
+  // deliberately even slower than 'spa' (52-56), toward the low end of the
+  // 60-80 BPM range sleep research associates with a calming effect, since
+  // the goal here is actually falling asleep, not just relaxing. Every
+  // role is one of musicbox/vibraphone/cello -- explicitly never flute,
+  // trumpet, piano, or marimba (the brighter/more percussive-attack
+  // voices), and hasDrumRole stays false, so a lullaby arrangement can
+  // never contain a single bright or percussive note.
+  {
+    name: 'lullaby',
+    chordVocabulary: 'triad',
+    groove: { swing: 0, hasDrumRole: false },
+    sleepOnly: true,
+    seeds: [
+      {
+        name: 'drift off', bpm: 50, rootMidi: 60,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11], // Ionian (major) -- same fully-consonant choice as spa
+        chordProgression: [0, 3, 0, 4],          // I - IV - I - V
+        roles: [
+          { kind: 'melody',   instrument: 'musicbox' },
+          { kind: 'arpeggio', instrument: 'vibraphone' },
+          { kind: 'pad',      instrument: 'cello' },
+          { kind: 'drone',    instrument: 'cello' },
+          { kind: 'accent',   instrument: 'musicbox' },
+          { kind: 'accent',   instrument: 'vibraphone' },
+        ],
+      },
+      {
+        name: 'starlight cradle', bpm: 54, rootMidi: 57,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 5, 3, 4],          // I - vi - IV - V
+        roles: [
+          { kind: 'melody',   instrument: 'vibraphone' },
+          { kind: 'arpeggio', instrument: 'musicbox' },
+          { kind: 'pad',      instrument: 'cello' },
+          { kind: 'drone',    instrument: 'cello' },
+          { kind: 'accent',   instrument: 'musicbox' },
+          { kind: 'accent',   instrument: 'vibraphone' },
+        ],
+      },
+      {
+        name: 'quiet tide', bpm: 52, rootMidi: 55,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 11],
+        chordProgression: [0, 3, 4, 0],
+        roles: [
+          { kind: 'melody',   instrument: 'musicbox' },
+          { kind: 'arpeggio', instrument: 'cello' },
+          { kind: 'pad',      instrument: 'vibraphone' },
+          { kind: 'drone',    instrument: 'cello' },
+          { kind: 'accent',   instrument: 'vibraphone' },
+          { kind: 'accent',   instrument: 'musicbox' },
+        ],
+      },
+    ],
+  },
 ];
 
 // Chord-tone degree offsets from the chord root, keyed by family-level
@@ -1655,6 +1712,13 @@ const SAMPLE_MANIFEST = {
   rhodes: ['C3', 'Eb3', 'G3', 'C4', 'Eb4', 'G4', 'C5', 'Eb5', 'G5'],
   lofibass: ['C1', 'Eb1', 'G1', 'C2', 'Eb2', 'G2'],
   lofikit: ['kick', 'snare', 'hihat'], // one-shots, not pitched notes — see the 'drum' role kind
+  // Sleep mode's lullaby melody voice -- a soft music-box/celesta-style
+  // tone (see synthesizeMusicboxNote). Chromatic across two octaves, not
+  // sparse like rhodes' triad-only set, so a melody line lands close to
+  // its real target with little pitch-shift (this instrument only ever
+  // plays gentle, mid-register lullaby melodies -- it doesn't need
+  // rhodes' wider spread across a busier multi-role arrangement).
+  musicbox: ['C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6'],
 };
 
 // Instruments with no recorded sample files at all — their "sample
@@ -1664,7 +1728,7 @@ const SAMPLE_MANIFEST = {
 // every downstream consumer (nearestSampleNote, playbackRate pitch-shift,
 // gain compensation) works identically either way without needing to
 // know the difference.
-const SYNTHESIZED_INSTRUMENTS = new Set(['rhodes', 'lofibass', 'lofikit']);
+const SYNTHESIZED_INSTRUMENTS = new Set(['rhodes', 'lofibass', 'lofikit', 'musicbox']);
 
 // A kit's pieces (kick/snare/hihat) aren't different pitches of the same
 // sound the way a melody instrument's notes are -- they're intentionally
@@ -2031,7 +2095,32 @@ const DIFFICULTY_PRESETS = {
     rotationStartWave: 4,
     rotationSpeedScale: 1.3,
   },
+  // "Help Me Fall Asleep": gentler than Relaxed on every axis, and the
+  // preset values below are really just a backstop -- the real guarantee
+  // is startWave skipping generateBarriersSafely entirely for this
+  // difficulty (see there), so barriers/mazes/fact-boxes/portals can
+  // never appear regardless of what this config alone would allow.
+  // Infinity is safe here: every comparison against *_START_WAVE is
+  // `wave < START_WAVE` / `wave >= START_WAVE` against a finite wave
+  // number, so it simply never trips.
+  sleep: {
+    label: 'Sleep',
+    pairsPerWaveIncrease: 999, // pair count barely grows across a realistic session
+    groupStartWave: Infinity,   // always plain 2-dot pairs, never multi-dot groups
+    groupWavesPerTier: 16,
+    extraGroupChance: 0,
+    barrierStartWave: Infinity,
+    barrierWavesPerBarrier: 4,
+    rotationStartWave: Infinity,
+    rotationSpeedScale: 0,
+  },
 };
+
+// Difficulties where the beginner/comfort-oriented QOL affordances (erase
+// button, an always-on cockpit waypoint arrow, the match-dimming draw
+// assist) are available. Sleep is at least as forgiving as Relaxed on
+// every axis, so it gets every QOL affordance Relaxed does.
+const QOL_DIFFICULTIES = new Set(['relaxed', 'sleep']);
 const DIFFICULTY_KEY = 'lumina_difficulty_v1';
 // Fixed base rotation speeds — always scaled from these, never from
 // BARRIER_CONFIG's current (already-scaled) values, so switching
@@ -2676,6 +2765,7 @@ function synthesizeInstrumentSample(instrument, key) {
   if (instrument === 'rhodes') return synthesizeRhodesNote(key);
   if (instrument === 'lofibass') return synthesizeBassNote(key);
   if (instrument === 'lofikit') return synthesizeDrumHit(key);
+  if (instrument === 'musicbox') return synthesizeMusicboxNote(key);
   return Promise.resolve(null);
 }
 
@@ -2713,6 +2803,44 @@ async function synthesizeRhodesNote(noteName) {
 
   fundamental.start(0); fundamental.stop(duration);
   bell.start(0); bell.stop(0.3);
+  return ctx.startRendering();
+}
+
+// Sleep mode's lullaby melody voice: a soft music-box/celesta tone. Same
+// fundamental-plus-overtone shape as the Rhodes patch above, but every
+// parameter pulls the opposite direction on purpose -- a slower, gentler
+// attack (no percussive pluck) and a much quieter, faster-decaying
+// overtone (0.1 peak here vs. Rhodes' 0.32) so there's nothing bright or
+// metallic in it. This session's own earlier fix (per-note loudness
+// normalization, and the melody/neighbor-tone guardrails before that) was
+// prompted by real player reports of harsh high-pitched notes -- this
+// patch is deliberately built to stay far on the safe side of that.
+async function synthesizeMusicboxNote(noteName) {
+  const freq = midiToFreq(noteNameToMidi(noteName));
+  const duration = 2.6;
+  const sr = 44100;
+  const ctx = new OfflineAudioContext(1, Math.ceil(duration * sr), sr);
+
+  const fundamental = ctx.createOscillator();
+  fundamental.type = 'sine';
+  fundamental.frequency.value = freq;
+  const fundamentalGain = ctx.createGain();
+  fundamentalGain.gain.setValueAtTime(0, 0);
+  fundamentalGain.gain.linearRampToValueAtTime(0.7, 0.02); // unhurried attack, not a pluck
+  fundamentalGain.gain.exponentialRampToValueAtTime(0.001, duration);
+  fundamental.connect(fundamentalGain).connect(ctx.destination);
+
+  const chime = ctx.createOscillator();
+  chime.type = 'sine';
+  chime.frequency.value = freq * 2; // a plain octave, not a detuned/beating partial
+  const chimeGain = ctx.createGain();
+  chimeGain.gain.setValueAtTime(0, 0);
+  chimeGain.gain.linearRampToValueAtTime(0.1, 0.02);
+  chimeGain.gain.exponentialRampToValueAtTime(0.001, 0.6);
+  chime.connect(chimeGain).connect(ctx.destination);
+
+  fundamental.start(0); fundamental.stop(duration);
+  chime.start(0); chime.stop(0.6);
   return ctx.startRendering();
 }
 
@@ -3180,7 +3308,14 @@ function stepBeat(step, groove) {
 // check will plug in once the backend exists, and that can change
 // mid-session (e.g. right after a purchase).
 function availableGenreFamilies() {
-  return PREMIUM_MUSIC_UNLOCKED ? GENRE_FAMILIES : GENRE_FAMILIES.filter(f => !f.premium);
+  const unlocked = PREMIUM_MUSIC_UNLOCKED ? GENRE_FAMILIES : GENRE_FAMILIES.filter(f => !f.premium);
+  // Sleep mode is exclusively lullaby music, and lullaby music is
+  // exclusive to Sleep mode -- it would undercut the "always calm, always
+  // slow" promise of the mode if it could also turn up at random in a
+  // normal-difficulty rotation.
+  return STATE.difficulty === 'sleep'
+    ? unlocked.filter(f => f.sleepOnly)
+    : unlocked.filter(f => !f.sleepOnly);
 }
 
 function generateSong(pairCount) {
@@ -3959,14 +4094,15 @@ function hintPulseBrightness() {
   return Math.pow(raw, 3);
 }
 
-// Relaxed mode only: while a line is being drawn, every dot outside the
-// group being connected dims to make the matching dot(s) easy to spot.
-// Driven entirely off live STATE each frame (no separate on/off state to
-// set or clear), so it can't get stuck dim if a drag is cancelled, a
-// stale gesture is cleared on focus loss, etc. -- the moment isDrawing
-// goes false, drawDot stops calling this and brightness is back to normal.
+// Relaxed/Sleep only (see QOL_DIFFICULTIES): while a line is being drawn,
+// every dot outside the group being connected dims to make the matching
+// dot(s) easy to spot. Driven entirely off live STATE each frame (no
+// separate on/off state to set or clear), so it can't get stuck dim if a
+// drag is cancelled, a stale gesture is cleared on focus loss, etc. -- the
+// moment isDrawing goes false, drawDot stops calling this and brightness
+// is back to normal.
 function shouldDimForActiveDraw(dot) {
-  return STATE.difficulty === 'relaxed' && STATE.isDrawing && !STATE.cockpitMode
+  return QOL_DIFFICULTIES.has(STATE.difficulty) && STATE.isDrawing && !STATE.cockpitMode
     && STATE.activeDot && dot.pairId !== STATE.activeDot.pairId;
 }
 
@@ -6217,7 +6353,13 @@ function startWave(waveNumber) {
 
   const pairCount = getPairCountForWave(waveNumber);
   STATE.song = generateSong(pairCount);
-  STATE.barriers = generateBarriersSafely(waveNumber, STATE.dots);
+  // Sleep mode: no barriers, ever -- bypassing generateBarriersSafely
+  // entirely (rather than just tuning BARRIER_CONFIG.START_WAVE to
+  // Infinity, which this difficulty's preset also does as a backstop) is
+  // the real guarantee, since it also skips the independent fact-box and
+  // portal-pocket rolls nested inside that pipeline, not just the plain
+  // barrier one.
+  STATE.barriers = STATE.difficulty === 'sleep' ? [] : generateBarriersSafely(waveNumber, STATE.dots);
 
   updateWaveDisplay();
 
@@ -6307,6 +6449,20 @@ function drawFadeOverlay() {
   if (!STATE.fade || STATE.fade.alpha <= 0) return;
   ctx.fillStyle = `rgba(0,0,0,${STATE.fade.alpha})`;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+// Sleep mode: a warm, dim color-grade over the whole scene. A DOM overlay
+// (see #sleep-mode-tint in index.html/style.css) rather than a canvas
+// fillRect -- #cockpitCanvas sits above #gameCanvas with an opaque
+// background, so anything drawn onto the 2D canvas's own context is
+// completely hidden the instant Cockpit Mode is active (review, #54); a
+// plain div above both canvases works identically for classic and
+// cockpit rendering alike, with no rewrite of every dot/instrument color
+// needed either way. Evening blue light measurably suppresses melatonin;
+// this wash cuts down the board's own neon-blue content and lowers
+// overall brightness, the same logic a phone's night-shift mode runs on.
+function updateSleepModeTint() {
+  document.getElementById('sleep-mode-tint').classList.toggle('visible', STATE.difficulty === 'sleep');
 }
 
 // ============================================================
@@ -8698,7 +8854,7 @@ function updateWaveDisplay() {
   // -- during WAVE_COMPLETE, canvas taps advance to the next wave before
   // ever reaching the erase-mode branch in onInputStart, so a lit ERASE
   // button there would toggle a mode that can't actually do anything.
-  document.getElementById('erase-button').classList.toggle('visible', STATE.phase === 'PLAYING' && STATE.difficulty === 'relaxed' && !STATE.cockpitMode);
+  document.getElementById('erase-button').classList.toggle('visible', STATE.phase === 'PLAYING' && QOL_DIFFICULTIES.has(STATE.difficulty) && !STATE.cockpitMode);
 }
 
 // ============================================================
@@ -8782,6 +8938,12 @@ function updateDrawScoreDisplay() {
 }
 
 function render() {
+  // A DOM overlay, not a canvas draw -- see updateSleepModeTint's own
+  // comment for why -- so one call up front covers both the cockpit and
+  // classic branches below identically, unlike drawFadeOverlay which
+  // genuinely is per-rendering-path.
+  updateSleepModeTint();
+
   // Cockpit Mode renders into its own Three.js overlay canvas, not this
   // one -- the 2D board never had geometry for these dots to begin with
   // (see startCockpitWave/generateCockpitDots), so nothing below this

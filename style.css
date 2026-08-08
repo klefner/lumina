@@ -52,6 +52,35 @@ html, body {
   display: block;
 }
 
+/* Sleep mode's warm/dim color-grade -- see the comment on the element
+   itself in index.html for why this is a DOM overlay instead of a canvas
+   fillRect. Two stacked flat-color gradients (a common CSS trick for
+   layering independent alpha-blended washes) reproduce the exact same
+   two-pass wash the old canvas version used: a warm near-black dim, then
+   a faint amber tint on top -- dimming and warming are separate effects,
+   and keeping them as two layers is what keeps each legible on its own
+   instead of just picking a single muddy middle color. Sits above both
+   canvases (z-index 1) but below the interactive #ui-overlay (z-index
+   10), same paint order the canvas version had relative to the HTML
+   overlay in classic mode. pointer-events:none so it never blocks taps
+   meant for whatever's underneath. */
+#sleep-mode-tint {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+  opacity: 0;
+  background:
+    linear-gradient(rgba(255, 150, 60, 0.06), rgba(255, 150, 60, 0.06)),
+    linear-gradient(rgba(15, 4, 0, 0.32), rgba(15, 4, 0, 0.32));
+}
+#sleep-mode-tint.visible {
+  opacity: 1;
+}
+
 /* Cockpit Mode's two on-screen sticks -- touch devices only (see
    refreshCockpitControlVisibility; desktop uses WASD/arrows/mouse
    instead). Purely visual: pointer-events:none, since which stick a touch
@@ -642,6 +671,8 @@ html, body {
 }
 #difficulty-selector.visible {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
 }
 .difficulty-btn {
   font-family: 'Courier New', monospace;

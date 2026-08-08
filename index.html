@@ -25,6 +25,14 @@
 <body>
   <canvas id="gameCanvas"></canvas>
   <canvas id="cockpitCanvas"></canvas>
+  <!-- Sleep mode's warm/dim color-grade (see toggleSleepModeTint) -- a DOM
+       overlay rather than a canvas fillRect, since #cockpitCanvas sits
+       above #gameCanvas at z-index 1 with an opaque background (review,
+       #54): anything drawn onto the 2D canvas's own context is completely
+       hidden the moment Cockpit Mode is active, but a plain div above
+       both canvases (and below the interactive #ui-overlay) works
+       identically for classic and cockpit rendering alike. -->
+  <div id="sleep-mode-tint" aria-hidden="true"></div>
   <div id="cockpit-left-stick" class="cockpit-stick" aria-hidden="true">
     <div class="cockpit-stick-base"></div>
     <div class="cockpit-stick-knob"></div>
@@ -104,6 +112,7 @@
       <button class="difficulty-btn" data-difficulty="relaxed">Relaxed</button>
       <button class="difficulty-btn" data-difficulty="normal">Normal</button>
       <button class="difficulty-btn" data-difficulty="intense">Intense</button>
+      <button class="difficulty-btn" data-difficulty="sleep">Sleep</button>
     </div>
     <div id="flight-mode-row">
       <label id="flight-mode-label">

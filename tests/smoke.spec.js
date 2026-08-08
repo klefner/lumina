@@ -3926,7 +3926,7 @@ test('the premium supperclub family is well-formed and only reachable while PREM
   expect(result.seedCount).toBeGreaterThanOrEqual(3);
   expect(result.usesOnlySourcedInstruments).toBe(true);
   expect(result.referencesTrumpetAndBass).toBe(true);
-  expect(result.nonPremiumNames).toEqual(['spa', 'lofi']); // the "flag off" pool
+  expect(result.nonPremiumNames).toEqual(['spa', 'lofi', 'lullaby']); // the "flag off" pool
   expect(result.availableWhileUnlocked).toContain('supperclub'); // the "flag on" pool, exercised via the real function
   expect(errors).toEqual([]);
 });
@@ -5177,6 +5177,234 @@ test('buildWavePostcard shrinks a long multi-achievement caption to fit the card
 
   expect(result.captionWidth).not.toBeNull();
   expect(result.captionWidth).toBeLessThanOrEqual(result.maxCaptionWidth + 1); // +1 float-rounding slack
+  expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------
+// Sleep mode ("Help Me Fall Asleep"): nothing hard, ever, and only
+// lullaby music. See DIFFICULTY_PRESETS.sleep, availableGenreFamilies,
+// and the GENRE_FAMILIES 'lullaby' entry for the rationale.
+// ------------------------------------------------------------
+
+test('the Sleep difficulty button exists, is selectable, and starts a real game with it applied', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await expect(page.locator('.difficulty-btn[data-difficulty="sleep"]')).toBeVisible();
+  await page.click('.difficulty-btn[data-difficulty="sleep"]');
+  await expect(page.locator('.difficulty-btn[data-difficulty="sleep"]')).toHaveClass(/active/);
+
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const difficulty = await page.evaluate(() => STATE.difficulty);
+  expect(difficulty).toBe('sleep');
+  expect(errors).toEqual([]);
+});
+
+// Monte Carlo, same methodology as the maze-barrier/portal stress tests
+// above -- generates many real waves (well past every other difficulty's
+// group/barrier/rotation unlock waves) and confirms Sleep mode's "nothing
+// hard, ever" promise actually holds at the data level, not just via a
+// config value that could be bypassed by some other code path.
+test('Sleep difficulty never produces a barrier, a portal, or a multi-dot group, across 100 waves', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    applyDifficulty('sleep');
+    let barriersSeen = 0, portalsSeen = 0, groupsSeen = 0, maxPairCount = 0;
+    for (let wave = 1; wave <= 100; wave++) {
+      STATE.dots = generateDots(wave);
+      ensureAllDotsInWorldBounds(STATE.dots);
+      STATE.barriers = STATE.difficulty === 'sleep' ? [] : generateBarriersSafely(wave, STATE.dots);
+      if (STATE.barriers.length > 0) barriersSeen++;
+      if (STATE.portals) portalsSeen++;
+      const byPair = {};
+      for (const d of STATE.dots) (byPair[d.pairId] = (byPair[d.pairId] || 0) + 1);
+      if (Object.values(byPair).some(n => n > 2)) groupsSeen++;
+      maxPairCount = Math.max(maxPairCount, getPairCountForWave(wave));
+    }
+    return { barriersSeen, portalsSeen, groupsSeen, maxPairCount };
+  });
+
+  expect(result.barriersSeen).toBe(0);
+  expect(result.portalsSeen).toBe(0);
+  expect(result.groupsSeen).toBe(0);
+  // pairsPerWaveIncrease: 999 means extra never rises within 100 waves --
+  // pair count stays flat at CONFIG.STARTING_PAIRS (3) the entire time.
+  expect(result.maxPairCount).toBe(3);
+  expect(errors).toEqual([]);
+});
+
+test('generateSong only ever draws lullaby music in Sleep difficulty, and never draws it in any other difficulty', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    applyDifficulty('sleep');
+    let sleepFamilies = new Set(), sleepBpms = [];
+    for (let i = 0; i < 40; i++) {
+      const song = generateSong(2);
+      sleepFamilies.add(song.genre.family);
+      sleepBpms.push(song.genre.bpm);
+    }
+
+    applyDifficulty('normal');
+    let normalFamilies = new Set();
+    for (let i = 0; i < 60; i++) {
+      normalFamilies.add(generateSong(2).genre.family);
+    }
+
+    return {
+      sleepFamilies: [...sleepFamilies],
+      maxSleepBpm: Math.max(...sleepBpms),
+      normalFamilies: [...normalFamilies],
+    };
+  });
+
+  expect(result.sleepFamilies).toEqual(['lullaby']); // exclusively lullaby, every single time
+  expect(result.maxSleepBpm).toBeLessThanOrEqual(60); // squarely in the slow/calming range
+  expect(result.normalFamilies).not.toContain('lullaby'); // never leaks into the normal rotation
+  expect(errors).toEqual([]);
+});
+
+test('lullaby roles are restricted to gentle, non-percussive instruments only', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const lullaby = GENRE_FAMILIES.find(f => f.name === 'lullaby');
+    const instruments = new Set();
+    for (const seed of lullaby.seeds) {
+      for (const role of seed.roles) instruments.add(role.instrument);
+    }
+    return {
+      hasDrumRole: lullaby.groove.hasDrumRole,
+      instruments: [...instruments].sort(),
+    };
+  });
+
+  expect(result.hasDrumRole).toBe(false);
+  // Explicitly never the brighter/percussive-attack voices -- musicbox,
+  // vibraphone, and cello only.
+  expect(result.instruments).toEqual(['cello', 'musicbox', 'vibraphone']);
+  expect(errors).toEqual([]);
+});
+
+test('synthesizeMusicboxNote renders a finite, non-silent buffer for a real note', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    const buffer = await synthesizeMusicboxNote('C5');
+    const data = buffer.getChannelData(0);
+    let peak = 0, hasNonFinite = false;
+    for (let i = 0; i < data.length; i++) {
+      if (!Number.isFinite(data[i])) hasNonFinite = true;
+      peak = Math.max(peak, Math.abs(data[i]));
+    }
+    return { hasNonFinite, peak, duration: buffer.duration, sampleRate: buffer.sampleRate };
+  });
+
+  expect(result.hasNonFinite).toBe(false);
+  expect(result.peak).toBeGreaterThan(0);
+  expect(result.peak).toBeLessThanOrEqual(1);
+  expect(result.duration).toBeGreaterThan(2);
+  expect(errors).toEqual([]);
+});
+
+test('Sleep mode gets the same QOL affordances as Relaxed: erase button visible, dimming assist active, hint never blocked', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.click('.difficulty-btn[data-difficulty="sleep"]');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  await expect(page.locator('#erase-button')).toBeVisible();
+
+  const hintResult = await page.evaluate(() => {
+    triggerHintPulse();
+    return document.getElementById('hint-toast').textContent;
+  });
+  expect(hintResult).not.toContain('Relaxed & Normal Only');
+
+  const dimResult = await page.evaluate(() => {
+    const dots = STATE.dots;
+    const byPair = {};
+    for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+    const groups = Object.values(byPair);
+    const origin = groups[0][0];
+    const other = groups.find(g => g[0].pairId !== origin.pairId)[0];
+    onInputStart({ preventDefault() {}, clientX: origin.x, clientY: origin.y });
+    const dimming = shouldDimForActiveDraw(other);
+    onInputEnd({ preventDefault() {}, clientX: -9999, clientY: -9999 });
+    return dimming;
+  });
+  expect(dimResult).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('updateSleepModeTint toggles the tint overlay only in Sleep difficulty', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const visibleFor = (difficulty) => {
+      STATE.difficulty = difficulty;
+      updateSleepModeTint();
+      return document.getElementById('sleep-mode-tint').classList.contains('visible');
+    };
+    return { normal: visibleFor('normal'), sleep: visibleFor('sleep') };
+  });
+
+  expect(result.normal).toBe(false);
+  expect(result.sleep).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+// Codex review (#54): the tint used to be a canvas fillRect on
+// #gameCanvas, but #cockpitCanvas sits above it at z-index 1 with an
+// opaque background, so the wash was completely invisible the instant
+// Cockpit Mode was active -- a real regression for a combination this
+// mode is actually meant to support (see QOL_DIFFICULTIES). Now a DOM
+// overlay; this verifies it's actually stacked above both canvases (not
+// just toggled correctly) via a real render() call in a real cockpit+
+// sleep session, not just a computed-style comparison.
+test('the sleep-mode tint overlay is stacked above the cockpit canvas, not hidden behind it', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.click('.difficulty-btn[data-difficulty="sleep"]');
+  await page.click('#cockpit-mode-checkbox');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const result = await page.evaluate(() => {
+    render(); // real render() call -- exercises the actual cockpit branch, not a re-implementation
+    const tint = document.getElementById('sleep-mode-tint');
+    const cockpit = document.getElementById('cockpitCanvas');
+    return {
+      cockpitModeActive: STATE.cockpitMode && !!STATE.cockpitShip,
+      tintVisible: tint.classList.contains('visible'),
+      tintZIndex: Number(getComputedStyle(tint).zIndex),
+      cockpitZIndex: Number(getComputedStyle(cockpit).zIndex),
+      cockpitIsShown: getComputedStyle(cockpit).display !== 'none',
+    };
+  });
+
+  expect(result.cockpitModeActive).toBe(true);
+  expect(result.cockpitIsShown).toBe(true); // confirms this test actually exercises the hiding scenario
+  expect(result.tintVisible).toBe(true);
+  expect(result.tintZIndex).toBeGreaterThan(result.cockpitZIndex); // the actual fix -- paints on top, not underneath
   expect(errors).toEqual([]);
 });
 
