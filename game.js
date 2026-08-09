@@ -334,13 +334,19 @@ function saveSceneSetting(mode) {
 }
 
 // How many consecutive waves Rotate mode holds a given scene for, before
-// moving on to the next one in SCENE_LIST -- exactly as many as that
-// scene has real ambient sounds to reveal (see SCENE_AMBIENT_CONFIG), one
-// per wave, so a player under Rotate actually gets to hear a scene's full
-// soundscape build up before it moves on, instead of the background (and
-// its very first, lone sound) changing every single wave. Space has no
-// ambient sounds of its own -- "no one can hear you scream in space" --
-// so it just gets a single wave, same as it always has.
+// moving on to the next one in SCENE_LIST -- one more than that scene has
+// real ambient sounds to reveal (see SCENE_AMBIENT_CONFIG): one wave per
+// reveal, plus one bonus wave with nothing new to reveal, where the full
+// set just gets to keep playing. That bonus wave matters because a
+// reveal only happens on a wave's COMPLETION (see
+// updateSceneAmbienceForWaveComplete) -- without it, the scene the LAST
+// sound is revealed on doubles as the scene's very last wave, so the
+// instant a player advances past that completion screen the scene (and
+// that brand new sound) gets cut off, often before an event layer like
+// the owl or foghorn even gets through its own 1.5-3.5s startup delay to
+// make a single sound. Space has no ambient sounds of its own -- "no one
+// can hear you scream in space" -- so it just gets a single wave, same as
+// it always has.
 //
 // Referencing SCENE_AMBIENT_CONFIG (defined later, in SECTION 7's scene
 // ambience block) is safe here specifically because this is a function
@@ -351,21 +357,59 @@ function saveSceneSetting(mode) {
 // file, before that declaration runs, would throw instead.
 function sceneWaveCount(scene) {
   const config = SCENE_AMBIENT_CONFIG[scene];
-  return config ? config.order.length : 1;
+  return config ? config.order.length + 1 : 1;
 }
 
-function resolveSceneForWave(waveNumber) {
+// Shared by resolveSceneForWave and catchUpAmbienceStreakForWave --
+// besides which scene a given wave falls on, also returns that wave's
+// 0-indexed position within its scene's own block (e.g. the 3rd wave of
+// a Forest block returns blockPosition: 2). A fixed (non-Rotate)
+// sceneMode never has a "block" to be positioned within, so it's always
+// position 0 there.
+function resolveSceneBlock(waveNumber) {
   if (STATE.sceneMode !== 'rotate') {
-    return SCENE_LIST.includes(STATE.sceneMode) ? STATE.sceneMode : 'space';
+    const scene = SCENE_LIST.includes(STATE.sceneMode) ? STATE.sceneMode : 'space';
+    return { scene, blockPosition: 0 };
   }
   const counts = SCENE_LIST.map(sceneWaveCount);
   const cycleLength = counts.reduce((sum, n) => sum + n, 0);
   let position = (waveNumber - 1) % cycleLength;
   for (let i = 0; i < SCENE_LIST.length; i++) {
-    if (position < counts[i]) return SCENE_LIST[i];
+    if (position < counts[i]) return { scene: SCENE_LIST[i], blockPosition: position };
     position -= counts[i];
   }
-  return SCENE_LIST[0]; // unreachable given the loop above covers the full cycle -- keeps this total
+  return { scene: SCENE_LIST[0], blockPosition: 0 }; // unreachable given the loop above covers the full cycle -- keeps this total
+}
+
+function resolveSceneForWave(waveNumber) {
+  return resolveSceneBlock(waveNumber).scene;
+}
+
+// A normal, continuous playthrough always has STATE.ambienceStreak
+// already exactly matching the new wave's blockPosition by the time this
+// runs (every prior wave in the block completed in order, each revealing
+// one more sound) -- so this is a no-op there. It only actually does
+// anything right after a load/restart/session-start lands mid-block,
+// where resetSceneAmbience zeroed the streak but resolveSceneBlock (pure
+// arithmetic on the absolute wave number, no memory of that reset) still
+// expects however many sounds a wave that far into the block should
+// already have. Without this, loading into the middle or end of a block
+// could reveal only some of its sounds -- or none -- before Rotate moves
+// the scene on regardless, since the scene switch itself only cares
+// about the absolute wave number, not the streak. Silently backfills
+// (starts each not-yet-playing layer immediately) rather than routing
+// through the normal per-wave reveal, and deliberately skips the
+// completion toast -- resuming into an already-complete set isn't a
+// moment a player just earned.
+function catchUpAmbienceStreakForWave(waveNumber) {
+  const config = SCENE_AMBIENT_CONFIG[STATE.scene];
+  if (!config) return;
+  const { blockPosition } = resolveSceneBlock(waveNumber);
+  const shouldAlreadyBeRevealed = Math.min(blockPosition, config.order.length);
+  while (STATE.ambienceStreak < shouldAlreadyBeRevealed) {
+    STATE.ambienceStreak++;
+    startSceneAmbienceLayer(STATE.scene, config.order[STATE.ambienceStreak - 1]);
+  }
 }
 
 // ------------------------------------------------------------
@@ -6793,6 +6837,11 @@ function startWave(waveNumber) {
   // syncAmbienceToScene's own comment for why this can't just wait for
   // this wave's own completion.
   syncAmbienceToScene();
+  // Then, if this wave landed mid-block (a load/restart/session-start,
+  // not a normal continuous playthrough -- see this function's own
+  // comment), silently backfill whatever sounds a wave this far into the
+  // block should already have revealed.
+  catchUpAmbienceStreakForWave(waveNumber);
   STATE.waveStartScore = STATE.score;
 
   showTutorialHint(waveNumber);
