@@ -5678,3 +5678,185 @@ test('the sleep-mode tint overlay is stacked above the cockpit canvas, not hidde
   expect(errors).toEqual([]);
 });
 
+// ------------------------------------------------------------
+// Forest ambience (see FOREST_AMBIENT_CONFIG/updateForestAmbienceForWaveComplete)
+// ------------------------------------------------------------
+
+// setUpCompletableForestWave() runs inside the browser (called from within
+// page.evaluate below), so it can't just be a plain Node-side function --
+// it's injected as a real global via addInitScript before each test's
+// page.goto, same trick already used for the navigator.vibrate mocks above.
+async function injectForestWaveSetup(page) {
+  await page.addInitScript(() => {
+    window.setUpCompletableForestWave = function (wave = 1) {
+      canvas.width = 500; canvas.height = 900;
+      STATE.world = { w: 2000, h: 2000 };
+      STATE.dots = [
+        { id: 0, pairId: 0, colorIndex: 0, x: 500, y: 500, connected: true },
+        { id: 1, pairId: 0, colorIndex: 0, x: 1500, y: 1500, connected: true },
+      ];
+      STATE.wave = wave;
+      STATE.waveStartScore = 0;
+      STATE.score = 0;
+      STATE.song = { genre: { bpm: 100 } };
+      STATE.scene = 'forest';
+    };
+  });
+}
+
+test('a forest-scene wave streak reveals one more ambient layer per completion, in order, capped at four', async ({ page }) => {
+  const errors = trackErrors(page);
+  await injectForestWaveSetup(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    setUpCompletableForestWave();
+    const streaks = [];
+    for (let i = 0; i < 6; i++) {
+      checkWaveComplete();
+      streaks.push(STATE.forestAmbienceStreak);
+    }
+    return { streaks, order: FOREST_AMBIENT_CONFIG.order };
+  });
+
+  // Six completions in a row, but only four sounds exist -- the streak
+  // stops advancing once every sound has already been revealed rather
+  // than counting past the set (see updateForestAmbienceForWaveComplete).
+  expect(result.streaks).toEqual([1, 2, 3, 4, 4, 4]);
+  expect(result.order).toEqual(['wind', 'crickets', 'frogs', 'owl']);
+  expect(errors).toEqual([]);
+});
+
+test('a wave completing on a non-forest scene resets the streak and clears any active layers', async ({ page }) => {
+  const errors = trackErrors(page);
+  await injectForestWaveSetup(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    setUpCompletableForestWave();
+    checkWaveComplete();
+    checkWaveComplete();
+    const streakAfterTwoForestWaves = STATE.forestAmbienceStreak;
+
+    STATE.scene = 'space';
+    checkWaveComplete();
+
+    return { streakAfterTwoForestWaves, streakAfterSpaceWave: STATE.forestAmbienceStreak };
+  });
+
+  expect(result.streakAfterTwoForestWaves).toBe(2);
+  expect(result.streakAfterSpaceWave).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test('forest ambient layers actually start playing (real decoded audio) as the streak advances', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await injectForestWaveSetup(page);
+  await page.goto('/index.html');
+  await page.mouse.click(200, 700); // starts wave 1, unlocks real audio (initAudio -> initAudioGraph)
+  await page.waitForTimeout(800);
+
+  const snapshots = await page.evaluate(async () => {
+    await STATE.ambientBuffersReadyPromise; // let all four clips finish decoding before the reveal loop
+    setUpCompletableForestWave();
+    const results = [];
+    for (let i = 0; i < 4; i++) {
+      checkWaveComplete();
+      await new Promise(r => setTimeout(r, 30)); // startForestAmbienceLayer is fire-and-forget from checkWaveComplete
+      results.push(Object.keys(STATE.forestAmbienceLayers));
+    }
+    return results;
+  });
+
+  expect(snapshots[0]).toEqual(['wind']);
+  expect(snapshots[1]).toEqual(['wind', 'crickets']);
+  expect(snapshots[2]).toEqual(['wind', 'crickets', 'frogs']);
+  expect(snapshots[3]).toEqual(['wind', 'crickets', 'frogs', 'owl']);
+  expect(errors).toEqual([]);
+});
+
+test('resetForestAmbience clears the streak and every active layer', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await injectForestWaveSetup(page);
+  await page.goto('/index.html');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const result = await page.evaluate(async () => {
+    await STATE.ambientBuffersReadyPromise;
+    setUpCompletableForestWave();
+    checkWaveComplete();
+    await new Promise(r => setTimeout(r, 30));
+    const before = { streak: STATE.forestAmbienceStreak, layerCount: Object.keys(STATE.forestAmbienceLayers).length };
+
+    resetForestAmbience();
+    const after = { streak: STATE.forestAmbienceStreak, layerCount: Object.keys(STATE.forestAmbienceLayers).length };
+
+    return { before, after };
+  });
+
+  expect(result.before).toEqual({ streak: 1, layerCount: 1 });
+  expect(result.after).toEqual({ streak: 0, layerCount: 0 });
+  expect(errors).toEqual([]);
+});
+
+test('the forest ambience gain node exists once audio initializes, feeding into the same bus the music uses', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(500);
+
+  const result = await page.evaluate(() => ({
+    hasAmbientGain: STATE.ambientGain !== null,
+    hasMasterBus: STATE.masterBus !== null,
+  }));
+  expect(result.hasAmbientGain).toBe(true);
+  expect(result.hasMasterBus).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('each ambient layer repeat gets a fresh, in-range randomized playback rate, and every clip decodes without error', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => {
+    navigator.vibrate = () => true;
+    window.__ambientRates = [];
+    const origStart = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function (...args) {
+      // Instrument note playback also pitch-shifts via playbackRate over a
+      // much wider range, so only capture starts for the ambient clips
+      // themselves (STATE.ambientBuffers), not every source on the page.
+      if (typeof STATE !== 'undefined' && STATE.ambientBuffers &&
+          Object.values(STATE.ambientBuffers).includes(this.buffer)) {
+        window.__ambientRates.push(this.playbackRate.value);
+      }
+      return origStart.apply(this, args);
+    };
+  });
+  await injectForestWaveSetup(page);
+  await page.goto('/index.html');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(500);
+
+  const result = await page.evaluate(async () => {
+    await STATE.ambientBuffersReadyPromise;
+    const decodedAll = FOREST_AMBIENT_CONFIG.order.every(name => STATE.ambientBuffers[name] instanceof AudioBuffer);
+    setUpCompletableForestWave();
+    for (let i = 0; i < 4; i++) {
+      checkWaveComplete();
+      await new Promise(r => setTimeout(r, 30));
+    }
+    return { decodedAll, rates: window.__ambientRates };
+  });
+
+  expect(result.decodedAll).toBe(true);
+  expect(result.rates.length).toBeGreaterThan(0);
+  const [lo, hi] = [0.94, 1.06];
+  expect(result.rates.every(r => r >= lo - 1e-9 && r <= hi + 1e-9)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
