@@ -785,6 +785,10 @@ html, body {
   padding: 6px 10px;
   cursor: pointer;
 }
+#scene-selector:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 #scene-selector:hover {
   background: rgba(255, 255, 255, 0.1);
   color: rgba(255, 255, 255, 0.95);

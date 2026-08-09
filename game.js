@@ -2280,6 +2280,7 @@ function setupTitleLoadListeners() {
       }
       ensureThreeLoaded(); // fire-and-forget -- kicked off now so it's very likely ready by "Start Game"
     }
+    refreshSceneSelector(); // Cockpit Mode disables the picker -- see its own comment
   });
 }
 
@@ -2296,7 +2297,15 @@ function setupDifficultySelectorListeners() {
 }
 
 function refreshSceneSelector() {
-  document.getElementById('scene-selector').value = STATE.sceneMode;
+  const select = document.getElementById('scene-selector');
+  select.value = STATE.sceneMode;
+  // Cockpit Mode renders its own Three.js scene (see render()'s cockpitMode
+  // branch and startWave's early return for it) and never reads
+  // STATE.scene -- a visible, enabled picker here would promise a setting
+  // that silently does nothing all session. Disable it instead of hiding
+  // it so the reason ("not available right now") stays discoverable.
+  select.disabled = STATE.cockpitMode;
+  select.title = STATE.cockpitMode ? "Not available in Cockpit Mode — its 3D view doesn't use this" : '';
 }
 
 function setupSceneSelectorListeners() {
@@ -7559,6 +7568,25 @@ const FOREST_CONFIG = {
   GROUND_COLOR: '#07060d',
 };
 
+// Lazily-created, reused offscreen canvas the moon composites onto before
+// being drawn into the main scene -- see drawForestScene's own comment on
+// why the crescent's destination-out erase can't run directly on the main
+// canvas. Square and sized to the moon's glow diameter; resized (rare --
+// only actually changes with moonRadiusFrac's small random range or a
+// canvas resize) rather than recreated every call.
+let forestMoonLayer = null;
+function getForestMoonLayer(size) {
+  if (!forestMoonLayer) {
+    forestMoonLayer = document.createElement('canvas');
+    forestMoonLayer.ctx = forestMoonLayer.getContext('2d');
+  }
+  if (forestMoonLayer.width !== size) {
+    forestMoonLayer.width = size;
+    forestMoonLayer.height = size;
+  }
+  return forestMoonLayer;
+}
+
 function generateForestScene() {
   const treeCount = 7 + Math.floor(Math.random() * 5);
   const trees = [];
@@ -7615,30 +7643,45 @@ function drawForestScene() {
   ctx.fillRect(0, 0, w, h);
 
   // Moon — a flat disc with a crescent bite punched out via
-  // destination-out, so the bitten area shows through to the soft glow
-  // behind it instead of leaving a hard-edged Pac-Man silhouette.
+  // destination-out. That erase has to happen on its own isolated layer,
+  // not directly on the main canvas: destination-out removes whatever is
+  // already painted underneath it, and by this point that's the sky
+  // gradient this function just drew. Erasing straight into the main
+  // canvas would punch a genuinely transparent hole through the sky
+  // itself (visible as the page's own background, and as a black hole in
+  // any screenshot/postcard compositing) instead of just carving the
+  // moon. Composite the glow+disc+bite on a small offscreen canvas first,
+  // then drawImage the result onto the main canvas — normal source-over
+  // alpha blending there lets the sky already painted show through the
+  // bite correctly, same as compositing any other sprite.
   const mx = scene.moonXFrac * w, my = scene.moonYFrac * h;
   const mr = scene.moonRadiusFrac * Math.min(w, h);
-  ctx.save();
-  ctx.translate(mx, my);
-  const glow = ctx.createRadialGradient(0, 0, 0, 0, 0, mr * 3.2);
+  const glowR = mr * 3.2;
+  const moonLayer = getForestMoonLayer(Math.ceil(glowR * 2));
+  const mctx = moonLayer.ctx;
+  const half = moonLayer.width / 2;
+  mctx.clearRect(0, 0, moonLayer.width, moonLayer.height);
+  mctx.save();
+  mctx.translate(half, half);
+  const glow = mctx.createRadialGradient(0, 0, 0, 0, 0, glowR);
   glow.addColorStop(0, 'rgba(255,250,230,0.32)');
   glow.addColorStop(1, 'rgba(255,250,230,0)');
-  ctx.fillStyle = glow;
-  ctx.beginPath();
-  ctx.arc(0, 0, mr * 3.2, 0, Math.PI * 2);
-  ctx.fill();
+  mctx.fillStyle = glow;
+  mctx.beginPath();
+  mctx.arc(0, 0, glowR, 0, Math.PI * 2);
+  mctx.fill();
 
-  ctx.beginPath();
-  ctx.arc(0, 0, mr, 0, Math.PI * 2);
-  ctx.fillStyle = '#fdf6e3';
-  ctx.fill();
-  ctx.globalCompositeOperation = 'destination-out';
-  ctx.beginPath();
-  ctx.arc(mr * 0.45, -mr * 0.2, mr * 0.95, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(0,0,0,0.88)';
-  ctx.fill();
-  ctx.restore();
+  mctx.beginPath();
+  mctx.arc(0, 0, mr, 0, Math.PI * 2);
+  mctx.fillStyle = '#fdf6e3';
+  mctx.fill();
+  mctx.globalCompositeOperation = 'destination-out';
+  mctx.beginPath();
+  mctx.arc(mr * 0.45, -mr * 0.2, mr * 0.95, 0, Math.PI * 2);
+  mctx.fillStyle = 'rgba(0,0,0,0.88)';
+  mctx.fill();
+  mctx.restore();
+  ctx.drawImage(moonLayer, mx - half, my - half);
 
   drawStars(); // same twinkling starfield Space uses -- see this section's header comment
 
