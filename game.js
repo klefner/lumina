@@ -8463,19 +8463,63 @@ const POSTCARD_CONFIG = {
   CAPTION_HEIGHT: 60,  // polaroid's own caption strip, inside the white card, below the photo
   FOOTER_HEIGHT: 56,
   TILT_DEG: -2.5,
-  CROP_FRACTION: 0.75, // the photo is a centered SUBSET of the board, not the whole canvas
+  CROP_FRACTION: 0.75, // fallback centered-crop fraction when there's no board to frame (see computePostcardCropRect)
+  CROP_PADDING_PX: 90, // breathing room around the dots' own bounding box, in screen pixels
+  CROP_MIN_SIZE_PX: 220, // floor so a 1-pair board doesn't crop in to an unreadably tight square
 };
 
-// Composites a small, centered SUBSET of the just-completed board (most of
-// a wave's canvas is empty background, so a full screenshot reads as
-// mostly nothing) into a tilted, white-bordered "photo", on a starfield
-// card that echoes the game's own night-sky look -- so a shared image
-// reads at a glance as a moment from THIS relaxing musical game, not a
-// generic screenshot. The play link is baked directly into the pixels as
-// a footer stamp -- the one piece of text guaranteed to survive even if
-// this gets re-shared as a bare image with no caption.
+// Frames the photo around the dots actually on screen, in SCREEN space
+// (post-camera-transform), instead of a fixed fraction of the canvas
+// centered on the middle of the screen. A fixed center-crop reads fine on
+// an early wave where the camera sits close in, but on a wide/late wave
+// (see WIDE_WORLD_START_WAVE) the camera zooms out to fit far more world
+// than a handful of dots need, so a plain center-crop mostly grabbed empty
+// background with a couple of tiny, barely-visible dots adrift in it
+// (player report, attached screenshot: "the screenshot is awful"). Falls
+// back to the old fixed centered crop when there's no board to measure
+// (e.g. buildWavePostcard called from the title screen in tests).
+function computePostcardCropRect() {
+  const dots = STATE.dots;
+  if (!dots || !dots.length) {
+    const size = Math.min(canvas.width, canvas.height) * POSTCARD_CONFIG.CROP_FRACTION;
+    return { x: (canvas.width - size) / 2, y: (canvas.height - size) / 2, size };
+  }
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const dot of dots) {
+    const p = worldToScreen(dot.x, dot.y);
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+  }
+  const pad = POSTCARD_CONFIG.CROP_PADDING_PX;
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const contentSize = Math.max(maxX - minX, maxY - minY) + pad * 2;
+
+  // Square crop, sized to the content but never larger than the shorter
+  // canvas dimension (there's nothing to zoom OUT for) and never smaller
+  // than CROP_MIN_SIZE_PX (a single close-together pair shouldn't crop in
+  // so tight it reads as an abstract close-up instead of a game board).
+  const maxSize = Math.min(canvas.width, canvas.height);
+  const size = Math.min(maxSize, Math.max(POSTCARD_CONFIG.CROP_MIN_SIZE_PX, contentSize));
+
+  // Centered on the content, then nudged back on-canvas if that would
+  // spill past an edge (e.g. a group hugging one side of a wide world).
+  let x = cx - size / 2, y = cy - size / 2;
+  x = Math.max(0, Math.min(canvas.width - size, x));
+  y = Math.max(0, Math.min(canvas.height - size, y));
+  return { x, y, size };
+}
+
+// Composites a small SUBSET of the just-completed board, framed around the
+// actual dots (see computePostcardCropRect) rather than the whole canvas,
+// into a tilted, white-bordered "photo", on a starfield card that echoes
+// the game's own night-sky look -- so a shared image reads at a glance as
+// a moment from THIS relaxing musical game, not a generic screenshot. The
+// play link is baked directly into the pixels as a footer stamp -- the one
+// piece of text guaranteed to survive even if this gets re-shared as a
+// bare image with no caption.
 function buildWavePostcard() {
-  const { WIDTH: W, HEIGHT: H, BORDER, CAPTION_HEIGHT, FOOTER_HEIGHT, TILT_DEG, CROP_FRACTION } = POSTCARD_CONFIG;
+  const { WIDTH: W, HEIGHT: H, BORDER, CAPTION_HEIGHT, FOOTER_HEIGHT, TILT_DEG } = POSTCARD_CONFIG;
   const pc = document.createElement('canvas');
   pc.width = W;
   pc.height = H;
@@ -8521,12 +8565,11 @@ function buildWavePostcard() {
   pctx.shadowBlur = 0;
   pctx.shadowOffsetY = 0;
 
-  // The photo: a centered square SUBSET of the actual board, cropped in
-  // from the middle where the dots/connections actually are.
-  const cropSize = Math.min(canvas.width, canvas.height) * CROP_FRACTION;
-  const cropX = (canvas.width - cropSize) / 2;
-  const cropY = (canvas.height - cropSize) / 2;
-  pctx.drawImage(canvas, cropX, cropY, cropSize, cropSize, cardX + BORDER, cardY + BORDER, photoSize, photoSize);
+  // The photo: a square SUBSET of the actual board, framed around the
+  // dots themselves rather than a fixed slice of whatever the camera
+  // happens to be showing (see computePostcardCropRect).
+  const crop = computePostcardCropRect();
+  pctx.drawImage(canvas, crop.x, crop.y, crop.size, crop.size, cardX + BORDER, cardY + BORDER, photoSize, photoSize);
 
   pctx.fillStyle = '#2a2440';
   pctx.textAlign = 'center';

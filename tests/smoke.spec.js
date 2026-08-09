@@ -3846,6 +3846,62 @@ test('the postcard photo is a centered crop of the board, not the whole canvas',
   expect(errors).toEqual([]);
 });
 
+// Player report, attached screenshot: "the screenshot is awful" -- on a
+// wide/late wave the camera zooms out to fit far more world than a
+// handful of dots need (see WIDE_WORLD_START_WAVE), so the OLD fixed
+// centered crop (a flat 75% of the whole visible canvas, always centered
+// on the middle of the SCREEN) mostly grabbed empty background whenever
+// the dots that actually matter weren't sitting right at screen-center.
+// Forces a small, deliberately off-center cluster of dots (a real
+// procedurally-generated board can legitimately span wider than a square
+// crop can ever fully contain on a landscape viewport, which would make
+// "every dot framed" the wrong thing to assert in general) to prove
+// computePostcardCropRect follows the actual content instead of the
+// screen's geometric center, and zooms in tighter than the old fixed
+// fraction once the camera is genuinely zoomed out.
+test('the postcard crop follows an off-center cluster of dots instead of the screen\'s geometric center', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    applyDifficulty('normal');
+    startWave(WIDE_WORLD_START_WAVE + 2); // a real zoomed-out camera, past the wide-world threshold
+    STATE.camera.scale = STATE.camera.targetScale; // skip the per-frame lerp -- same pattern used elsewhere in this suite
+
+    // A tight, deliberately off-center pair placed near the screen's own
+    // top-left corner (via screenToWorld, so it's guaranteed on-screen
+    // regardless of viewport size) -- nowhere near the screen's geometric
+    // middle, which is exactly what the OLD fixed crop always centered on
+    // regardless of where the dots actually were.
+    const p1 = screenToWorld(70, 70);
+    const p2 = screenToWorld(110, 100);
+    STATE.dots = [
+      { x: p1.x, y: p1.y, pairId: 0 },
+      { x: p2.x, y: p2.y, pairId: 0 },
+    ];
+
+    const fixedFractionSize = Math.min(canvas.width, canvas.height) * POSTCARD_CONFIG.CROP_FRACTION;
+    const crop = computePostcardCropRect();
+    const allDotsFramed = STATE.dots.every(dot => {
+      const p = worldToScreen(dot.x, dot.y);
+      return p.x >= crop.x && p.x <= crop.x + crop.size && p.y >= crop.y && p.y <= crop.y + crop.size;
+    });
+
+    return {
+      scale: STATE.camera.scale,
+      cropSize: crop.size,
+      fixedFractionSize,
+      allDotsFramed,
+    };
+  });
+
+  expect(result.scale).toBeLessThan(1); // confirms the camera really is zoomed out for this wave
+  expect(result.allDotsFramed).toBe(true);
+  expect(result.cropSize).toBeLessThan(result.fixedFractionSize);
+  expect(errors).toEqual([]);
+});
+
 test('shareOrSaveWavePostcard shares a file with the play link included, and copies the link on fallback', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
