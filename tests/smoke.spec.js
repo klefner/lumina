@@ -13,6 +13,18 @@ function trackErrors(page) {
   page.on('console', (msg) => {
     if (msg.type() === 'error') errors.push(msg.text());
   });
+  // The pause menu's fact rotation makes a real, best-effort fetch to
+  // Wikipedia (see fetchOnlineFacts) -- already handled gracefully at the
+  // app level (a failure just leaves STATE.onlineFacts empty), but a live
+  // external dependency has no place in a deterministic suite: Chromium
+  // logs a console error for a failed/404'd request regardless of the
+  // app's own .catch(), and CI's network egress hitting the real API can
+  // flake independently of anything this suite is actually testing.
+  // Fulfilling with a synthetic empty response keeps every test
+  // deterministic without touching the feature itself.
+  page.route('https://en.wikipedia.org/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+  );
   return errors;
 }
 

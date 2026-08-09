@@ -8309,6 +8309,7 @@ function haptic(type) {
 // just asked for before they ever saw it take effect.
 function closePauseMenuUI({ clearEraseMode = true } = {}) {
   document.getElementById('pause-overlay').classList.remove('visible');
+  document.getElementById('pause-button').setAttribute('aria-expanded', 'false');
   document.getElementById('save-tip').classList.remove('visible');
   document.getElementById('pause-save').classList.remove('save-tip-pulse');
   stopPauseFactRotation();
@@ -8356,6 +8357,7 @@ function pauseGame() {
   }
   document.getElementById('pause-save-toast').classList.remove('visible');
   document.getElementById('pause-overlay').classList.add('visible');
+  document.getElementById('pause-button').setAttribute('aria-expanded', 'true');
   startPauseFactRotation();
   maybeShowSaveTip();
 }
