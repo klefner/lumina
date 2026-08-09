@@ -5698,7 +5698,13 @@ async function injectSceneWaveSetup(page) {
       STATE.wave = wave;
       STATE.waveStartScore = 0;
       STATE.score = 0;
-      STATE.song = { genre: { bpm: 100 } };
+      // checkWaveComplete only needs song.genre.bpm, but a real startWave()
+      // call schedules its own song loop that keeps referencing STATE.song
+      // asynchronously afterward and needs song.notes too -- so if a real
+      // song is already there (i.e. this test drove a real startWave()
+      // rather than relying only on this stub), leave it alone instead of
+      // clobbering it out from under that scheduled loop.
+      if (!STATE.song || !STATE.song.notes) STATE.song = { genre: { bpm: 100 } };
       STATE.scene = scene;
     };
   });
@@ -5749,7 +5755,7 @@ test('a beach-scene wave streak reveals one more ambient layer per completion, i
   expect(errors).toEqual([]);
 });
 
-test('a wave completing on a non-ambient scene resets the streak and clears any active layers', async ({ page }) => {
+test('switching to a scene with no ambient config (e.g. space) stops the previous scene\'s streak immediately, not on that wave\'s own completion', async ({ page }) => {
   const errors = trackErrors(page);
   await injectSceneWaveSetup(page);
   await page.goto('/index.html');
@@ -5761,18 +5767,26 @@ test('a wave completing on a non-ambient scene resets the streak and clears any 
     checkWaveComplete();
     const streakAfterTwoForestWaves = STATE.ambienceStreak;
 
+    // syncAmbienceToScene is exactly what startWave calls the instant a
+    // new wave's scene resolves (see game.js) -- calling it directly here
+    // keeps this test focused on that function without dragging in a full
+    // startWave() (real song scheduling, dot generation, etc.).
     STATE.scene = 'space';
-    checkWaveComplete();
+    syncAmbienceToScene();
+    const streakRightAfterSceneSwitch = STATE.ambienceStreak;
 
-    return { streakAfterTwoForestWaves, streakAfterSpaceWave: STATE.ambienceStreak };
+    checkWaveComplete(); // completing the space wave itself should change nothing further
+
+    return { streakAfterTwoForestWaves, streakRightAfterSceneSwitch, streakAfterSpaceWave: STATE.ambienceStreak };
   });
 
   expect(result.streakAfterTwoForestWaves).toBe(2);
+  expect(result.streakRightAfterSceneSwitch).toBe(0);
   expect(result.streakAfterSpaceWave).toBe(0);
   expect(errors).toEqual([]);
 });
 
-test('switching directly from one ambient scene to another resets the streak instead of inheriting a same-named layer', async ({ page }) => {
+test('switching directly from one ambient scene to another stops the outgoing layers the moment the new wave starts, not when it completes', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await injectSceneWaveSetup(page);
@@ -5783,35 +5797,53 @@ test('switching directly from one ambient scene to another resets the streak ins
   // Forest and beach each have their own "wind" sound (different
   // recordings) -- switching straight from one to the other, e.g. under
   // Rotate mode, must not let beach's reveal quietly reuse forest's
-  // still-registered 'wind' layer key instead of starting its own.
+  // still-registered 'wind' layer key instead of starting its own. The
+  // reset itself happens in startWave (see syncAmbienceToScene), not in
+  // checkWaveComplete -- so this drives real startWave() calls (with
+  // sceneMode forced fixed) rather than just poking STATE.scene, to
+  // actually exercise the fix rather than a lower-level approximation
+  // of it.
   const result = await page.evaluate(async () => {
     await STATE.ambientBuffersReadyPromise;
-    setUpCompletableSceneWave('forest');
+    STATE.sceneMode = 'forest';
+    startWave(1);
+    setUpCompletableSceneWave('forest', 1);
     checkWaveComplete();
+    setUpCompletableSceneWave('forest', 2);
     checkWaveComplete();
     await new Promise(r => setTimeout(r, 30));
     const streakAfterTwoForestWaves = STATE.ambienceStreak;
     const layersAfterTwoForestWaves = Object.keys(STATE.ambienceLayers);
 
-    STATE.scene = 'beach';
+    STATE.sceneMode = 'beach';
+    startWave(3); // the scene actually changes here -- this is what must stop forest's layers, immediately
+    const layersRightAfterSceneSwitch = Object.keys(STATE.ambienceLayers);
+    const ambienceSceneRightAfterSceneSwitch = STATE.ambienceScene;
+
+    setUpCompletableSceneWave('beach', 3);
     checkWaveComplete();
     await new Promise(r => setTimeout(r, 30));
 
     return {
       streakAfterTwoForestWaves,
       layersAfterTwoForestWaves,
+      layersRightAfterSceneSwitch,
+      ambienceSceneRightAfterSceneSwitch,
       streakAfterFirstBeachWave: STATE.ambienceStreak,
-      ambienceSceneAfterFirstBeachWave: STATE.ambienceScene,
       layersAfterFirstBeachWave: Object.keys(STATE.ambienceLayers),
     };
   });
 
   expect(result.streakAfterTwoForestWaves).toBe(2);
   expect(result.layersAfterTwoForestWaves).toEqual(['wind', 'crickets']);
-  // Not 3 -- the scene switch resets the streak before the beach wave's
+  // The scene switch itself (startWave, before the beach wave has even
+  // been played) already cleared forest's layers -- confirms the reset
+  // happens at the right time, not just eventually.
+  expect(result.layersRightAfterSceneSwitch).toEqual([]);
+  expect(result.ambienceSceneRightAfterSceneSwitch).toBe('beach');
+  // Not 3 -- the scene switch reset the streak before the beach wave's
   // own completion advances it back to 1.
   expect(result.streakAfterFirstBeachWave).toBe(1);
-  expect(result.ambienceSceneAfterFirstBeachWave).toBe('beach');
   // Just beach's own first reveal ('waves') -- not forest's leftover
   // 'wind'/'crickets' keys, and not a 'wind' collision between the two
   // scenes' own distinct recordings.

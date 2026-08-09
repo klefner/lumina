@@ -3339,25 +3339,34 @@ function resetSceneAmbience() {
   STATE.ambienceActiveSources = [];
 }
 
-// Called once per wave completion (see checkWaveComplete) -- advances (or
-// resets) the streak and starts whichever new layer that unlocks. Once
-// every sound in the current scene's SCENE_AMBIENT_CONFIG.order has been
-// revealed, they all just keep playing together -- there's no third
-// background yet to switch to, so nothing forces a reset once a scene's
-// set is complete.
-function updateSceneAmbienceForWaveComplete() {
-  // A scene change since the last completed wave -- including straight
-  // from one ambient scene to another (e.g. forest -> beach under Rotate
-  // mode) -- always restarts the streak at zero. Without this check, two
-  // scenes that happen to share a sound name (both have a "wind") would
-  // silently inherit each other's still-playing layer instead of the new
-  // scene getting its own.
-  if (STATE.scene !== STATE.ambienceScene) {
-    if (STATE.ambienceStreak > 0 || Object.keys(STATE.ambienceLayers).length > 0) {
-      resetSceneAmbience();
-    }
-    STATE.ambienceScene = STATE.scene;
+// Called from startWave, right after STATE.scene resolves for the wave
+// that's about to start -- stops the outgoing scene's ambience the
+// instant the scene actually changes, rather than leaving it playing
+// through the whole new wave. (An earlier version did this check inside
+// updateSceneAmbienceForWaveComplete instead, which only runs when a wave
+// COMPLETES -- under Rotate mode that meant a Forest wave's wind/crickets
+// kept playing through the entire following Beach wave, only getting cut
+// off once that Beach wave itself completed.) Also covers two ambient
+// scenes sharing a sound name (both have a "wind") -- without this, the
+// new scene's reveal would silently inherit the old scene's still-playing
+// layer instead of starting its own.
+function syncAmbienceToScene() {
+  if (STATE.scene === STATE.ambienceScene) return;
+  if (STATE.ambienceStreak > 0 || Object.keys(STATE.ambienceLayers).length > 0) {
+    resetSceneAmbience();
   }
+  STATE.ambienceScene = STATE.scene;
+}
+
+// Called once per wave completion (see checkWaveComplete) -- advances the
+// streak and starts whichever new layer that unlocks. By this point
+// STATE.scene and STATE.ambienceScene already agree (syncAmbienceToScene
+// saw to that when this wave started), so there's nothing left to do here
+// but the reveal itself. Once every sound in the current scene's
+// SCENE_AMBIENT_CONFIG.order has been revealed, they all just keep
+// playing together -- there's no third background yet to switch to, so
+// nothing forces a reset once a scene's set is complete.
+function updateSceneAmbienceForWaveComplete() {
   const config = SCENE_AMBIENT_CONFIG[STATE.scene];
   if (!config) return;
   if (STATE.ambienceStreak < config.order.length) {
@@ -6717,6 +6726,11 @@ function startWave(waveNumber) {
   STATE.scene = resolveSceneForWave(waveNumber);
   STATE.forestScene = STATE.scene === 'forest' ? generateForestScene() : null;
   STATE.beachScene = STATE.scene === 'beach' ? generateBeachScene() : null;
+  // Stop any leftover ambience from whatever scene the previous wave was
+  // on the instant this wave's scene turns out to be different -- see
+  // syncAmbienceToScene's own comment for why this can't just wait for
+  // this wave's own completion.
+  syncAmbienceToScene();
   STATE.waveStartScore = STATE.score;
 
   showTutorialHint(waveNumber);
