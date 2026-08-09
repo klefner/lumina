@@ -312,13 +312,13 @@ function saveCockpitModeSetting(enabled) {
 }
 
 // Scene -- which background plays behind the board (see SECTION 7C's
-// Space starfield/celestial bodies and SECTION 7E's Night Forest). Either
-// a fixed scene, or 'rotate' to cycle through every entry in SCENE_LIST
-// a wave at a time (see resolveSceneForWave), so two players sitting side
-// by side comparing scenes never need to touch the dropdown mid-session.
-// Defaults to 'rotate' (unlike flight/cockpit mode's off-by-default) since
-// picking a scene doesn't change how you play -- an unconfigured player
-// should just see everything.
+// Space starfield/celestial bodies and SECTION 7E's Night Forest/7F's
+// Beach at Night). Either a fixed scene, or 'rotate' to cycle through
+// every entry in SCENE_LIST (see resolveSceneForWave), so two players
+// sitting side by side comparing scenes never need to touch the dropdown
+// mid-session. Defaults to 'rotate' (unlike flight/cockpit mode's
+// off-by-default) since picking a scene doesn't change how you play -- an
+// unconfigured player should just see everything.
 const SCENE_LIST = ['space', 'forest', 'beach'];
 const SCENE_KEY = 'lumina_scene_v1';
 function loadSceneSetting() {
@@ -332,9 +332,84 @@ function loadSceneSetting() {
 function saveSceneSetting(mode) {
   try { localStorage.setItem(SCENE_KEY, mode); } catch (e) { /* best-effort only */ }
 }
+
+// How many consecutive waves Rotate mode holds a given scene for, before
+// moving on to the next one in SCENE_LIST -- one more than that scene has
+// real ambient sounds to reveal (see SCENE_AMBIENT_CONFIG): one wave per
+// reveal, plus one bonus wave with nothing new to reveal, where the full
+// set just gets to keep playing. That bonus wave matters because a
+// reveal only happens on a wave's COMPLETION (see
+// updateSceneAmbienceForWaveComplete) -- without it, the scene the LAST
+// sound is revealed on doubles as the scene's very last wave, so the
+// instant a player advances past that completion screen the scene (and
+// that brand new sound) gets cut off, often before an event layer like
+// the owl or foghorn even gets through its own 1.5-3.5s startup delay to
+// make a single sound. Space has no ambient sounds of its own -- "no one
+// can hear you scream in space" -- so it just gets a single wave, same as
+// it always has.
+//
+// Referencing SCENE_AMBIENT_CONFIG (defined later, in SECTION 7's scene
+// ambience block) is safe here specifically because this is a function
+// body, not top-level module code -- it only actually runs once the whole
+// script has finished loading and something calls resolveSceneForWave,
+// by which point SCENE_AMBIENT_CONFIG's own `const` has long since
+// initialized. A top-level `const` computed eagerly at this point in the
+// file, before that declaration runs, would throw instead.
+function sceneWaveCount(scene) {
+  const config = SCENE_AMBIENT_CONFIG[scene];
+  return config ? config.order.length + 1 : 1;
+}
+
+// Shared by resolveSceneForWave and catchUpAmbienceStreakForWave --
+// besides which scene a given wave falls on, also returns that wave's
+// 0-indexed position within its scene's own block (e.g. the 3rd wave of
+// a Forest block returns blockPosition: 2). A fixed (non-Rotate)
+// sceneMode never has a "block" to be positioned within, so it's always
+// position 0 there.
+function resolveSceneBlock(waveNumber) {
+  if (STATE.sceneMode !== 'rotate') {
+    const scene = SCENE_LIST.includes(STATE.sceneMode) ? STATE.sceneMode : 'space';
+    return { scene, blockPosition: 0 };
+  }
+  const counts = SCENE_LIST.map(sceneWaveCount);
+  const cycleLength = counts.reduce((sum, n) => sum + n, 0);
+  let position = (waveNumber - 1) % cycleLength;
+  for (let i = 0; i < SCENE_LIST.length; i++) {
+    if (position < counts[i]) return { scene: SCENE_LIST[i], blockPosition: position };
+    position -= counts[i];
+  }
+  return { scene: SCENE_LIST[0], blockPosition: 0 }; // unreachable given the loop above covers the full cycle -- keeps this total
+}
+
 function resolveSceneForWave(waveNumber) {
-  if (STATE.sceneMode === 'rotate') return SCENE_LIST[(waveNumber - 1) % SCENE_LIST.length];
-  return SCENE_LIST.includes(STATE.sceneMode) ? STATE.sceneMode : 'space';
+  return resolveSceneBlock(waveNumber).scene;
+}
+
+// A normal, continuous playthrough always has STATE.ambienceStreak
+// already exactly matching the new wave's blockPosition by the time this
+// runs (every prior wave in the block completed in order, each revealing
+// one more sound) -- so this is a no-op there. It only actually does
+// anything right after a load/restart/session-start lands mid-block,
+// where resetSceneAmbience zeroed the streak but resolveSceneBlock (pure
+// arithmetic on the absolute wave number, no memory of that reset) still
+// expects however many sounds a wave that far into the block should
+// already have. Without this, loading into the middle or end of a block
+// could reveal only some of its sounds -- or none -- before Rotate moves
+// the scene on regardless, since the scene switch itself only cares
+// about the absolute wave number, not the streak. Silently backfills
+// (starts each not-yet-playing layer immediately) rather than routing
+// through the normal per-wave reveal, and deliberately skips the
+// completion toast -- resuming into an already-complete set isn't a
+// moment a player just earned.
+function catchUpAmbienceStreakForWave(waveNumber) {
+  const config = SCENE_AMBIENT_CONFIG[STATE.scene];
+  if (!config) return;
+  const { blockPosition } = resolveSceneBlock(waveNumber);
+  const shouldAlreadyBeRevealed = Math.min(blockPosition, config.order.length);
+  while (STATE.ambienceStreak < shouldAlreadyBeRevealed) {
+    STATE.ambienceStreak++;
+    startSceneAmbienceLayer(STATE.scene, config.order[STATE.ambienceStreak - 1]);
+  }
 }
 
 // ------------------------------------------------------------
@@ -3358,20 +3433,51 @@ function syncAmbienceToScene() {
   STATE.ambienceScene = STATE.scene;
 }
 
+// Shown as a celebratory toast (see queueAchievement/showAchievementToast,
+// same mechanism the wave-milestone/high-score achievements use) the
+// instant a scene's last ambient sound gets revealed -- only meaningful
+// under Rotate mode, where a scene occupies exactly as many consecutive
+// waves as it has sounds (see resolveSceneForWave/sceneWaveCount), so
+// completing the set IS the wave right before the background actually
+// changes. A fixed single-scene mode has no "next scene" to announce, so
+// it stays quiet once its own set completes.
+const SCENE_COMPLETE_CELEBRATIONS = {
+  forest: { glyph: '🌲', bg: 'radial-gradient(circle at 35% 30%, #bfe3b0, #3f7d4a)', glow: 'rgba(80,170,90,0.6)' },
+  beach: { glyph: '🌊', bg: 'radial-gradient(circle at 35% 30%, #bfe9f2, #2f7fa0)', glow: 'rgba(60,170,210,0.6)' },
+};
+const SCENE_DISPLAY_NAMES = { space: 'Space', forest: 'Forest', beach: 'Beach' };
+
+function queueSceneCompleteToast(scene) {
+  const celebration = SCENE_COMPLETE_CELEBRATIONS[scene];
+  if (!celebration) return;
+  const sceneIndex = SCENE_LIST.indexOf(scene);
+  const nextScene = SCENE_LIST[(sceneIndex + 1) % SCENE_LIST.length];
+  queueAchievement({
+    glyph: celebration.glyph,
+    bg: celebration.bg,
+    glow: celebration.glow,
+    label: `${SCENE_DISPLAY_NAMES[scene]} Complete! ${SCENE_DISPLAY_NAMES[nextScene]} Ahead`,
+  });
+}
+
 // Called once per wave completion (see checkWaveComplete) -- advances the
 // streak and starts whichever new layer that unlocks. By this point
 // STATE.scene and STATE.ambienceScene already agree (syncAmbienceToScene
 // saw to that when this wave started), so there's nothing left to do here
 // but the reveal itself. Once every sound in the current scene's
 // SCENE_AMBIENT_CONFIG.order has been revealed, they all just keep
-// playing together -- there's no third background yet to switch to, so
-// nothing forces a reset once a scene's set is complete.
+// playing together -- there's no reset once a scene's set is complete,
+// just (under Rotate mode) the celebration toast above and the scene
+// itself moving on next wave.
 function updateSceneAmbienceForWaveComplete() {
   const config = SCENE_AMBIENT_CONFIG[STATE.scene];
   if (!config) return;
   if (STATE.ambienceStreak < config.order.length) {
     STATE.ambienceStreak++;
     startSceneAmbienceLayer(STATE.scene, config.order[STATE.ambienceStreak - 1]);
+    if (STATE.ambienceStreak === config.order.length && STATE.sceneMode === 'rotate') {
+      queueSceneCompleteToast(STATE.scene);
+    }
   }
 }
 
@@ -6731,6 +6837,11 @@ function startWave(waveNumber) {
   // syncAmbienceToScene's own comment for why this can't just wait for
   // this wave's own completion.
   syncAmbienceToScene();
+  // Then, if this wave landed mid-block (a load/restart/session-start,
+  // not a normal continuous playthrough -- see this function's own
+  // comment), silently backfill whatever sounds a wave this far into the
+  // block should already have revealed.
+  catchUpAmbienceStreakForWave(waveNumber);
   STATE.waveStartScore = STATE.score;
 
   showTutorialHint(waveNumber);
