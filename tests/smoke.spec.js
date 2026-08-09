@@ -5036,6 +5036,7 @@ test('relaxed mode dims every dot outside the matching group while a line is bei
   };
 
   const beforeDrag = { groupmate: await alphaOf(setup.groupmate.id), other: await alphaOf(setup.other.id) };
+  const dimMultiplier = await page.evaluate(() => ACTIVE_DRAW_DIM_MULTIPLIER);
 
   await page.evaluate(({ x, y }) => {
     onInputStart({ preventDefault() {}, clientX: x, clientY: y });
@@ -5045,8 +5046,9 @@ test('relaxed mode dims every dot outside the matching group while a line is bei
   const duringDrag = { groupmate: await alphaOf(setup.groupmate.id), other: await alphaOf(setup.other.id) };
   // Same group as the dot being dragged from: brightness unchanged.
   expect(duringDrag.groupmate).toBeCloseTo(beforeDrag.groupmate, 5);
-  // Different group: dimmed to exactly half its normal brightness.
-  expect(duringDrag.other).toBeCloseTo(beforeDrag.other * 0.5, 5);
+  // Different group: dimmed to exactly ACTIVE_DRAW_DIM_MULTIPLIER of its
+  // normal brightness -- deliberately low, not just "a bit darker".
+  expect(duringDrag.other).toBeCloseTo(beforeDrag.other * dimMultiplier, 5);
 
   // Releasing off any dot cancels the gesture -- isDrawing goes false and,
   // being computed live off STATE each frame, dimming clears on its own.
@@ -5094,7 +5096,8 @@ test('the relaxed-mode dimming assist never activates outside relaxed difficulty
 // so at every flash peak an unrelated dot briefly popped back to full
 // brightness, defeating the assist for most of the animation. Verifies
 // all three of drawDot's fill() calls (base, hint overlay, core) scale
-// identically by the same 0.5 dim factor, not just the first one.
+// identically by the same ACTIVE_DRAW_DIM_MULTIPLIER dim factor, not just
+// the first one.
 test('the dimming assist also dims a dot during its hint-pulse flash peak, not just its base fill', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
@@ -5132,13 +5135,13 @@ test('the dimming assist also dims a dot during its hint-pulse flash peak, not j
     STATE.activeDot = null;
     window.hintPulseBrightness = origHintPulseBrightness;
 
-    return { undimmed, dimmed };
+    return { undimmed, dimmed, dimMultiplier: ACTIVE_DRAW_DIM_MULTIPLIER };
   });
 
   expect(result.undimmed).toHaveLength(3); // base fill, hint-flash overlay, white core
   expect(result.dimmed).toHaveLength(3);
   for (let i = 0; i < 3; i++) {
-    expect(result.dimmed[i]).toBeCloseTo(result.undimmed[i] * 0.5, 5);
+    expect(result.dimmed[i]).toBeCloseTo(result.undimmed[i] * result.dimMultiplier, 5);
   }
   expect(errors).toEqual([]);
 });

@@ -4119,6 +4119,14 @@ function shouldDimForActiveDraw(dot) {
     && STATE.activeDot && dot.pairId !== STATE.activeDot.pairId;
 }
 
+// How dark a non-matching dot goes while the assist is active. 0.5 (the
+// original value) still left dimmed dots reading as "just a bit darker"
+// next to the full-brightness ones being matched, rather than clearly
+// receding out of the way (player feedback: the contrast needed to be much
+// stronger). Kept well above 0 -- dots must stay visible enough to still
+// see the board's overall shape and count what's left, not vanish.
+const ACTIVE_DRAW_DIM_MULTIPLIER = 0.15;
+
 function drawDot(dot) {
   const instrument = INSTRUMENTS[dot.colorIndex];
   const shape = DOT_SHAPES[dot.colorIndex] || 'circle';
@@ -4148,7 +4156,7 @@ function drawDot(dot) {
   // the hint-flash overlay and the final white core circle both assign
   // globalAlpha directly (not multiply), so without this they'd ignore
   // the dimming assist entirely at every flash peak (review, #52).
-  const dimMultiplier = shouldDimForActiveDraw(dot) ? 0.5 : 1;
+  const dimMultiplier = shouldDimForActiveDraw(dot) ? ACTIVE_DRAW_DIM_MULTIPLIER : 1;
   if (hintBrightness !== null) {
     // Dim between flashes (same idle baseline as the plain unconnected
     // case below), full brightness right at each flash's peak -- so each
