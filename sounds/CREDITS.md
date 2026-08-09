@@ -38,6 +38,39 @@ In-game, these samples are pitch-shifted (via Web Audio's
 `playbackRate`) to notes between the ones actually sampled, so a
 single set of recordings covers a full musical range.
 
+## Forest night ambience (sounds/ambient/)
+
+Four real field recordings, not synthesized — a player's explicit
+request (a synthesized-vs-recorded comparison confirmed the gap is
+real, especially for anything voiced by a living throat). All CC0 or
+Public Domain Mark, no attribution legally required, credited anyway:
+
+- `wind.mp3` — "Sherwood Forest — Wind in the Trees," a field recording
+  via [aporee.org / Internet Archive](https://archive.org/details/aporee_50814_57967),
+  Public Domain Mark 1.0. Trimmed from a ~68-minute original.
+- `crickets.mp3` — "Crickets and Frogs, Continuous Loop" (despite the
+  name, this one is almost entirely crickets — confirmed by
+  spectrogram, no visible low-frequency croak energy), from the
+  [Frogs, Toads, Spring Peepers & Crickets](https://archive.org/details/frogs-toads-spring-peepers-crickets-sound-effects)
+  collection, CC0.
+- `frogs.mp3` — "Croaking Frogs," from the same collection, CC0.
+  Looped from a ~13s original with a short crossfade to reach 20s.
+- `owl.mp3` — "Great Horned Owl Hoot," from
+  [Red Library: Animals & Birds](https://archive.org/details/Red_Library_Animals_Birds),
+  CC0.
+
+All four were loudness-normalized and trimmed with short fades, no
+other editing. In-game, each one is looped (or, for the owl, retriggered
+at random intervals — see `FOREST_AMBIENT_CONFIG` in game.js) with
+per-repeat randomized pitch/rate, gain, and stereo pan, so the same
+~20s recording never sounds like it's playing on an exact, identical
+loop.
+
+A synthesized alternative (oscillators/filtered noise, the same
+technique the lofi family below uses) was built and compared side by
+side before this decision — real recordings won convincingly enough
+that it wasn't a close call, particularly for the owl.
+
 ## The lofi genre family's instruments (rhodes, lofibass, lofikit)
 
 Not recordings — synthesized entirely in-browser (game.js,

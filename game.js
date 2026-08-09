@@ -2417,6 +2417,21 @@ const STATE = {
   forestScene: null,    // { trees, fireflies, moonXFrac, ... } for the current wave when
                          // scene === 'forest' (see generateForestScene); null otherwise
 
+  ambientGain: null,     // GainNode every forest ambience layer routes through (see initAudioGraph)
+  ambientBuffers: {},     // { wind: AudioBuffer, crickets: AudioBuffer, ... } — decoded lazily
+                           // (see loadForestAmbienceBuffers), same pattern as sampleBuffers above
+  ambientBuffersReadyPromise: null,
+  forestAmbienceStreak: 0, // consecutive completed waves with scene === 'forest' (see
+                            // checkWaveComplete) -- drives how many of FOREST_AMBIENT_CONFIG.order
+                            // are currently layered in; reset to 0 whenever a wave completes on a
+                            // different scene, or on an explicit restart/load/exit
+  forestAmbienceLayers: {}, // { wind: { stop() }, crickets: {...}, ... } -- currently active
+                             // layers, keyed the same way as FOREST_AMBIENT_CONFIG.sounds
+  forestAmbienceActiveSources: [], // { source, gain } pairs currently in flight across every
+                                     // layer above -- lets resetForestAmbience fade out and hard-stop
+                                     // whatever's actually sounding right now, not just cancel future
+                                     // repeats (see trackForestSource)
+
   breakSparks: [],     // Short-lived particle bursts where a rotating barrier snaps a connection
 
   tutorialWave: null,        // wave number the current on-screen tutorial hint belongs to, or null
@@ -2693,11 +2708,27 @@ function initAudioGraph() {
   STATE.masterBus = compressor;
   STATE.masterGain = masterGain;
 
+  // Forest ambience's own gain, feeding into the same limiter/gain chain
+  // as the music (see FOREST_AMBIENT_CONFIG) -- one shared knob to balance
+  // the whole ambient bed against the song without touching individual
+  // layers, and it rides along with the exact same pause/resume ducking
+  // and peak limiting the music already gets, rather than a second,
+  // separately-tuned signal path.
+  const ambientGain = STATE.audioCtx.createGain();
+  ambientGain.gain.value = 1.0;
+  ambientGain.connect(compressor);
+  STATE.ambientGain = ambientGain;
+
   // Track the decode promise so startWave can wait for it before
   // scheduling the first wave's song — scheduleLoopingSong calls
   // playSample synchronously for every note up front, so if decoding
   // isn't finished by then, those notes would silently never play.
   STATE.samplesReadyPromise = decodeAllSamples();
+  // Same idea for the forest ambience's own four clips -- fire-and-forget
+  // is fine here (unlike the song above, nothing calls this synchronously
+  // right after), startForestAmbienceLayer awaits it before actually
+  // starting a layer.
+  STATE.ambientBuffersReadyPromise = loadForestAmbienceBuffers();
 }
 
 // --- Sample loading -----------------------------------------------------
@@ -3079,6 +3110,215 @@ function stopAllScheduledAudio(atTime) {
     try { node.stop(atTime); } catch (e) { /* already stopped */ }
   }
   STATE.activeSources = [];
+}
+
+// ============================================================
+// FOREST AMBIENCE — real recordings (see sounds/CREDITS.md for sourcing/
+// licensing), layered in one at a time as a Forest-scene wave streak
+// builds (see checkWaveComplete/updateForestAmbienceForWaveComplete),
+// always underneath the puzzle's own generated music, never replacing
+// it. wind/crickets/frogs loop continuously; owl is a rarer one-shot
+// event instead of a loop.
+// ============================================================
+const FOREST_AMBIENT_CONFIG = {
+  // Reveal order -- wind first, since it reads as the scene's "floor."
+  order: ['wind', 'crickets', 'frogs', 'owl'],
+  sounds: {
+    wind: { file: 'wind.mp3', gain: 0.55, isEvent: false },
+    crickets: { file: 'crickets.mp3', gain: 0.42, isEvent: false },
+    frogs: { file: 'frogs.mp3', gain: 0.55, isEvent: false },
+    owl: { file: 'owl.mp3', gain: 0.85, isEvent: true, minGapSec: 14, maxGapSec: 40 },
+  },
+  // Applied fresh on every repeat (a loop's next crossfaded pass, or the
+  // owl's next call) -- real recordings vary take to take, and without
+  // this a ~20s clip played back to back for several waves would read as
+  // an obviously exact, identical loop.
+  RATE_RANGE: [0.94, 1.06], // playbackRate -- pitch and speed together, same technique the pitched instrument samples use
+  GAIN_RANGE: [0.85, 1.15], // multiplies each sound's own base gain above
+  PAN_RANGE: [-0.3, 0.3],
+  CROSSFADE_SEC: 1.5, // overlap between an outgoing loop instance and the next
+};
+
+function randRange([lo, hi]) {
+  return lo + Math.random() * (hi - lo);
+}
+
+async function loadForestAmbienceBuffers() {
+  const names = Object.keys(FOREST_AMBIENT_CONFIG.sounds);
+  await Promise.all(names.map(async (name) => {
+    try {
+      const res = await fetch(`sounds/ambient/${FOREST_AMBIENT_CONFIG.sounds[name].file}`);
+      const bytes = await res.arrayBuffer();
+      STATE.ambientBuffers[name] = await STATE.audioCtx.decodeAudioData(bytes);
+    } catch (e) { /* missing/failed to load or decode -- that layer just never starts, same graceful-skip playSample already uses */ }
+  }));
+}
+
+// Tracked separately from STATE.activeSources/trackSource/stopAllScheduledAudio
+// on purpose -- those exist specifically to hard-stop everything at a wave
+// transition so nothing from one wave's song leaks into the next, but
+// forest ambience is supposed to survive ordinary wave transitions (that's
+// the entire point of the streak below). Tracked here only so
+// resetForestAmbience can still fade out and hard-stop whatever's actually
+// sounding right now on a real reset (restart/load/exit), not just cancel
+// each layer's future repeats.
+function trackForestSource(source, gain) {
+  STATE.forestAmbienceActiveSources.push({ source, gain });
+}
+
+// One continuously-looping layer (wind/crickets/frogs): schedules its own
+// next repeat shortly before the current one ends, each time with a fresh
+// random playbackRate/gain/pan and a short crossfade so consecutive
+// repeats overlap instead of clicking together. Returns a handle whose
+// stop() cancels every future repeat (the currently-playing instance is
+// left to fade out on its own schedule, or gets force-stopped by
+// resetForestAmbience if that's what actually called stop()).
+function startLoopingAmbientLayer(buffer, baseGain) {
+  let stopped = false;
+  let timer = null;
+  const cfg = FOREST_AMBIENT_CONFIG;
+
+  function playOnce() {
+    if (stopped || !STATE.audioCtx || !STATE.ambientGain) return;
+    const ctx = STATE.audioCtx;
+    const now = ctx.currentTime;
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.playbackRate.value = randRange(cfg.RATE_RANGE);
+
+    const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    if (panner) panner.pan.value = randRange(cfg.PAN_RANGE);
+
+    const gain = ctx.createGain();
+    const peakGain = baseGain * randRange(cfg.GAIN_RANGE);
+    const fade = cfg.CROSSFADE_SEC;
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(peakGain, now + fade);
+
+    source.connect(gain);
+    if (panner) { gain.connect(panner); panner.connect(STATE.ambientGain); }
+    else gain.connect(STATE.ambientGain);
+
+    // Actual sounding duration divided by this instance's own playbackRate
+    // -- a faster repeat finishes sooner, and the fade-out/next repeat both
+    // need to land relative to THIS instance's real length, not the
+    // buffer's nominal one.
+    const playDuration = buffer.duration / source.playbackRate.value;
+    const fadeOutStart = now + playDuration - fade;
+    gain.gain.setValueAtTime(peakGain, fadeOutStart);
+    gain.gain.linearRampToValueAtTime(0, fadeOutStart + fade);
+
+    source.start(now);
+    source.stop(fadeOutStart + fade + 0.05);
+    trackForestSource(source, gain);
+
+    if (!stopped) {
+      timer = setTimeout(playOnce, Math.max(50, (playDuration - fade) * 1000));
+    }
+  }
+
+  playOnce();
+  return { stop() { stopped = true; if (timer) clearTimeout(timer); } };
+}
+
+// The owl: a single occasional call rather than a loop, at a random gap
+// after the previous one (or a beat after first being revealed). Same
+// per-repeat pitch/gain/pan variation as the looping layers above.
+function startEventAmbientLayer(buffer, baseGain, minGapSec, maxGapSec) {
+  let stopped = false;
+  let timer = null;
+  const cfg = FOREST_AMBIENT_CONFIG;
+
+  function playOnce() {
+    if (stopped || !STATE.audioCtx || !STATE.ambientGain) return;
+    const ctx = STATE.audioCtx;
+    const now = ctx.currentTime;
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.playbackRate.value = randRange(cfg.RATE_RANGE);
+
+    const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    if (panner) panner.pan.value = randRange(cfg.PAN_RANGE);
+
+    const gain = ctx.createGain();
+    gain.gain.value = baseGain * randRange(cfg.GAIN_RANGE);
+
+    source.connect(gain);
+    if (panner) { gain.connect(panner); panner.connect(STATE.ambientGain); }
+    else gain.connect(STATE.ambientGain);
+
+    source.start(now);
+    trackForestSource(source, gain);
+
+    if (!stopped) {
+      timer = setTimeout(playOnce, randRange([minGapSec, maxGapSec]) * 1000);
+    }
+  }
+
+  timer = setTimeout(playOnce, 1500 + Math.random() * 2000); // a beat after being revealed, not instantly
+  return { stop() { stopped = true; if (timer) clearTimeout(timer); } };
+}
+
+async function startForestAmbienceLayer(name) {
+  if (STATE.forestAmbienceLayers[name]) return; // already playing
+  if (STATE.ambientBuffersReadyPromise) await STATE.ambientBuffersReadyPromise;
+  const buffer = STATE.ambientBuffers[name];
+  if (!buffer || !STATE.audioCtx || !STATE.ambientGain) return; // missing/failed to load -- skip gracefully
+  // The reveal that asked for this layer may already be stale by the time
+  // decoding finishes (wave advanced again, scene changed, reset fired) --
+  // re-check right before actually starting anything audible.
+  if (STATE.scene !== 'forest' || STATE.forestAmbienceLayers[name]) return;
+
+  const cfg = FOREST_AMBIENT_CONFIG.sounds[name];
+  STATE.forestAmbienceLayers[name] = cfg.isEvent
+    ? startEventAmbientLayer(buffer, cfg.gain, cfg.minGapSec, cfg.maxGapSec)
+    : startLoopingAmbientLayer(buffer, cfg.gain);
+}
+
+// Stops every forest ambience layer -- both future repeats (each layer's
+// own stop()) and whatever's actually sounding right now (a short fade
+// via forestAmbienceActiveSources, so this never clicks). Called whenever
+// a wave completes on a non-forest scene (see updateForestAmbienceForWaveComplete)
+// and from the explicit restart-game/load-game/exit-to-title paths --
+// deliberately NOT from a same-level retry, which keeps the streak going
+// rather than punishing a retry by resetting the mood underneath it.
+function resetForestAmbience() {
+  for (const name in STATE.forestAmbienceLayers) {
+    STATE.forestAmbienceLayers[name].stop();
+  }
+  STATE.forestAmbienceLayers = {};
+  STATE.forestAmbienceStreak = 0;
+  if (STATE.audioCtx) {
+    const now = STATE.audioCtx.currentTime;
+    for (const { source, gain } of STATE.forestAmbienceActiveSources) {
+      try {
+        gain.gain.cancelScheduledValues(now);
+        gain.gain.setValueAtTime(gain.gain.value, now);
+        gain.gain.linearRampToValueAtTime(0, now + 0.3);
+        source.stop(now + 0.35);
+      } catch (e) { /* already stopped */ }
+    }
+  }
+  STATE.forestAmbienceActiveSources = [];
+}
+
+// Called once per wave completion (see checkWaveComplete) -- advances (or
+// resets) the streak and starts whichever new layer that unlocks. Once
+// every sound in FOREST_AMBIENT_CONFIG.order has been revealed, they all
+// just keep playing together -- there's no second background yet to
+// switch to, so nothing forces a reset once the set is complete.
+function updateForestAmbienceForWaveComplete() {
+  if (STATE.scene !== 'forest') {
+    if (STATE.forestAmbienceStreak > 0 || Object.keys(STATE.forestAmbienceLayers).length > 0) {
+      resetForestAmbience();
+    }
+    return;
+  }
+  const order = FOREST_AMBIENT_CONFIG.order;
+  if (STATE.forestAmbienceStreak < order.length) {
+    STATE.forestAmbienceStreak++;
+    startForestAmbienceLayer(order[STATE.forestAmbienceStreak - 1]);
+  }
 }
 
 const _instrumentRangeCache = {};
@@ -6273,6 +6513,11 @@ function checkWaveComplete() {
     fillSpaceGalaxy();
     spawnCelestialBodies();
   }
+  // Forest's own reward, alongside the galaxy above: each completed wave
+  // on a forest streak layers in one more real ambient recording, always
+  // underneath this wave's own generated song rather than replacing it
+  // (see FOREST_AMBIENT_CONFIG).
+  updateForestAmbienceForWaveComplete();
 
   STATE.score += STATE.wave * 100;
   const earnedThisWave = checkAchievements(STATE.score - STATE.waveStartScore);
@@ -8428,6 +8673,10 @@ function handleLoadGame() {
   }
   closePauseMenuUI();
   STATE.paused = false;
+  // A save only stores wave + score, not how many forest-ambience layers
+  // had built up -- there's no correct streak to resume into, so start
+  // the reveal over rather than guess.
+  resetForestAmbience();
   startFadeToBlack(() => {
     STATE.score = save.score;
     startWave(save.wave);
@@ -8453,6 +8702,7 @@ function handleRestartCurrentLevel() {
 function handleRestartGame() {
   closePauseMenuUI();
   STATE.paused = false;
+  resetForestAmbience(); // a genuine fresh start, same reasoning as handleLoadGame above
   startFadeToBlack(() => {
     STATE.score = 0;
     startWave(1);
@@ -8523,6 +8773,7 @@ function exitToTitle() {
   STATE.achievementQueue = [];
   STATE.achievementToastActive = false;
   if (STATE.audioCtx) stopAllScheduledAudio(STATE.audioCtx.currentTime);
+  resetForestAmbience(); // nothing should keep playing over the title screen
 
   // Re-check for a save (e.g. one made via "Save Game" earlier this
   // session) so the title screen accurately offers to continue from it.
