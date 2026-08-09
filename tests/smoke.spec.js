@@ -6014,3 +6014,124 @@ test('the Beach at Night scene generates and draws without error, sharing the mo
   expect(errors).toEqual([]);
 });
 
+// ------------------------------------------------------------
+// Rotate mode's per-scene block schedule (see resolveSceneForWave/
+// sceneWaveCount) -- each scene holds for as many consecutive waves as it
+// has ambient sounds, so a player actually hears a scene's full set
+// before the background moves on, instead of it changing every wave.
+// ------------------------------------------------------------
+
+test('Rotate mode holds each scene for as many waves as it has ambient sounds, then cycles', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const scenes = await page.evaluate(() => {
+    STATE.sceneMode = 'rotate';
+    const result = [];
+    for (let wave = 1; wave <= 10; wave++) result.push(resolveSceneForWave(wave));
+    return result;
+  });
+
+  // space:1, forest:4 (matches SCENE_AMBIENT_CONFIG.forest.order.length),
+  // beach:4, then the cycle (length 9) wraps back to space at wave 10.
+  expect(scenes).toEqual([
+    'space',
+    'forest', 'forest', 'forest', 'forest',
+    'beach', 'beach', 'beach', 'beach',
+    'space',
+  ]);
+  expect(errors).toEqual([]);
+});
+
+test('a fixed scene mode is unaffected by the block schedule -- every wave resolves to that one scene', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const scenes = await page.evaluate(() => {
+    STATE.sceneMode = 'beach';
+    const result = [];
+    for (let wave = 1; wave <= 6; wave++) result.push(resolveSceneForWave(wave));
+    return result;
+  });
+
+  expect(scenes).toEqual(['beach', 'beach', 'beach', 'beach', 'beach', 'beach']);
+  expect(errors).toEqual([]);
+});
+
+test('completing a scene\'s ambient set under Rotate mode queues a celebration toast naming it and the next scene', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await injectSceneWaveSetup(page);
+  await page.goto('/index.html');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const result = await page.evaluate(async () => {
+    await STATE.ambientBuffersReadyPromise;
+    STATE.sceneMode = 'rotate';
+    // Suppress the unrelated wave-milestone/high-score achievements so
+    // only the scene-complete toast this test cares about ends up queued.
+    STATE.stats.bestWave = 999999;
+    STATE.stats.bestWaveScore = 999999999;
+
+    // Drive real startWave() calls across the whole forest block (waves
+    // 2-5 under the block schedule) so both resolveSceneForWave and the
+    // ambience streak advance exactly as they would in real play.
+    for (let wave = 2; wave <= 5; wave++) {
+      startWave(wave);
+      setUpCompletableSceneWave(STATE.scene, wave);
+      checkWaveComplete();
+      await new Promise(r => setTimeout(r, 30));
+    }
+
+    return {
+      sceneAtEnd: STATE.scene,
+      streakAtEnd: STATE.ambienceStreak,
+      toastVisible: document.getElementById('achievement-toast').classList.contains('visible'),
+      toastText: document.getElementById('achievement-label').textContent,
+    };
+  });
+
+  expect(result.sceneAtEnd).toBe('forest');
+  expect(result.streakAtEnd).toBe(4);
+  expect(result.toastVisible).toBe(true);
+  expect(result.toastText).toBe('Forest Complete! Beach Ahead');
+  expect(errors).toEqual([]);
+});
+
+test('completing a scene\'s ambient set under a FIXED scene mode does not queue a celebration toast (there is no next scene to announce)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await injectSceneWaveSetup(page);
+  await page.goto('/index.html');
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const result = await page.evaluate(async () => {
+    await STATE.ambientBuffersReadyPromise;
+    STATE.sceneMode = 'forest';
+    STATE.stats.bestWave = 999999;
+    STATE.stats.bestWaveScore = 999999999;
+
+    for (let wave = 1; wave <= 4; wave++) {
+      startWave(wave);
+      setUpCompletableSceneWave('forest', wave);
+      checkWaveComplete();
+      await new Promise(r => setTimeout(r, 30));
+    }
+
+    return {
+      streakAtEnd: STATE.ambienceStreak,
+      toastVisible: document.getElementById('achievement-toast').classList.contains('visible'),
+      queueLength: STATE.achievementQueue.length,
+    };
+  });
+
+  expect(result.streakAtEnd).toBe(4); // the set did complete...
+  expect(result.toastVisible).toBe(false); // ...but nothing announces it, since sceneMode isn't 'rotate'
+  expect(result.queueLength).toBe(0);
+  expect(errors).toEqual([]);
+});
+
