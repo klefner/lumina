@@ -3846,6 +3846,40 @@ test('the postcard photo is a centered crop of the board, not the whole canvas',
   expect(errors).toEqual([]);
 });
 
+// Player report, side-by-side screenshots (the postcard vs. an actual
+// phone screenshot of the same wave): the postcard's photo rendered
+// bright white where the real game -- confirmed dark in the phone
+// screenshot -- is black. Root cause: render() clears the real canvas to
+// fully TRANSPARENT every frame (ctx.clearRect, not a black fill); the
+// game only reads as black space because of <body>'s own CSS background
+// showing through those transparent pixels, not because the canvas has
+// any black pixels of its own. drawImage faithfully copies that
+// transparency, which let the postcard's white card bleed through.
+// Verifies a genuinely transparent patch of the real canvas resolves to
+// solid opaque black in the photo, not the card's own white/cream fill.
+test('the postcard photo renders transparent gameplay background as black, matching how the game actually looks', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const pixel = await page.evaluate(() => {
+    ctx.clearRect(0, 0, canvas.width, canvas.height); // exactly what render() itself does every frame
+    STATE.dots = [{ x: STATE.camera.centerX, y: STATE.camera.centerY, pairId: 0 }];
+
+    const pc = buildWavePostcard();
+    const { WIDTH, MARGIN, BORDER } = POSTCARD_CONFIG;
+    const cardX = (WIDTH - (WIDTH - MARGIN * 2)) / 2;
+    const cardH = BORDER + (WIDTH - MARGIN * 2 - BORDER * 2) + POSTCARD_CONFIG.BOTTOM_BORDER;
+    const cardY = (POSTCARD_CONFIG.HEIGHT - cardH) / 2;
+    // A corner of the photo, well clear of the single dot centered in it.
+    const [r, g, b, a] = pc.getContext('2d').getImageData(cardX + BORDER + 5, cardY + BORDER + 5, 1, 1).data;
+    return { r, g, b, a };
+  });
+
+  expect(pixel).toEqual({ r: 0, g: 0, b: 0, a: 255 });
+  expect(errors).toEqual([]);
+});
+
 // Player report, attached screenshot: "the screenshot is awful" -- on a
 // wide/late wave the camera zooms out to fit far more world than a
 // handful of dots need (see WIDE_WORLD_START_WAVE), so the OLD fixed

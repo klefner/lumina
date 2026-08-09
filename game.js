@@ -8572,7 +8572,22 @@ function buildWavePostcard() {
   // approximation of it), framed around the dots themselves rather than a
   // fixed slice of whatever the camera happens to be showing (see
   // computePostcardCropRect).
+  //
+  // `canvas` itself has no black fill -- render() clears it to fully
+  // TRANSPARENT (ctx.clearRect) every frame; the game only LOOKS like
+  // black space because <body>'s own CSS background is #000 showing
+  // through those transparent pixels (see style.css). drawImage copies
+  // that transparency faithfully, which used to let the white card
+  // underneath bleed through as "space" (player report, side-by-side
+  // screenshots: the postcard's photo was bright white where the real
+  // game -- confirmed via an actual phone screenshot of the same wave --
+  // is black). Filling the photo rect black FIRST makes the transparent
+  // regions of the real screenshot resolve to the same black the game
+  // actually renders against, without altering a single real pixel drawn
+  // by the game itself.
   const crop = computePostcardCropRect();
+  pctx.fillStyle = '#000000';
+  pctx.fillRect(cardX + BORDER, cardY + BORDER, photoSize, photoSize);
   pctx.drawImage(canvas, crop.x, crop.y, crop.size, crop.size, cardX + BORDER, cardY + BORDER, photoSize, photoSize);
 
   const stripCenterX = cardX + cardW / 2;
