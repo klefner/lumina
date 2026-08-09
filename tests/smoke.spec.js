@@ -3732,6 +3732,40 @@ test('the postcard prompt only appears when the completed wave actually earned a
   expect(errors).toEqual([]);
 });
 
+// Player report: a low-vision player (macular degeneration) said the
+// "Share This Wave" button was barely noticeable and hard to read at its
+// old styling (11px, normal weight, an 8%-opacity background, a 1px
+// 35%-opacity border) -- the exact combination of small, low-contrast,
+// and thin-bordered that's hardest to find with reduced central vision.
+// Verifies both share buttons (title-screen and postcard) now match
+// #start-game-button's bold, legible sizing rather than the old subtle
+// secondary-link styling, and stay that way.
+test('the Share buttons are sized and weighted for low-vision legibility, not styled as a subtle secondary link', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const styleOf = (id) => {
+      const el = document.getElementById(id);
+      const s = getComputedStyle(el);
+      return {
+        fontSize: parseFloat(s.fontSize),
+        fontWeight: Number(s.fontWeight),
+        borderWidth: parseFloat(s.borderWidth),
+      };
+    };
+    return { share: styleOf('share-game-button'), postcard: styleOf('postcard-button') };
+  });
+
+  for (const button of [result.share, result.postcard]) {
+    expect(button.fontSize).toBeGreaterThanOrEqual(16);
+    expect(button.fontWeight).toBeGreaterThanOrEqual(700);
+    expect(button.borderWidth).toBeGreaterThanOrEqual(2);
+  }
+  expect(errors).toEqual([]);
+});
+
 test('the Share row is title-screen only, and the postcard row never lingers into the next wave', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
