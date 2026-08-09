@@ -8423,10 +8423,12 @@ function hideMessage() {
 // attached) and fall back to something that still works everywhere else.
 // ------------------------------------------------------------
 
-// Cloudflare Pages is the canonical player-facing URL (see
-// SOURCE_OF_TRUTH.md) -- the one to actually hand someone, not the
-// personal-name github.io mirror.
-const CANONICAL_SHARE_URL = 'https://lumina-8f0.pages.dev/';
+// The itch.io storefront page is the promoted player-facing URL (see
+// SOURCE_OF_TRUTH.md) -- the one to actually hand someone. Cloudflare
+// Pages (lumina-8f0.pages.dev) and GitHub Pages remain the underlying
+// deploy hosts (same build, pushed everywhere in one job -- see
+// deploy-pages.yml), but they're not what gets shared with players.
+const CANONICAL_SHARE_URL = 'https://draclif.itch.io/lumina';
 
 function showShareToast(text) {
   const toast = document.getElementById('share-toast');

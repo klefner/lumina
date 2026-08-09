@@ -3677,7 +3677,7 @@ test('the title-screen Share button uses the Web Share API when available', asyn
 
   const calls = await page.evaluate(() => window.__shareCalls);
   expect(calls.length).toBe(1);
-  expect(calls[0].url).toBe('https://lumina-8f0.pages.dev/');
+  expect(calls[0].url).toBe('https://draclif.itch.io/lumina');
   expect(calls[0].title).toBe('Lumina');
   expect(errors).toEqual([]);
 });
@@ -3700,7 +3700,7 @@ test('the title-screen Share button falls back to a clipboard copy when Web Shar
   await page.waitForTimeout(100);
 
   const clipboardText = await page.evaluate(() => window.__clipboardText);
-  expect(clipboardText).toBe('https://lumina-8f0.pages.dev/');
+  expect(clipboardText).toBe('https://draclif.itch.io/lumina');
   await expect(page.locator('#share-toast')).toHaveText('Link Copied');
   expect(errors).toEqual([]);
 });
@@ -3924,7 +3924,7 @@ test('shareOrSaveWavePostcard shares a file with the play link included, and cop
   });
   expect(shareSupported.toastText).toBe('Shared!');
   expect(shareSupported.sharedFileType).toBe('image/png');
-  expect(shareSupported.sharedUrl).toBe('https://lumina-8f0.pages.dev/');
+  expect(shareSupported.sharedUrl).toBe('https://draclif.itch.io/lumina');
   expect(shareSupported.sharedTextHasLink).toBe(true);
 
   // No native share sheet (desktop, mainly) -- the download still has to
