@@ -781,6 +781,11 @@ test('the Flight Mode checkbox toggles STATE.flightMode and persists across a re
 // checks (color match, crossing, stranding) and the same score/connection
 // bookkeeping a classic drag uses, just reached by flight instead.
 test('steering the ship through two matching dots completes a real connection', async ({ page }) => {
+  // Two 15s poll ceilings below could in principle sum past the suite's
+  // default 30s per-test timeout even though real flight time is nowhere
+  // close to that -- they're safety ceilings for a genuine hang, not a
+  // tuned "just barely enough" duration like the fixed waits they replace.
+  test.setTimeout(45000);
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
@@ -791,10 +796,37 @@ test('steering the ship through two matching dots completes a real connection', 
   await page.waitForTimeout(500);
 
   const setup = await page.evaluate(() => {
-    const dots = window.__lumina.getDots();
+    // STATE.dots directly, not window.__lumina.getDots() -- that helper
+    // returns a mapped COPY of each dot for read-only inspection, so
+    // mutating positions through it (as this test used to) silently hit
+    // throwaway objects and left the real dots exactly where they were.
+    const dots = STATE.dots;
     const byPair = {};
     for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
     const [a, b] = Object.values(byPair).find(g => g.length >= 2);
+    // Fixed, well-separated positions for A and B (plus moving every other
+    // dot far outside the ship's reachable range) eliminate two real
+    // sources of flakiness found empirically with the original random
+    // layout:
+    //  1. Flying in a straight line, the ship can graze an unrelated dot on
+    //     the way from A to B -- attemptFlightConnection correctly treats a
+    //     differently-colored dot in the path as a rejection, same as
+    //     onInputEnd's classic-mode equivalent. Real, intentional flight
+    //     physics, not what this test is about.
+    //  2. A and B can randomly land close enough together that a single
+    //     flight toward A also flies straight through B before the ship
+    //     ever visibly "arrives" at A -- the connection completes
+    //     correctly, but the intermediate arrival-at-A checkpoint this test
+    //     checks for becomes a race against Playwright's poll granularity
+    //     and can be missed entirely, even though nothing actually broke.
+    // A sits a quarter of the world width from the ship's center spawn, B
+    // a half-world further still, so the ship has real room to decelerate
+    // near A (see updateShip's arrival steering) before being redirected.
+    a.x = STATE.world.w * 0.25; a.y = STATE.world.h * 0.5;
+    b.x = STATE.world.w * 0.75; b.y = STATE.world.h * 0.5;
+    for (const d of dots) {
+      if (d.id !== a.id && d.id !== b.id) { d.x = STATE.world.w * 1000; d.y = STATE.world.h * 1000; }
+    }
     return {
       aId: a.id, bId: b.id, ax: a.x, ay: a.y, bx: b.x, by: b.y,
       shipExists: !!STATE.ship,
@@ -802,11 +834,20 @@ test('steering the ship through two matching dots completes a real connection', 
   });
   expect(setup.shipExists).toBe(true);
 
-  // Steer toward dot A and give the ship real time to fly there.
+  // Steer toward dot A and give the ship real time to fly there. Polls for
+  // the actual arrival instead of a fixed wall-clock wait -- dot positions
+  // are randomly generated per run, so flight time to reach one genuinely
+  // varies run to run; a fixed timeout long enough for the common case
+  // still occasionally lost the race against a farther-apart layout (CI
+  // flake, reproduced locally: 3/8 failures even at a generous 4000ms).
   await page.evaluate(({ ax, ay }) => {
     onInputStart({ preventDefault() {}, clientX: ax, clientY: ay });
   }, setup);
-  await page.waitForTimeout(4000);
+  await page.waitForFunction(
+    (aId) => STATE.activeDot && STATE.activeDot.id === aId,
+    setup.aId,
+    { timeout: 15000 },
+  );
 
   const afterA = await page.evaluate(({ aId }) => ({
     isDrawing: STATE.isDrawing,
@@ -816,11 +857,12 @@ test('steering the ship through two matching dots completes a real connection', 
   expect(afterA.isDrawing).toBe(true);
   expect(afterA.reachedA).toBe(true);
 
-  // Now steer toward its match and let momentum carry it the rest of the way.
+  // Now steer toward its match and let momentum carry it the rest of the
+  // way -- same poll-for-arrival approach as above.
   await page.evaluate(({ bx, by }) => {
     onInputMove({ preventDefault() {}, clientX: bx, clientY: by });
   }, setup);
-  await page.waitForTimeout(4000);
+  await page.waitForFunction(() => STATE.connections.length > 0, null, { timeout: 15000 });
 
   const afterB = await page.evaluate(({ aId, bId }) => ({
     connection: STATE.connections[0],
