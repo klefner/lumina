@@ -311,6 +311,32 @@ function saveCockpitModeSetting(enabled) {
   try { localStorage.setItem(COCKPIT_MODE_KEY, enabled ? 'true' : 'false'); } catch (e) { /* best-effort only */ }
 }
 
+// Scene -- which background plays behind the board (see SECTION 7C's
+// Space starfield/celestial bodies and SECTION 7E's Night Forest). Either
+// a fixed scene, or 'rotate' to cycle through every entry in SCENE_LIST
+// a wave at a time (see resolveSceneForWave), so two players sitting side
+// by side comparing scenes never need to touch the dropdown mid-session.
+// Defaults to 'rotate' (unlike flight/cockpit mode's off-by-default) since
+// picking a scene doesn't change how you play -- an unconfigured player
+// should just see everything.
+const SCENE_LIST = ['space', 'forest'];
+const SCENE_KEY = 'lumina_scene_v1';
+function loadSceneSetting() {
+  try {
+    const saved = localStorage.getItem(SCENE_KEY);
+    return (saved === 'rotate' || SCENE_LIST.includes(saved)) ? saved : 'rotate';
+  } catch (e) {
+    return 'rotate';
+  }
+}
+function saveSceneSetting(mode) {
+  try { localStorage.setItem(SCENE_KEY, mode); } catch (e) { /* best-effort only */ }
+}
+function resolveSceneForWave(waveNumber) {
+  if (STATE.sceneMode === 'rotate') return SCENE_LIST[(waveNumber - 1) % SCENE_LIST.length];
+  return SCENE_LIST.includes(STATE.sceneMode) ? STATE.sceneMode : 'space';
+}
+
 // ------------------------------------------------------------
 // COCKPIT MODE
 //
@@ -2254,6 +2280,7 @@ function setupTitleLoadListeners() {
       }
       ensureThreeLoaded(); // fire-and-forget -- kicked off now so it's very likely ready by "Start Game"
     }
+    refreshSceneSelector(); // Cockpit Mode disables the picker -- see its own comment
   });
 }
 
@@ -2267,6 +2294,25 @@ function setupDifficultySelectorListeners() {
       refreshDifficultyButtons();
     });
   }
+}
+
+function refreshSceneSelector() {
+  const select = document.getElementById('scene-selector');
+  select.value = STATE.sceneMode;
+  // Cockpit Mode renders its own Three.js scene (see render()'s cockpitMode
+  // branch and startWave's early return for it) and never reads
+  // STATE.scene -- a visible, enabled picker here would promise a setting
+  // that silently does nothing all session. Disable it instead of hiding
+  // it so the reason ("not available right now") stays discoverable.
+  select.disabled = STATE.cockpitMode;
+  select.title = STATE.cockpitMode ? "Not available in Cockpit Mode — its 3D view doesn't use this" : '';
+}
+
+function setupSceneSelectorListeners() {
+  document.getElementById('scene-selector').addEventListener('change', (e) => {
+    STATE.sceneMode = e.target.value;
+    saveSceneSetting(STATE.sceneMode);
+  });
 }
 
 // ============================================================
@@ -2363,6 +2409,13 @@ const STATE = {
   spaceObjects: [],    // Drifting asteroids / comets / satellites
   spaceSpawnTimer: 0,
   celestialBodies: [], // 0-2 large planets/moons/a star, spawned once per wave-complete reveal
+
+  sceneMode: 'rotate', // persisted (see SCENE_KEY) -- picked on the title screen: a fixed scene,
+                        // or 'rotate' to cycle through SCENE_LIST a wave at a time
+  scene: 'space',       // this wave's actual resolved scene (see resolveSceneForWave/startWave) --
+                         // what render() actually draws, independent of sceneMode
+  forestScene: null,    // { trees, fireflies, moonXFrac, ... } for the current wave when
+                         // scene === 'forest' (see generateForestScene); null otherwise
 
   breakSparks: [],     // Short-lived particle bursts where a rotating barrier snaps a connection
 
@@ -6218,10 +6271,16 @@ function checkWaveComplete() {
   showMessage('WAVE COMPLETE', 'tap or click to advance');
   // The rest of the galaxy reveals itself as a reward for finishing the
   // wave — only the sparse stars scattered around each connected dot are
-  // visible while still playing (see spawnStarsAroundDots).
+  // visible while still playing (see spawnStarsAroundDots). Stars still
+  // apply to a Night Forest wave's sky (drawForestScene reuses drawStars
+  // wholesale), but drifting asteroids/comets/planets are Space-only —
+  // nothing in render() would ever draw them behind the trees, so don't
+  // even bother spawning them.
   fillBaseStarfield();
-  fillSpaceGalaxy();
-  spawnCelestialBodies();
+  if (STATE.scene !== 'forest') {
+    fillSpaceGalaxy();
+    spawnCelestialBodies();
+  }
 
   STATE.score += STATE.wave * 100;
   const earnedThisWave = checkAchievements(STATE.score - STATE.waveStartScore);
@@ -6368,6 +6427,12 @@ function startWave(waveNumber) {
   // restart, load, as well as the normal advance) makes an unconnected
   // board look like it's already got history it doesn't have.
   STATE.stars = [];
+  // Which scene this wave actually plays (fixed choice, or the next stop
+  // in the rotation -- see resolveSceneForWave/SCENE_LIST). A forest
+  // scene's trees/moon/fireflies are rerolled fresh every wave, same
+  // spirit as a new wave's own starfield/celestial-body reveal.
+  STATE.scene = resolveSceneForWave(waveNumber);
+  STATE.forestScene = STATE.scene === 'forest' ? generateForestScene() : null;
   STATE.waveStartScore = STATE.score;
 
   showTutorialHint(waveNumber);
@@ -7480,6 +7545,181 @@ function drawStars() {
   }
 }
 
+// ============================================================
+// SECTION 7E: NIGHT FOREST BACKGROUND
+// ============================================================
+// Space's alternate scene (see SCENE_LIST/resolveSceneForWave): a still,
+// dark tree line under a moonlit sky, built to read as calm rather than
+// eventful — no drifting asteroids/comets, no wave-complete-only reveal,
+// just a steady scene with faint tree sway and drifting fireflies. Reuses
+// the plain Space starfield (STATE.stars/drawStars) for the sky rather
+// than inventing a second star system, so the connection-reward sparkle
+// (spawnStarsAroundDots) reads identically regardless of scene.
+//
+// Trees/fireflies/moon are stored as fractions of canvas.width/height,
+// not absolute pixels, precisely so a mid-wave resize needs no top-up
+// pass the way the starfield does — draw time just multiplies by
+// whatever the canvas size is right now.
+const FOREST_CONFIG = {
+  SKY_TOP: '#0c1024',
+  SKY_MID: '#232149',
+  SKY_HORIZON: '#4a3a5c',
+  TREE_COLOR: '#0a0812',
+  GROUND_COLOR: '#07060d',
+};
+
+// Lazily-created, reused offscreen canvas the moon composites onto before
+// being drawn into the main scene -- see drawForestScene's own comment on
+// why the crescent's destination-out erase can't run directly on the main
+// canvas. Square and sized to the moon's glow diameter; resized (rare --
+// only actually changes with moonRadiusFrac's small random range or a
+// canvas resize) rather than recreated every call.
+let forestMoonLayer = null;
+function getForestMoonLayer(size) {
+  if (!forestMoonLayer) {
+    forestMoonLayer = document.createElement('canvas');
+    forestMoonLayer.ctx = forestMoonLayer.getContext('2d');
+  }
+  if (forestMoonLayer.width !== size) {
+    forestMoonLayer.width = size;
+    forestMoonLayer.height = size;
+  }
+  return forestMoonLayer;
+}
+
+function generateForestScene() {
+  const treeCount = 7 + Math.floor(Math.random() * 5);
+  const trees = [];
+  for (let i = 0; i < treeCount; i++) {
+    trees.push({
+      xFrac: Math.random(),
+      heightFrac: 0.26 + Math.random() * 0.22,
+      widthFrac: 0.09 + Math.random() * 0.08,
+      swayPhase: Math.random() * Math.PI * 2,
+      swaySpeed: 0.0006 + Math.random() * 0.0006,
+      swayAmount: 3 + Math.random() * 5,
+    });
+  }
+
+  const fireflyCount = 10 + Math.floor(Math.random() * 8);
+  const fireflies = [];
+  for (let i = 0; i < fireflyCount; i++) {
+    fireflies.push({
+      xFrac: Math.random(),
+      yFrac: 0.55 + Math.random() * 0.4,
+      phase: Math.random() * Math.PI * 2,
+      driftXFrac: 0.015 + Math.random() * 0.015,
+      driftYFrac: 0.01 + Math.random() * 0.01,
+      driftSpeed: 0.0004 + Math.random() * 0.0004,
+      pulseSpeed: 0.0025 + Math.random() * 0.0025,
+    });
+  }
+
+  return {
+    trees,
+    fireflies,
+    moonXFrac: 0.15 + Math.random() * 0.7,
+    moonYFrac: 0.08 + Math.random() * 0.14,
+    moonRadiusFrac: 0.045 + Math.random() * 0.02,
+    phase: 0, // frame accumulator driving sway/drift/pulse below -- see updateForestScene
+  };
+}
+
+function updateForestScene() {
+  if (STATE.scene !== 'forest' || !STATE.forestScene) return;
+  STATE.forestScene.phase += 1;
+}
+
+function drawForestScene() {
+  const scene = STATE.forestScene;
+  if (!scene) return;
+  const w = canvas.width, h = canvas.height, t = scene.phase;
+
+  const sky = ctx.createLinearGradient(0, 0, 0, h);
+  sky.addColorStop(0, FOREST_CONFIG.SKY_TOP);
+  sky.addColorStop(0.55, FOREST_CONFIG.SKY_MID);
+  sky.addColorStop(1, FOREST_CONFIG.SKY_HORIZON);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+
+  // Moon — a flat disc with a crescent bite punched out via
+  // destination-out. That erase has to happen on its own isolated layer,
+  // not directly on the main canvas: destination-out removes whatever is
+  // already painted underneath it, and by this point that's the sky
+  // gradient this function just drew. Erasing straight into the main
+  // canvas would punch a genuinely transparent hole through the sky
+  // itself (visible as the page's own background, and as a black hole in
+  // any screenshot/postcard compositing) instead of just carving the
+  // moon. Composite the glow+disc+bite on a small offscreen canvas first,
+  // then drawImage the result onto the main canvas — normal source-over
+  // alpha blending there lets the sky already painted show through the
+  // bite correctly, same as compositing any other sprite.
+  const mx = scene.moonXFrac * w, my = scene.moonYFrac * h;
+  const mr = scene.moonRadiusFrac * Math.min(w, h);
+  const glowR = mr * 3.2;
+  const moonLayer = getForestMoonLayer(Math.ceil(glowR * 2));
+  const mctx = moonLayer.ctx;
+  const half = moonLayer.width / 2;
+  mctx.clearRect(0, 0, moonLayer.width, moonLayer.height);
+  mctx.save();
+  mctx.translate(half, half);
+  const glow = mctx.createRadialGradient(0, 0, 0, 0, 0, glowR);
+  glow.addColorStop(0, 'rgba(255,250,230,0.32)');
+  glow.addColorStop(1, 'rgba(255,250,230,0)');
+  mctx.fillStyle = glow;
+  mctx.beginPath();
+  mctx.arc(0, 0, glowR, 0, Math.PI * 2);
+  mctx.fill();
+
+  mctx.beginPath();
+  mctx.arc(0, 0, mr, 0, Math.PI * 2);
+  mctx.fillStyle = '#fdf6e3';
+  mctx.fill();
+  mctx.globalCompositeOperation = 'destination-out';
+  mctx.beginPath();
+  mctx.arc(mr * 0.45, -mr * 0.2, mr * 0.95, 0, Math.PI * 2);
+  mctx.fillStyle = 'rgba(0,0,0,0.88)';
+  mctx.fill();
+  mctx.restore();
+  ctx.drawImage(moonLayer, mx - half, my - half);
+
+  drawStars(); // same twinkling starfield Space uses -- see this section's header comment
+
+  for (const f of scene.fireflies) {
+    const drift = t * f.driftSpeed + f.phase;
+    const fx = (f.xFrac + Math.sin(drift) * f.driftXFrac) * w;
+    const fy = (f.yFrac + Math.cos(drift * 0.8) * f.driftYFrac) * h;
+    const pulse = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * f.pulseSpeed + f.phase * 2));
+    const r = 6;
+    const g = ctx.createRadialGradient(fx, fy, 0, fx, fy, r);
+    g.addColorStop(0, `rgba(255, 224, 130, ${(0.8 * pulse).toFixed(3)})`);
+    g.addColorStop(1, 'rgba(255, 224, 130, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(fx, fy, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  for (const tr of scene.trees) {
+    const baseX = tr.xFrac * w;
+    const treeH = tr.heightFrac * h;
+    const treeW = tr.widthFrac * w;
+    const baseY = h;
+    const topY = baseY - treeH;
+    const sway = Math.sin(t * tr.swaySpeed + tr.swayPhase) * tr.swayAmount;
+    ctx.beginPath();
+    ctx.moveTo(baseX - treeW / 2, baseY);
+    ctx.quadraticCurveTo(baseX - treeW * 0.3 + sway * 0.5, baseY - treeH * 0.55, baseX + sway, topY);
+    ctx.quadraticCurveTo(baseX + treeW * 0.3 + sway * 0.5, baseY - treeH * 0.55, baseX + treeW / 2, baseY);
+    ctx.closePath();
+    ctx.fillStyle = FOREST_CONFIG.TREE_COLOR;
+    ctx.fill();
+  }
+
+  ctx.fillStyle = FOREST_CONFIG.GROUND_COLOR;
+  ctx.fillRect(0, h - 6, w, 6);
+}
+
 // startX lets the wave-complete instant fill drop objects already on-screen;
 // the normal trickle-spawn omits it so objects drift in from off-screen.
 function spawnSpaceObject(startX) {
@@ -8388,6 +8628,7 @@ function showMessage(title, subtitle, opts) {
   const isTitleScreen = !!(opts && opts.isTitleScreen);
   document.getElementById('sound-hint').classList.toggle('visible', isTitleScreen);
   document.getElementById('difficulty-selector').classList.toggle('visible', isTitleScreen);
+  document.getElementById('scene-row').classList.toggle('visible', isTitleScreen);
   document.getElementById('flight-mode-row').classList.toggle('visible', isTitleScreen);
   document.getElementById('cockpit-mode-row').classList.toggle('visible', isTitleScreen);
   document.getElementById('title-load-row').classList.toggle('visible', isTitleScreen);
@@ -8396,6 +8637,7 @@ function showMessage(title, subtitle, opts) {
   if (isTitleScreen) {
     refreshDifficultyButtons();
     refreshTitleLoadRow();
+    refreshSceneSelector();
   }
 }
 
@@ -8407,6 +8649,7 @@ function hideMessage() {
   // pointer-events) over whatever dots happen to render underneath once
   // play starts.
   document.getElementById('difficulty-selector').classList.remove('visible');
+  document.getElementById('scene-row').classList.remove('visible');
   document.getElementById('flight-mode-row').classList.remove('visible');
   document.getElementById('cockpit-mode-row').classList.remove('visible');
   document.getElementById('title-load-row').classList.remove('visible');
@@ -9015,6 +9258,7 @@ function update() {
   clampCameraCenter(); // re-clamp every frame, since the viewport's own size keeps changing while scale is still animating toward targetScale
 
   updateStars();
+  updateForestScene();
   // Asteroids/satellites/comets only drift through once the whole wave's
   // line-galaxy is complete — they'd be a distraction while still connecting.
   if (STATE.phase === 'WAVE_COMPLETE') { updateSpaceObjects(); updateCelestialBodies(); }
@@ -9066,8 +9310,12 @@ function render() {
 
   // Background stays in screen space regardless of camera zoom, like a
   // fixed backdrop behind the (possibly zoomed-out) board.
-  drawStars();
-  if (STATE.phase === 'WAVE_COMPLETE') { drawCelestialBodies(); drawSpaceObjects(); }
+  if (STATE.scene === 'forest') {
+    drawForestScene();
+  } else {
+    drawStars();
+    if (STATE.phase === 'WAVE_COMPLETE') { drawCelestialBodies(); drawSpaceObjects(); }
+  }
 
   ctx.save();
   applyCameraTransform();
@@ -9189,10 +9437,12 @@ function init() {
   STATE.autoLoadEnabled = loadAutoLoadSetting();
   STATE.flightMode = loadFlightModeSetting();
   STATE.cockpitMode = loadCockpitModeSetting();
+  STATE.sceneMode = loadSceneSetting();
   if (STATE.cockpitMode) ensureThreeLoaded(); // preload -- the title screen may already be showing it as checked
   applyDifficulty(STATE.difficulty);
   setupDifficultySelectorListeners();
   setupTitleLoadListeners();
+  setupSceneSelectorListeners();
   setupShareListeners();
   showMessage('LUMINA', titleSubtitleText(), { isTitleScreen: true });
   updateWaveDisplay();
