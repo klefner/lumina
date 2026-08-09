@@ -13,6 +13,18 @@ function trackErrors(page) {
   page.on('console', (msg) => {
     if (msg.type() === 'error') errors.push(msg.text());
   });
+  // The pause menu's fact rotation makes a real, best-effort fetch to
+  // Wikipedia (see fetchOnlineFacts) -- already handled gracefully at the
+  // app level (a failure just leaves STATE.onlineFacts empty), but a live
+  // external dependency has no place in a deterministic suite: Chromium
+  // logs a console error for a failed/404'd request regardless of the
+  // app's own .catch(), and CI's network egress hitting the real API can
+  // flake independently of anything this suite is actually testing.
+  // Fulfilling with a synthetic empty response keeps every test
+  // deterministic without touching the feature itself.
+  page.route('https://en.wikipedia.org/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
+  );
   return errors;
 }
 
@@ -1136,21 +1148,26 @@ test('unconnected dots render visibly dimmer than fully-connected dots', async (
   expect(errors).toEqual([]);
 });
 
-test('the HINT button appears once playing, flashes unconnected dots white at their peak, and returns to the dimmed idle state once it ends', async ({ page }) => {
+test('the Hint menu item appears once playing, flashes unconnected dots white at their peak, and returns to the dimmed idle state once it ends', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
 
-  await expect(page.locator('#hint-button')).toBeHidden();
-  await expect(page.locator('#hint-button')).toHaveText('HINT');
+  await expect(page.locator('#pause-hint')).toBeHidden();
+  await expect(page.locator('#pause-hint')).toHaveText('Hint');
   // HINT is free/functional in Relaxed and Normal, not Intense (see the
   // difficulty-gating tests below) -- select Relaxed explicitly so this
   // test covers the actual pulse/sound mechanics regardless of default.
   await page.click('.difficulty-btn[data-difficulty="relaxed"]');
   await page.mouse.click(200, 700);
   await page.waitForTimeout(1000);
-  await expect(page.locator('#hint-button')).toBeVisible();
+  // The item only actually renders once the menu that holds it is open
+  // (see #pause-overlay) -- open it to check, then close it again before
+  // exercising the pulse mechanics directly below.
+  await page.click('#pause-button');
+  await expect(page.locator('#pause-hint')).toBeVisible();
+  await page.click('#pause-resume');
 
   const config = await page.evaluate(() => {
     for (const d of STATE.dots) d.connected = false; // clean signal, regardless of what this wave generated
@@ -1204,7 +1221,9 @@ test('HINT is free and functional in both Relaxed and Normal', async ({ page }) 
   await page.click('.difficulty-btn[data-difficulty="normal"]');
   await page.mouse.click(200, 700);
   await page.waitForTimeout(1000);
-  await expect(page.locator('#hint-button')).toBeVisible();
+  await page.click('#pause-button');
+  await expect(page.locator('#pause-hint')).toBeVisible();
+  await page.click('#pause-resume');
 
   const fired = await page.evaluate(() => {
     for (const d of STATE.dots) d.connected = false;
@@ -1223,7 +1242,9 @@ test('HINT stays visible in Intense but shows an explanatory toast instead of fi
   await page.click('.difficulty-btn[data-difficulty="intense"]');
   await page.mouse.click(200, 700);
   await page.waitForTimeout(1000);
-  await expect(page.locator('#hint-button')).toBeVisible();
+  await page.click('#pause-button');
+  await expect(page.locator('#pause-hint')).toBeVisible();
+  await page.click('#pause-resume');
 
   const result = await page.evaluate(() => {
     triggerHintPulse();
@@ -1245,13 +1266,13 @@ test('HINT stays visible in Intense but shows an explanatory toast instead of fi
   expect(errors).toEqual([]);
 });
 
-// Regression guard for a Codex finding (#39): the toast used a fixed CSS
-// top offset sized for a one-line button row, but that row wraps to two
-// lines on narrow viewports (see its own flex-wrap rule) -- on Intense,
-// where only HINT/HELP/PAUSE show (no ERASE), it can still wrap around
-// ~280px CSS width. A hardcoded offset would land the toast on top of
-// the wrapped second row instead of below it.
-test('the hint toast appears below the button row even when that row has wrapped to two lines', async ({ page }) => {
+// Regression guard for a Codex finding (#39), still meaningful post-menu-
+// consolidation even though the row itself can no longer wrap to two
+// lines (it holds exactly one button at a time now -- see #top-buttons-row):
+// the toast's position is still computed from the row's own measured
+// bottom, not a hardcoded offset, so it still can't be assumed correct
+// without checking on an actually narrow viewport.
+test('the hint toast appears below the top button row on a narrow viewport', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.setViewportSize({ width: 280, height: 700 });
@@ -1265,9 +1286,8 @@ test('the hint toast appears below the button row even when that row has wrapped
     const rowRect = document.getElementById('top-buttons-row').getBoundingClientRect();
     triggerHintPulse();
     const toastRect = document.getElementById('hint-toast').getBoundingClientRect();
-    return { rowBottom: rowRect.bottom, toastTop: toastRect.top, rowWrapped: rowRect.height > 30 };
+    return { rowBottom: rowRect.bottom, toastTop: toastRect.top };
   });
-  expect(layout.rowWrapped).toBe(true); // confirms this test actually exercises the wrapped case
   expect(layout.toastTop).toBeGreaterThanOrEqual(layout.rowBottom);
   expect(errors).toEqual([]);
 });
@@ -1293,19 +1313,20 @@ test('triggering a hint pulse in Relaxed plays a short confirmation chime', asyn
   expect(errors).toEqual([]);
 });
 
-// Regression guard for a Codex finding (#38): spelling out all four
-// controls as words (ERASE/HINT/PAUSE/HELP) widens the button row enough
-// that, on a narrow viewport with every control visible at once (Relaxed
-// difficulty, mid-wave), a fixed nowrap row overflowed past the viewport
-// edge -- silently clipped rather than erroring, since `body` has
-// overflow:hidden. #top-buttons-row now wraps instead of clipping.
-test('the top button row wraps instead of clipping on a narrow viewport with all four controls visible', async ({ page }) => {
+// Regression guard for a Codex finding (#38), narrower in scope now that
+// the row holds just the single MENU button during play (ERASE/HINT/HELP
+// moved into its panel -- see #pause-panel) rather than four spelled-out
+// words that used to be wide enough to overflow a narrow viewport on
+// their own. Still worth guarding: `body` has overflow:hidden, so any
+// future addition to this row that overflows would silently clip rather
+// than error.
+test('the top button row never overflows the viewport on a narrow screen', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.setViewportSize({ width: 280, height: 700 });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.click('.difficulty-btn[data-difficulty="relaxed"]'); // only difficulty where ERASE is also visible
+  await page.click('.difficulty-btn[data-difficulty="relaxed"]');
   await page.mouse.click(140, 600);
   await page.waitForTimeout(1000);
 
@@ -1322,7 +1343,7 @@ test('the top button row wraps instead of clipping on a narrow viewport with all
   expect(errors).toEqual([]);
 });
 
-test('the help button opens a how-to-play overlay on both the title screen and mid-game, closable via the X or the backdrop', async ({ page }) => {
+test('the help button opens a how-to-play overlay on the title screen, and the in-menu item does the same mid-game, both closable via the X or the backdrop', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForTimeout(300);
@@ -1335,16 +1356,20 @@ test('the help button opens a how-to-play overlay on both the title screen and m
   await page.click('#help-close');
   await expect(page.locator('#help-overlay')).not.toHaveClass(/visible/);
 
-  // Still reachable once a wave is actually in progress.
+  // Mid-game, the standalone button is hidden -- How to Play moves inside
+  // the single MENU button's panel instead (see #pause-help).
   await page.mouse.click(200, 700);
   await page.waitForTimeout(500);
-  await expect(page.locator('#help-button')).toBeVisible();
-  await page.click('#help-button');
+  await expect(page.locator('#help-button')).toBeHidden();
+  await page.click('#pause-button');
+  await page.click('#pause-help');
   await expect(page.locator('#help-overlay')).toHaveClass(/visible/);
 
-  // Clicking the backdrop itself (not the panel) also closes it.
+  // Clicking the backdrop itself (not the panel) also closes it, and
+  // resumes the game it paused to get here (see closeHelp).
   await page.click('#help-overlay', { position: { x: 5, y: 5 } });
   await expect(page.locator('#help-overlay')).not.toHaveClass(/visible/);
+  expect(await page.evaluate(() => STATE.paused)).toBe(false);
   expect(errors).toEqual([]);
 });
 
@@ -3089,7 +3114,7 @@ test('connection praise respects a cooldown between popups, even for back-to-bac
   expect(errors).toEqual([]);
 });
 
-test('the ERASE button only appears while playing on Relaxed difficulty', async ({ page }) => {
+test('the Erase menu item only appears while playing on Relaxed difficulty', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
@@ -3098,19 +3123,20 @@ test('the ERASE button only appears while playing on Relaxed difficulty', async 
   await page.waitForTimeout(300);
   await page.mouse.click(200, 700);
   await page.waitForTimeout(500);
-  await expect(page.locator('#erase-button')).toBeHidden();
+  await expect(page.locator('#pause-erase')).toBeHidden();
 
   await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
   await page.reload();
   await page.waitForTimeout(300);
   await page.mouse.click(200, 700);
   await page.waitForTimeout(500);
-  await expect(page.locator('#erase-button')).toBeVisible();
+  await page.click('#pause-button'); // the item only actually renders with its menu open
+  await expect(page.locator('#pause-erase')).toBeVisible();
 
   expect(errors).toEqual([]);
 });
 
-test('in Relaxed difficulty, toggling ERASE then tapping a drawn line erases it and stays in erase mode for further taps', async ({ page }) => {
+test('in Relaxed difficulty, picking Erase from the menu then tapping a drawn line erases it and stays in erase mode for further taps', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
@@ -3138,8 +3164,13 @@ test('in Relaxed difficulty, toggling ERASE then tapping a drawn line erases it 
   expect(before.connections).toBe(1);
   expect(before.anyConnected).toBe(true);
 
-  await page.locator('#erase-button').click();
-  await expect(page.locator('#erase-button')).toHaveClass(/active/);
+  // Picking Erase closes the menu itself and hands control straight back
+  // to the board -- no separate "close the menu" step needed before the
+  // tap-a-line-to-erase gesture below (see #pause-erase's click handler).
+  await page.click('#pause-button');
+  await page.click('#pause-erase');
+  await expect(page.locator('#pause-overlay')).not.toHaveClass(/visible/);
+  expect(await page.evaluate(() => STATE.eraseMode)).toBe(true);
 
   // Tap the midpoint of the line just drawn -- CONFIG.ERASE_HIT_RADIUS
   // (30px) is generous enough that this straight-ish drag lands well
@@ -3156,8 +3187,13 @@ test('in Relaxed difficulty, toggling ERASE then tapping a drawn line erases it 
   expect(after.anyConnected).toBe(false);
   expect(after.eraseModeStillOn).toBe(true); // multi-erase: stays on until explicitly toggled off
 
-  await page.locator('#erase-button').click();
-  await expect(page.locator('#erase-button')).not.toHaveClass(/active/);
+  // Reopening the menu and picking Erase again turns it back off -- and
+  // must survive the ordinary resumeGame() safety net that otherwise
+  // always clears erase mode on the way out (see closePauseMenuUI).
+  await page.click('#pause-button');
+  await expect(page.locator('#pause-erase')).toHaveClass(/active/);
+  await page.click('#pause-erase');
+  expect(await page.evaluate(() => STATE.eraseMode)).toBe(false);
 
   expect(errors).toEqual([]);
 });
@@ -3422,7 +3458,7 @@ test('the ERASE tutorial message only shows in Relaxed difficulty, and is skippe
   expect(result.onNormal.tutorialWave).toBeNull();
   expect(result.onNormal.dismissWhen).toBeNull();
   expect(result.onRelaxed.tutorialWave).toBe(result.eraseWave);
-  expect(result.onRelaxed.text).toMatch(/ERASE/);
+  expect(result.onRelaxed.text).toMatch(/Erase/);
   expect(errors).toEqual([]);
 });
 
@@ -3458,7 +3494,8 @@ test('erasing a connection reverses the score it awarded, so redrawing the same 
   const scoreAfterFirstDraw = await page.evaluate(() => window.__lumina.getState().score);
   expect(scoreAfterFirstDraw).toBeGreaterThan(scoreBeforeFirstDraw);
 
-  await page.locator('#erase-button').click();
+  await page.click('#pause-button');
+  await page.click('#pause-erase');
   await page.mouse.click((a.x + b.x) / 2, (a.y + b.y) / 2);
   await page.waitForTimeout(200);
   const scoreAfterErase = await page.evaluate(() => window.__lumina.getState().score);
@@ -3466,7 +3503,8 @@ test('erasing a connection reverses the score it awarded, so redrawing the same 
 
   // Erase mode stays on after one erase (multi-erase) -- toggle it back off
   // so the next drag draws a line instead of hunting for another to erase.
-  await page.locator('#erase-button').click();
+  await page.click('#pause-button');
+  await page.click('#pause-erase');
 
   // Redrawing the identical line a second time must award exactly the same
   // points again, not stack on top of a stale earlier award.
@@ -3477,13 +3515,13 @@ test('erasing a connection reverses the score it awarded, so redrawing the same 
   expect(errors).toEqual([]);
 });
 
-// Flagged by Codex review on #34: the button was visible any time the
+// Flagged by Codex review on #34: the item was visible any time the
 // phase wasn't TITLE, including WAVE_COMPLETE, where canvas taps advance
-// the wave before ever reaching the erase-mode branch -- a lit button that
+// the wave before ever reaching the erase-mode branch -- a lit item that
 // can't do anything. Also confirms startWave's reset is a real safety net
 // (clears the DOM class itself), not just relying on toggleEraseMode's own
 // click handler to keep the two in sync.
-test('the ERASE button hides during WAVE_COMPLETE (even in Relaxed) and its active class can never survive into the next wave', async ({ page }) => {
+test('the Erase menu item hides during WAVE_COMPLETE (even in Relaxed) and its active class can never survive into the next wave', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
@@ -3492,18 +3530,18 @@ test('the ERASE button hides during WAVE_COMPLETE (even in Relaxed) and its acti
     STATE.difficulty = 'relaxed';
     STATE.phase = 'PLAYING';
     updateWaveDisplay();
-    const visibleWhilePlaying = document.getElementById('erase-button').classList.contains('visible');
+    const visibleWhilePlaying = document.getElementById('pause-erase').classList.contains('visible');
 
     STATE.phase = 'WAVE_COMPLETE';
     updateWaveDisplay();
-    const visibleAtWaveComplete = document.getElementById('erase-button').classList.contains('visible');
+    const visibleAtWaveComplete = document.getElementById('pause-erase').classList.contains('visible');
 
-    // Simulate the button having been left lit somehow going into a new
+    // Simulate the item having been left lit somehow going into a new
     // wave -- startWave's own reset must independently clear it.
-    document.getElementById('erase-button').classList.add('active');
+    document.getElementById('pause-erase').classList.add('active');
     STATE.eraseMode = true;
     startWave(1);
-    const activeAfterNewWave = document.getElementById('erase-button').classList.contains('active');
+    const activeAfterNewWave = document.getElementById('pause-erase').classList.contains('active');
     const eraseModeAfterNewWave = STATE.eraseMode;
 
     return { visibleWhilePlaying, visibleAtWaveComplete, activeAfterNewWave, eraseModeAfterNewWave };
@@ -3856,19 +3894,36 @@ test('the title-screen Start Game button starts the game the same way a plain ta
   expect(errors).toEqual([]);
 });
 
-test('the top button row reads ERASE, HINT, HELP, PAUSE left to right', async ({ page }) => {
+test('mid-game, the top button row holds only the single MENU button, and its panel lists Hint/Erase/Help right after Resume', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.click('.difficulty-btn[data-difficulty="relaxed"]'); // only difficulty where ERASE also shows
+  await page.click('.difficulty-btn[data-difficulty="relaxed"]'); // only difficulty where the Erase item also shows
   await page.mouse.click(200, 700);
   await page.waitForTimeout(1000);
 
-  const order = await page.evaluate(() =>
-    [...document.getElementById('top-buttons-row').children].map(el => el.id)
+  // Both buttons are always in the DOM (see index.html) -- only one is
+  // ever actually visible at a time, toggled by updateWaveDisplay.
+  const row = await page.evaluate(() => ({
+    ids: [...document.getElementById('top-buttons-row').children].map(el => el.id),
+    helpVisible: document.getElementById('help-button').classList.contains('visible'),
+    menuVisible: document.getElementById('pause-button').classList.contains('visible'),
+  }));
+  expect(row.ids).toEqual(['help-button', 'pause-button']);
+  expect(row.helpVisible).toBe(false);
+  expect(row.menuVisible).toBe(true);
+
+  await page.click('#pause-button');
+  const panelOrder = await page.evaluate(() =>
+    [...document.getElementById('pause-panel').children]
+      .filter(el => el.tagName === 'BUTTON')
+      .map(el => el.id)
   );
-  expect(order).toEqual(['erase-button', 'hint-button', 'help-button', 'pause-button']);
+  expect(panelOrder).toEqual([
+    'pause-resume', 'pause-hint', 'pause-erase', 'pause-help',
+    'pause-save', 'pause-load', 'pause-restart-level', 'pause-restart-game', 'pause-exit',
+  ]);
   expect(errors).toEqual([]);
 });
 
@@ -5235,7 +5290,7 @@ test('relaxed mode dims every dot outside the matching group while a line is bei
 
 // Same drag mechanics as above, but confirms the assist is genuinely
 // gated to Relaxed -- Normal/Intense should never dim anything, even
-// mid-drag, since the erase-button/other relaxed-only affordances use the
+// mid-drag, since #pause-erase/other relaxed-only affordances use the
 // same STATE.difficulty === 'relaxed' gate and this should match them.
 test('the relaxed-mode dimming assist never activates outside relaxed difficulty', async ({ page }) => {
   const errors = trackErrors(page);
@@ -5533,7 +5588,7 @@ test('synthesizeMusicboxNote renders a finite, non-silent buffer for a real note
   expect(errors).toEqual([]);
 });
 
-test('Sleep mode gets the same QOL affordances as Relaxed: erase button visible, dimming assist active, hint never blocked', async ({ page }) => {
+test('Sleep mode gets the same QOL affordances as Relaxed: erase item visible, dimming assist active, hint never blocked', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
@@ -5541,7 +5596,9 @@ test('Sleep mode gets the same QOL affordances as Relaxed: erase button visible,
   await page.mouse.click(200, 700);
   await page.waitForTimeout(800);
 
-  await expect(page.locator('#erase-button')).toBeVisible();
+  await page.click('#pause-button');
+  await expect(page.locator('#pause-erase')).toBeVisible();
+  await page.click('#pause-resume');
 
   const hintResult = await page.evaluate(() => {
     triggerHintPulse();
