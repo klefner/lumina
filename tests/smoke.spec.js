@@ -3902,7 +3902,7 @@ test('the postcard crop follows an off-center cluster of dots instead of the scr
   expect(errors).toEqual([]);
 });
 
-test('shareOrSaveWavePostcard shares a file with the play link included, and copies the link on fallback', async ({ page }) => {
+test('shareOrSaveWavePostcard shares a file with the play link included exactly once, and copies the link on fallback', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
@@ -3918,13 +3918,19 @@ test('shareOrSaveWavePostcard shares a file with the play link included, and cop
     return {
       toastText: document.getElementById('share-toast').textContent,
       sharedFileType: window.__lastShareData && window.__lastShareData.files && window.__lastShareData.files[0].type,
-      sharedUrl: window.__lastShareData && window.__lastShareData.url,
+      // Player report, screenshot: the link showed up TWICE in the composed
+      // iMessage -- once as part of the text, once again as a separate
+      // rendered link -- because a distinct `url` field was passed
+      // alongside text that already embedded the same link. Confirms
+      // there's now exactly one copy of it, on `text` alone (see
+      // tryShareCanvasImage).
+      sharedUrlField: window.__lastShareData && window.__lastShareData.url,
       sharedTextHasLink: !!(window.__lastShareData && window.__lastShareData.text.includes(CANONICAL_SHARE_URL)),
     };
   });
   expect(shareSupported.toastText).toBe('Shared!');
   expect(shareSupported.sharedFileType).toBe('image/png');
-  expect(shareSupported.sharedUrl).toBe('https://draclif.itch.io/lumina');
+  expect(shareSupported.sharedUrlField).toBeUndefined();
   expect(shareSupported.sharedTextHasLink).toBe(true);
 
   // No native share sheet (desktop, mainly) -- the download still has to
@@ -5227,10 +5233,10 @@ test('buildWavePostcard shrinks a long multi-achievement caption to fit the card
     CanvasRenderingContext2D.prototype.fillText = origFillText;
 
     const captionCall = calls.find(c => c.text.startsWith('Lumina —'));
-    const cardW = POSTCARD_CONFIG.WIDTH - POSTCARD_CONFIG.BORDER * 2;
+    const cardW = POSTCARD_CONFIG.WIDTH - POSTCARD_CONFIG.MARGIN * 2;
     return {
       captionWidth: captionCall ? captionCall.width : null,
-      maxCaptionWidth: cardW - POSTCARD_CONFIG.BORDER,
+      maxCaptionWidth: cardW - POSTCARD_CONFIG.BORDER * 1.5,
     };
   });
 

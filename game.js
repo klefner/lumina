@@ -8461,12 +8461,12 @@ async function shareGameLink() {
 const POSTCARD_CONFIG = {
   WIDTH: 640,
   HEIGHT: 720,
-  BORDER: 26,          // white polaroid border around the cropped photo
-  CAPTION_HEIGHT: 60,  // polaroid's own caption strip, inside the white card, below the photo
-  FOOTER_HEIGHT: 56,
-  TILT_DEG: -2.5,
-  CROP_FRACTION: 0.75, // fallback centered-crop fraction when there's no board to frame (see computePostcardCropRect)
-  CROP_PADDING_PX: 90, // breathing room around the dots' own bounding box, in screen pixels
+  MARGIN: 70,           // dark starfield margin around the card, visible on all sides (see "bleached white" below)
+  BORDER: 22,           // thin white polaroid border on the photo's top/left/right
+  BOTTOM_BORDER: 130,   // the polaroid's own thicker bottom strip -- a real Polaroid's caption area, where the
+                         // wave caption AND the play-free URL are both written (see buildWavePostcard)
+  CROP_FRACTION: 0.75,  // fallback centered-crop fraction when there's no board to frame (see computePostcardCropRect)
+  CROP_PADDING_PX: 90,  // breathing room around the dots' own bounding box, in screen pixels
   CROP_MIN_SIZE_PX: 220, // floor so a 1-pair board doesn't crop in to an unreadably tight square
 };
 
@@ -8514,14 +8514,18 @@ function computePostcardCropRect() {
 
 // Composites a small SUBSET of the just-completed board, framed around the
 // actual dots (see computePostcardCropRect) rather than the whole canvas,
-// into a tilted, white-bordered "photo", on a starfield card that echoes
-// the game's own night-sky look -- so a shared image reads at a glance as
-// a moment from THIS relaxing musical game, not a generic screenshot. The
-// play link is baked directly into the pixels as a footer stamp -- the one
-// piece of text guaranteed to survive even if this gets re-shared as a
-// bare image with no caption.
+// into a real Polaroid-style photo -- straight (no tilt), a thin white
+// border on three sides, and a thicker bottom border carrying the wave
+// caption AND the play-free URL, exactly where a real Polaroid gets
+// written on. Sits on a starfield card with real dark margin showing on
+// every side (player report: "since when does our space look bleached
+// white?" -- the previous layout's white card filled nearly the whole
+// frame, leaving almost no visible space background). The play link is
+// baked directly into the pixels, sized to actually be read and typed in
+// by hand -- not shrunk down to an afterthought (player report: "make
+// sure that URL is legible and not so tiny that somebody can't see it").
 function buildWavePostcard() {
-  const { WIDTH: W, HEIGHT: H, BORDER, CAPTION_HEIGHT, FOOTER_HEIGHT, TILT_DEG } = POSTCARD_CONFIG;
+  const { WIDTH: W, HEIGHT: H, MARGIN, BORDER, BOTTOM_BORDER } = POSTCARD_CONFIG;
   const pc = document.createElement('canvas');
   pc.width = W;
   pc.height = H;
@@ -8535,7 +8539,8 @@ function buildWavePostcard() {
 
   // Cheap deterministic decorative stars behind the photo -- not
   // STATE.stars (that's live gameplay state), just enough sparkle for the
-  // card to read as "space" through the gaps around the tilted photo.
+  // card to read as "space" through the now much more visible margin
+  // around the Polaroid.
   let seed = 42;
   const rand = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
   pctx.fillStyle = '#ffffff';
@@ -8547,16 +8552,11 @@ function buildWavePostcard() {
   }
   pctx.globalAlpha = 1;
 
-  const photoSize = W - BORDER * 4;
-  const cardW = photoSize + BORDER * 2;
-  const cardH = photoSize + BORDER * 2 + CAPTION_HEIGHT;
+  const cardW = W - MARGIN * 2;
+  const photoSize = cardW - BORDER * 2;
+  const cardH = BORDER + photoSize + BOTTOM_BORDER;
   const cardX = (W - cardW) / 2;
-  const cardY = (H - FOOTER_HEIGHT - cardH) / 2;
-
-  pctx.save();
-  pctx.translate(cardX + cardW / 2, cardY + cardH / 2);
-  pctx.rotate(TILT_DEG * Math.PI / 180);
-  pctx.translate(-(cardX + cardW / 2), -(cardY + cardH / 2));
+  const cardY = (H - cardH) / 2;
 
   pctx.shadowColor = 'rgba(0,0,0,0.5)';
   pctx.shadowBlur = 26;
@@ -8567,37 +8567,52 @@ function buildWavePostcard() {
   pctx.shadowBlur = 0;
   pctx.shadowOffsetY = 0;
 
-  // The photo: a square SUBSET of the actual board, framed around the
-  // dots themselves rather than a fixed slice of whatever the camera
-  // happens to be showing (see computePostcardCropRect).
+  // The photo: an actual SUBSET of the real just-rendered gameplay canvas
+  // (drawImage straight off `canvas`, not a re-drawn/synthesized
+  // approximation of it), framed around the dots themselves rather than a
+  // fixed slice of whatever the camera happens to be showing (see
+  // computePostcardCropRect).
   const crop = computePostcardCropRect();
   pctx.drawImage(canvas, crop.x, crop.y, crop.size, crop.size, cardX + BORDER, cardY + BORDER, photoSize, photoSize);
 
-  pctx.fillStyle = '#2a2440';
+  const stripCenterX = cardX + cardW / 2;
+  const stripTop = cardY + BORDER + photoSize;
+  const maxTextWidth = cardW - BORDER * 1.5;
   pctx.textAlign = 'center';
+
   const labels = STATE.lastWavePostcardLabels.length ? STATE.lastWavePostcardLabels.join(' • ') : `Wave ${STATE.wave} cleared`;
-  const captionText = `Lumina — ${labels} ♪`;
+  const captionText = `Lumina — ${labels} ♪  ${STATE.score} pts`;
   // A milestone wave can earn all three achievements at once, joining
   // into one long caption -- shrink the font to fit the card's own
   // width instead of letting it overflow past the white card's edge
   // (review, #52). Floored so it never shrinks to the point of being
   // unreadable on a genuinely enormous caption.
-  const maxCaptionWidth = cardW - BORDER;
   let captionFontSize = 24;
   pctx.font = `italic ${captionFontSize}px "Segoe Script", "Bradley Hand", cursive`;
   const captionWidth = pctx.measureText(captionText).width;
-  if (captionWidth > maxCaptionWidth) {
-    captionFontSize = Math.max(13, Math.floor(captionFontSize * maxCaptionWidth / captionWidth));
+  if (captionWidth > maxTextWidth) {
+    captionFontSize = Math.max(13, Math.floor(captionFontSize * maxTextWidth / captionWidth));
     pctx.font = `italic ${captionFontSize}px "Segoe Script", "Bradley Hand", cursive`;
   }
-  pctx.fillText(captionText, cardX + cardW / 2, cardY + BORDER + photoSize + CAPTION_HEIGHT / 2 + 8);
-  pctx.restore();
+  pctx.fillStyle = '#2a2440';
+  pctx.fillText(captionText, stripCenterX, stripTop + BOTTOM_BORDER * 0.38);
 
-  pctx.textAlign = 'center';
-  pctx.fillStyle = 'rgba(255,214,120,0.95)';
-  pctx.font = `700 17px "Courier New", monospace`;
+  // The actionable line -- bold, high-contrast monospace in a clear
+  // hyperlink blue (unlike the caption above, this one has to actually be
+  // read and typed in by someone with nothing but the image). Floored well
+  // above the caption's floor; this is the one line the whole card exists
+  // to deliver.
   const linkLabel = CANONICAL_SHARE_URL.replace(/^https?:\/\//, '').replace(/\/$/, '');
-  pctx.fillText(`${STATE.score} pts — play free at ${linkLabel}`, W / 2, H - FOOTER_HEIGHT / 2 + 6);
+  const urlText = `play free at ${linkLabel}`;
+  let urlFontSize = 24;
+  pctx.font = `700 ${urlFontSize}px "Courier New", monospace`;
+  const urlWidth = pctx.measureText(urlText).width;
+  if (urlWidth > maxTextWidth) {
+    urlFontSize = Math.max(16, Math.floor(urlFontSize * maxTextWidth / urlWidth));
+    pctx.font = `700 ${urlFontSize}px "Courier New", monospace`;
+  }
+  pctx.fillStyle = '#1550c9';
+  pctx.fillText(urlText, stripCenterX, stripTop + BOTTOM_BORDER * 0.75);
 
   return pc;
 }
@@ -8607,14 +8622,22 @@ function buildWavePostcard() {
 // the game's link. Returns false (never throws) for anything short of a
 // clean, completed share, including the player cancelling their own
 // share sheet, so the caller can fall back to a plain download.
-async function tryShareCanvasImage(canvasEl, filename, title, text, url) {
+//
+// No separate `url` field, deliberately -- `text` already has the link
+// folded into it (see shareOrSaveWavePostcard), and several share targets
+// that accept a file render `text` AND a same-call `url` as two separate
+// items, showing the exact same link twice in a row (player report,
+// screenshot: the play link duplicated back to back in the composed
+// iMessage). `text`'s embedded link is the one that reliably survives
+// across targets; a redundant `url` field isn't needed to make that true.
+async function tryShareCanvasImage(canvasEl, filename, title, text) {
   if (!navigator.share || !navigator.canShare) return false;
   try {
     const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
     if (!blob) return false;
     const file = new File([blob], filename, { type: 'image/png' });
     if (!navigator.canShare({ files: [file] })) return false;
-    await navigator.share({ files: [file], title, text, url });
+    await navigator.share({ files: [file], title, text });
     return true;
   } catch (e) {
     return false;
@@ -8638,7 +8661,7 @@ async function shareOrSaveWavePostcard() {
   // of text a recipient actually needs in order to go play it themselves.
   const shareText = `I just hit Wave ${STATE.wave} in Lumina! ${labels ? labels + '. ' : ''}Play free: ${CANONICAL_SHARE_URL}`;
 
-  const shared = await tryShareCanvasImage(pc, filename, 'Lumina', shareText, CANONICAL_SHARE_URL);
+  const shared = await tryShareCanvasImage(pc, filename, 'Lumina', shareText);
   if (shared) {
     showShareToast('Shared!');
     return;
