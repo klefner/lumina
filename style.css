@@ -820,22 +820,29 @@ html, body {
 #share-row.visible {
   display: block;
 }
+/* Sized and contrasted like #start-game-button, not the other small
+   title-screen pill buttons around it -- a player with low vision
+   (macular degeneration, reported) said this read as barely there at
+   the old 11px/near-transparent styling. A share action is exactly the
+   kind of button that has to be findable at a glance, not just
+   technically present. */
 #share-game-button {
   font-family: 'Courier New', monospace;
-  font-size: 11px;
-  letter-spacing: 0.08em;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.85);
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 20px;
-  padding: 7px 14px;
+  color: rgba(255, 255, 255, 1);
+  background: rgba(255, 255, 255, 0.16);
+  border: 2px solid rgba(255, 255, 255, 0.65);
+  border-radius: 22px;
+  padding: 11px 22px;
   cursor: pointer;
   transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 #share-game-button:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: rgba(255, 255, 255, 0.95);
+  background: rgba(255, 255, 255, 0.26);
+  border-color: rgba(255, 255, 255, 0.85);
 }
 
 /* Title-screen-only explicit "start" CTA (see showMessage's isTitleScreen
@@ -886,21 +893,31 @@ html, body {
 #postcard-row.visible {
   display: block;
 }
+/* Player report: a low-vision player (macular degeneration) said this
+   button was barely noticeable and hard to read at the old 11px,
+   8%-opacity-background styling -- the exact combination (small,
+   low-contrast, thin border) that's hardest to find for reduced central
+   vision. Sized and contrasted like #start-game-button now, not the
+   subtler secondary-link buttons around it; still its own warm gold so
+   "you earned something" still reads distinctly from the neutral title-
+   screen actions. */
 #postcard-button {
   font-family: 'Courier New', monospace;
-  font-size: 11px;
-  letter-spacing: 0.08em;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: rgba(255, 214, 120, 0.9);
-  background: rgba(255, 214, 120, 0.08);
-  border: 1px solid rgba(255, 214, 120, 0.35);
-  border-radius: 20px;
-  padding: 7px 14px;
+  color: rgba(255, 224, 140, 1);
+  background: rgba(255, 214, 120, 0.22);
+  border: 2px solid rgba(255, 214, 120, 0.8);
+  border-radius: 22px;
+  padding: 11px 22px;
   cursor: pointer;
   transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 #postcard-button:hover {
-  background: rgba(255, 214, 120, 0.16);
+  background: rgba(255, 214, 120, 0.32);
+  border-color: rgba(255, 214, 120, 0.95);
 }
 
 /* Shared confirmation toast for both share actions above -- same styling
