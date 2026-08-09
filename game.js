@@ -319,7 +319,7 @@ function saveCockpitModeSetting(enabled) {
 // Defaults to 'rotate' (unlike flight/cockpit mode's off-by-default) since
 // picking a scene doesn't change how you play -- an unconfigured player
 // should just see everything.
-const SCENE_LIST = ['space', 'forest'];
+const SCENE_LIST = ['space', 'forest', 'beach'];
 const SCENE_KEY = 'lumina_scene_v1';
 function loadSceneSetting() {
   try {
@@ -2416,21 +2416,30 @@ const STATE = {
                          // what render() actually draws, independent of sceneMode
   forestScene: null,    // { trees, fireflies, moonXFrac, ... } for the current wave when
                          // scene === 'forest' (see generateForestScene); null otherwise
+  beachScene: null,      // { waveLines, glitterDots, moonXFrac, ... } for the current wave when
+                          // scene === 'beach' (see generateBeachScene); null otherwise
 
-  ambientGain: null,     // GainNode every forest ambience layer routes through (see initAudioGraph)
-  ambientBuffers: {},     // { wind: AudioBuffer, crickets: AudioBuffer, ... } — decoded lazily
-                           // (see loadForestAmbienceBuffers), same pattern as sampleBuffers above
+  ambientGain: null,     // GainNode every scene ambience layer routes through (see initAudioGraph)
+  ambientBuffers: {},     // { forest: { wind: AudioBuffer, ... }, beach: { waves: AudioBuffer, ... } }
+                           // -- decoded lazily (see loadSceneAmbienceBuffers), same pattern as
+                           // sampleBuffers above. Nested per scene since sound names like 'wind'
+                           // are reused across scenes with different underlying recordings.
   ambientBuffersReadyPromise: null,
-  forestAmbienceStreak: 0, // consecutive completed waves with scene === 'forest' (see
-                            // checkWaveComplete) -- drives how many of FOREST_AMBIENT_CONFIG.order
-                            // are currently layered in; reset to 0 whenever a wave completes on a
-                            // different scene, or on an explicit restart/load/exit
-  forestAmbienceLayers: {}, // { wind: { stop() }, crickets: {...}, ... } -- currently active
-                             // layers, keyed the same way as FOREST_AMBIENT_CONFIG.sounds
-  forestAmbienceActiveSources: [], // { source, gain } pairs currently in flight across every
-                                     // layer above -- lets resetForestAmbience fade out and hard-stop
-                                     // whatever's actually sounding right now, not just cancel future
-                                     // repeats (see trackForestSource)
+  ambienceScene: null,     // which scene STATE.ambienceStreak/ambienceLayers currently belong to --
+                            // lets updateSceneAmbienceForWaveComplete tell "still the same ambient
+                            // scene" apart from "just switched straight from one ambient scene to
+                            // another" (e.g. forest -> beach under Rotate mode), which needs a reset
+                            // too even though neither scene is silence
+  ambienceStreak: 0,       // consecutive completed waves on ambienceScene (see checkWaveComplete) --
+                            // drives how many of SCENE_AMBIENT_CONFIG[scene].order are currently
+                            // layered in; reset to 0 whenever a wave completes on a different scene,
+                            // or on an explicit restart/load/exit
+  ambienceLayers: {},      // { wind: { stop() }, waves: {...}, ... } -- currently active layers for
+                            // ambienceScene, keyed the same way as that scene's `sounds` config
+  ambienceActiveSources: [], // { source, gain } pairs currently in flight across every layer above
+                              // -- lets resetSceneAmbience fade out and hard-stop whatever's
+                              // actually sounding right now, not just cancel future repeats (see
+                              // trackAmbientSource)
 
   breakSparks: [],     // Short-lived particle bursts where a rotating barrier snaps a connection
 
@@ -2708,8 +2717,8 @@ function initAudioGraph() {
   STATE.masterBus = compressor;
   STATE.masterGain = masterGain;
 
-  // Forest ambience's own gain, feeding into the same limiter/gain chain
-  // as the music (see FOREST_AMBIENT_CONFIG) -- one shared knob to balance
+  // Scene ambience's own gain, feeding into the same limiter/gain chain
+  // as the music (see SCENE_AMBIENT_CONFIG) -- one shared knob to balance
   // the whole ambient bed against the song without touching individual
   // layers, and it rides along with the exact same pause/resume ducking
   // and peak limiting the music already gets, rather than a second,
@@ -2724,11 +2733,11 @@ function initAudioGraph() {
   // playSample synchronously for every note up front, so if decoding
   // isn't finished by then, those notes would silently never play.
   STATE.samplesReadyPromise = decodeAllSamples();
-  // Same idea for the forest ambience's own four clips -- fire-and-forget
-  // is fine here (unlike the song above, nothing calls this synchronously
-  // right after), startForestAmbienceLayer awaits it before actually
+  // Same idea for every scene's own ambient clips -- fire-and-forget is
+  // fine here (unlike the song above, nothing calls this synchronously
+  // right after), startSceneAmbienceLayer awaits it before actually
   // starting a layer.
-  STATE.ambientBuffersReadyPromise = loadForestAmbienceBuffers();
+  STATE.ambientBuffersReadyPromise = loadSceneAmbienceBuffers();
 }
 
 // --- Sample loading -----------------------------------------------------
@@ -3113,26 +3122,43 @@ function stopAllScheduledAudio(atTime) {
 }
 
 // ============================================================
-// FOREST AMBIENCE — real recordings (see sounds/CREDITS.md for sourcing/
-// licensing), layered in one at a time as a Forest-scene wave streak
-// builds (see checkWaveComplete/updateForestAmbienceForWaveComplete),
+// SCENE AMBIENCE — real recordings (see sounds/CREDITS.md for sourcing/
+// licensing), layered in one at a time as a wave streak on a given scene
+// builds (see checkWaveComplete/updateSceneAmbienceForWaveComplete),
 // always underneath the puzzle's own generated music, never replacing
-// it. wind/crickets/frogs loop continuously; owl is a rarer one-shot
-// event instead of a loop.
+// it. Most sounds loop continuously; a couple per scene are rarer
+// one-shot events instead of a loop (the forest's owl, the beach's
+// gulls and foghorn).
 // ============================================================
-const FOREST_AMBIENT_CONFIG = {
-  // Reveal order -- wind first, since it reads as the scene's "floor."
-  order: ['wind', 'crickets', 'frogs', 'owl'],
-  sounds: {
-    wind: { file: 'wind.mp3', gain: 0.55, isEvent: false },
-    crickets: { file: 'crickets.mp3', gain: 0.42, isEvent: false },
-    frogs: { file: 'frogs.mp3', gain: 0.55, isEvent: false },
-    owl: { file: 'owl.mp3', gain: 0.85, isEvent: true, minGapSec: 14, maxGapSec: 40 },
+const SCENE_AMBIENT_CONFIG = {
+  forest: {
+    // Reveal order -- wind first, since it reads as the scene's "floor."
+    order: ['wind', 'crickets', 'frogs', 'owl'],
+    sounds: {
+      wind: { file: 'wind.mp3', gain: 0.55, isEvent: false },
+      crickets: { file: 'crickets.mp3', gain: 0.42, isEvent: false },
+      frogs: { file: 'frogs.mp3', gain: 0.55, isEvent: false },
+      owl: { file: 'owl.mp3', gain: 0.85, isEvent: true, minGapSec: 14, maxGapSec: 40 },
+    },
   },
-  // Applied fresh on every repeat (a loop's next crossfaded pass, or the
-  // owl's next call) -- real recordings vary take to take, and without
-  // this a ~20s clip played back to back for several waves would read as
-  // an obviously exact, identical loop.
+  beach: {
+    // Waves first, same reasoning as the forest's wind -- the scene's floor.
+    order: ['waves', 'wind', 'shorebirds', 'foghorn'],
+    sounds: {
+      waves: { file: 'beach-waves.mp3', gain: 0.6, isEvent: false },
+      wind: { file: 'beach-wind.mp3', gain: 0.4, isEvent: false },
+      shorebirds: { file: 'beach-shorebirds.mp3', gain: 0.7, isEvent: true, minGapSec: 12, maxGapSec: 32 },
+      foghorn: { file: 'beach-foghorn.mp3', gain: 0.6, isEvent: true, minGapSec: 25, maxGapSec: 55 },
+    },
+  },
+};
+
+// Applied fresh on every repeat (a loop's next crossfaded pass, or an
+// event layer's next retrigger) -- real recordings vary take to take, and
+// without this a ~20s clip played back to back for several waves would
+// read as an obviously exact, identical loop. Shared across every scene
+// above rather than tuned per scene.
+const AMBIENT_VARIATION = {
   RATE_RANGE: [0.94, 1.06], // playbackRate -- pitch and speed together, same technique the pitched instrument samples use
   GAIN_RANGE: [0.85, 1.15], // multiplies each sound's own base gain above
   PAN_RANGE: [-0.3, 0.3],
@@ -3143,40 +3169,47 @@ function randRange([lo, hi]) {
   return lo + Math.random() * (hi - lo);
 }
 
-async function loadForestAmbienceBuffers() {
-  const names = Object.keys(FOREST_AMBIENT_CONFIG.sounds);
-  await Promise.all(names.map(async (name) => {
-    try {
-      const res = await fetch(`sounds/ambient/${FOREST_AMBIENT_CONFIG.sounds[name].file}`);
-      const bytes = await res.arrayBuffer();
-      STATE.ambientBuffers[name] = await STATE.audioCtx.decodeAudioData(bytes);
-    } catch (e) { /* missing/failed to load or decode -- that layer just never starts, same graceful-skip playSample already uses */ }
-  }));
+async function loadSceneAmbienceBuffers() {
+  const jobs = [];
+  for (const scene in SCENE_AMBIENT_CONFIG) {
+    STATE.ambientBuffers[scene] = {};
+    for (const name in SCENE_AMBIENT_CONFIG[scene].sounds) {
+      jobs.push((async () => {
+        try {
+          const res = await fetch(`sounds/ambient/${SCENE_AMBIENT_CONFIG[scene].sounds[name].file}`);
+          const bytes = await res.arrayBuffer();
+          STATE.ambientBuffers[scene][name] = await STATE.audioCtx.decodeAudioData(bytes);
+        } catch (e) { /* missing/failed to load or decode -- that layer just never starts, same graceful-skip playSample already uses */ }
+      })());
+    }
+  }
+  await Promise.all(jobs);
 }
 
 // Tracked separately from STATE.activeSources/trackSource/stopAllScheduledAudio
 // on purpose -- those exist specifically to hard-stop everything at a wave
 // transition so nothing from one wave's song leaks into the next, but
-// forest ambience is supposed to survive ordinary wave transitions (that's
+// scene ambience is supposed to survive ordinary wave transitions (that's
 // the entire point of the streak below). Tracked here only so
-// resetForestAmbience can still fade out and hard-stop whatever's actually
+// resetSceneAmbience can still fade out and hard-stop whatever's actually
 // sounding right now on a real reset (restart/load/exit), not just cancel
 // each layer's future repeats.
-function trackForestSource(source, gain) {
-  STATE.forestAmbienceActiveSources.push({ source, gain });
+function trackAmbientSource(source, gain) {
+  STATE.ambienceActiveSources.push({ source, gain });
 }
 
-// One continuously-looping layer (wind/crickets/frogs): schedules its own
-// next repeat shortly before the current one ends, each time with a fresh
-// random playbackRate/gain/pan and a short crossfade so consecutive
-// repeats overlap instead of clicking together. Returns a handle whose
-// stop() cancels every future repeat (the currently-playing instance is
-// left to fade out on its own schedule, or gets force-stopped by
-// resetForestAmbience if that's what actually called stop()).
+// One continuously-looping layer (e.g. wind/crickets/frogs, or the
+// beach's waves/wind): schedules its own next repeat shortly before the
+// current one ends, each time with a fresh random playbackRate/gain/pan
+// and a short crossfade so consecutive repeats overlap instead of
+// clicking together. Returns a handle whose stop() cancels every future
+// repeat (the currently-playing instance is left to fade out on its own
+// schedule, or gets force-stopped by resetSceneAmbience if that's what
+// actually called stop()).
 function startLoopingAmbientLayer(buffer, baseGain) {
   let stopped = false;
   let timer = null;
-  const cfg = FOREST_AMBIENT_CONFIG;
+  const cfg = AMBIENT_VARIATION;
 
   function playOnce() {
     if (stopped || !STATE.audioCtx || !STATE.ambientGain) return;
@@ -3210,7 +3243,7 @@ function startLoopingAmbientLayer(buffer, baseGain) {
 
     source.start(now);
     source.stop(fadeOutStart + fade + 0.05);
-    trackForestSource(source, gain);
+    trackAmbientSource(source, gain);
 
     if (!stopped) {
       timer = setTimeout(playOnce, Math.max(50, (playDuration - fade) * 1000));
@@ -3221,13 +3254,14 @@ function startLoopingAmbientLayer(buffer, baseGain) {
   return { stop() { stopped = true; if (timer) clearTimeout(timer); } };
 }
 
-// The owl: a single occasional call rather than a loop, at a random gap
-// after the previous one (or a beat after first being revealed). Same
-// per-repeat pitch/gain/pan variation as the looping layers above.
+// An occasional event sound (the forest's owl; the beach's gulls and
+// foghorn) rather than a loop, at a random gap after the previous one (or
+// a beat after first being revealed). Same per-repeat pitch/gain/pan
+// variation as the looping layers above.
 function startEventAmbientLayer(buffer, baseGain, minGapSec, maxGapSec) {
   let stopped = false;
   let timer = null;
-  const cfg = FOREST_AMBIENT_CONFIG;
+  const cfg = AMBIENT_VARIATION;
 
   function playOnce() {
     if (stopped || !STATE.audioCtx || !STATE.ambientGain) return;
@@ -3248,7 +3282,7 @@ function startEventAmbientLayer(buffer, baseGain, minGapSec, maxGapSec) {
     else gain.connect(STATE.ambientGain);
 
     source.start(now);
-    trackForestSource(source, gain);
+    trackAmbientSource(source, gain);
 
     if (!stopped) {
       timer = setTimeout(playOnce, randRange([minGapSec, maxGapSec]) * 1000);
@@ -3259,38 +3293,41 @@ function startEventAmbientLayer(buffer, baseGain, minGapSec, maxGapSec) {
   return { stop() { stopped = true; if (timer) clearTimeout(timer); } };
 }
 
-async function startForestAmbienceLayer(name) {
-  if (STATE.forestAmbienceLayers[name]) return; // already playing
+async function startSceneAmbienceLayer(scene, name) {
+  if (STATE.ambienceLayers[name]) return; // already playing
   if (STATE.ambientBuffersReadyPromise) await STATE.ambientBuffersReadyPromise;
-  const buffer = STATE.ambientBuffers[name];
+  const buffer = STATE.ambientBuffers[scene] && STATE.ambientBuffers[scene][name];
   if (!buffer || !STATE.audioCtx || !STATE.ambientGain) return; // missing/failed to load -- skip gracefully
   // The reveal that asked for this layer may already be stale by the time
   // decoding finishes (wave advanced again, scene changed, reset fired) --
   // re-check right before actually starting anything audible.
-  if (STATE.scene !== 'forest' || STATE.forestAmbienceLayers[name]) return;
+  if (STATE.scene !== scene || STATE.ambienceLayers[name]) return;
 
-  const cfg = FOREST_AMBIENT_CONFIG.sounds[name];
-  STATE.forestAmbienceLayers[name] = cfg.isEvent
+  const cfg = SCENE_AMBIENT_CONFIG[scene].sounds[name];
+  STATE.ambienceLayers[name] = cfg.isEvent
     ? startEventAmbientLayer(buffer, cfg.gain, cfg.minGapSec, cfg.maxGapSec)
     : startLoopingAmbientLayer(buffer, cfg.gain);
 }
 
-// Stops every forest ambience layer -- both future repeats (each layer's
+// Stops every scene ambience layer -- both future repeats (each layer's
 // own stop()) and whatever's actually sounding right now (a short fade
-// via forestAmbienceActiveSources, so this never clicks). Called whenever
-// a wave completes on a non-forest scene (see updateForestAmbienceForWaveComplete)
-// and from the explicit restart-game/load-game/exit-to-title paths --
-// deliberately NOT from a same-level retry, which keeps the streak going
-// rather than punishing a retry by resetting the mood underneath it.
-function resetForestAmbience() {
-  for (const name in STATE.forestAmbienceLayers) {
-    STATE.forestAmbienceLayers[name].stop();
+// via ambienceActiveSources, so this never clicks). Called whenever a
+// wave completes on a scene with no ambient config, or a different
+// ambient scene than the streak was built on (see
+// updateSceneAmbienceForWaveComplete), and from the explicit
+// restart-game/load-game/exit-to-title paths -- deliberately NOT from a
+// same-level retry, which keeps the streak going rather than punishing a
+// retry by resetting the mood underneath it.
+function resetSceneAmbience() {
+  for (const name in STATE.ambienceLayers) {
+    STATE.ambienceLayers[name].stop();
   }
-  STATE.forestAmbienceLayers = {};
-  STATE.forestAmbienceStreak = 0;
+  STATE.ambienceLayers = {};
+  STATE.ambienceStreak = 0;
+  STATE.ambienceScene = null;
   if (STATE.audioCtx) {
     const now = STATE.audioCtx.currentTime;
-    for (const { source, gain } of STATE.forestAmbienceActiveSources) {
+    for (const { source, gain } of STATE.ambienceActiveSources) {
       try {
         gain.gain.cancelScheduledValues(now);
         gain.gain.setValueAtTime(gain.gain.value, now);
@@ -3299,25 +3336,42 @@ function resetForestAmbience() {
       } catch (e) { /* already stopped */ }
     }
   }
-  STATE.forestAmbienceActiveSources = [];
+  STATE.ambienceActiveSources = [];
 }
 
-// Called once per wave completion (see checkWaveComplete) -- advances (or
-// resets) the streak and starts whichever new layer that unlocks. Once
-// every sound in FOREST_AMBIENT_CONFIG.order has been revealed, they all
-// just keep playing together -- there's no second background yet to
-// switch to, so nothing forces a reset once the set is complete.
-function updateForestAmbienceForWaveComplete() {
-  if (STATE.scene !== 'forest') {
-    if (STATE.forestAmbienceStreak > 0 || Object.keys(STATE.forestAmbienceLayers).length > 0) {
-      resetForestAmbience();
-    }
-    return;
+// Called from startWave, right after STATE.scene resolves for the wave
+// that's about to start -- stops the outgoing scene's ambience the
+// instant the scene actually changes, rather than leaving it playing
+// through the whole new wave. (An earlier version did this check inside
+// updateSceneAmbienceForWaveComplete instead, which only runs when a wave
+// COMPLETES -- under Rotate mode that meant a Forest wave's wind/crickets
+// kept playing through the entire following Beach wave, only getting cut
+// off once that Beach wave itself completed.) Also covers two ambient
+// scenes sharing a sound name (both have a "wind") -- without this, the
+// new scene's reveal would silently inherit the old scene's still-playing
+// layer instead of starting its own.
+function syncAmbienceToScene() {
+  if (STATE.scene === STATE.ambienceScene) return;
+  if (STATE.ambienceStreak > 0 || Object.keys(STATE.ambienceLayers).length > 0) {
+    resetSceneAmbience();
   }
-  const order = FOREST_AMBIENT_CONFIG.order;
-  if (STATE.forestAmbienceStreak < order.length) {
-    STATE.forestAmbienceStreak++;
-    startForestAmbienceLayer(order[STATE.forestAmbienceStreak - 1]);
+  STATE.ambienceScene = STATE.scene;
+}
+
+// Called once per wave completion (see checkWaveComplete) -- advances the
+// streak and starts whichever new layer that unlocks. By this point
+// STATE.scene and STATE.ambienceScene already agree (syncAmbienceToScene
+// saw to that when this wave started), so there's nothing left to do here
+// but the reveal itself. Once every sound in the current scene's
+// SCENE_AMBIENT_CONFIG.order has been revealed, they all just keep
+// playing together -- there's no third background yet to switch to, so
+// nothing forces a reset once a scene's set is complete.
+function updateSceneAmbienceForWaveComplete() {
+  const config = SCENE_AMBIENT_CONFIG[STATE.scene];
+  if (!config) return;
+  if (STATE.ambienceStreak < config.order.length) {
+    STATE.ambienceStreak++;
+    startSceneAmbienceLayer(STATE.scene, config.order[STATE.ambienceStreak - 1]);
   }
 }
 
@@ -6504,20 +6558,21 @@ function checkWaveComplete() {
   // The rest of the galaxy reveals itself as a reward for finishing the
   // wave — only the sparse stars scattered around each connected dot are
   // visible while still playing (see spawnStarsAroundDots). Stars still
-  // apply to a Night Forest wave's sky (drawForestScene reuses drawStars
-  // wholesale), but drifting asteroids/comets/planets are Space-only —
-  // nothing in render() would ever draw them behind the trees, so don't
-  // even bother spawning them.
+  // apply to a Night Forest or Beach wave's sky (drawForestScene/
+  // drawBeachScene both reuse drawStars wholesale), but drifting
+  // asteroids/comets/planets are Space-only — nothing in render() would
+  // ever draw them behind the trees or the waves, so don't even bother
+  // spawning them.
   fillBaseStarfield();
-  if (STATE.scene !== 'forest') {
+  if (STATE.scene === 'space') {
     fillSpaceGalaxy();
     spawnCelestialBodies();
   }
-  // Forest's own reward, alongside the galaxy above: each completed wave
-  // on a forest streak layers in one more real ambient recording, always
-  // underneath this wave's own generated song rather than replacing it
-  // (see FOREST_AMBIENT_CONFIG).
-  updateForestAmbienceForWaveComplete();
+  // Forest/Beach's own reward, alongside the galaxy above: each completed
+  // wave on a scene's streak layers in one more real ambient recording,
+  // always underneath this wave's own generated song rather than
+  // replacing it (see SCENE_AMBIENT_CONFIG).
+  updateSceneAmbienceForWaveComplete();
 
   STATE.score += STATE.wave * 100;
   const earnedThisWave = checkAchievements(STATE.score - STATE.waveStartScore);
@@ -6665,11 +6720,17 @@ function startWave(waveNumber) {
   // board look like it's already got history it doesn't have.
   STATE.stars = [];
   // Which scene this wave actually plays (fixed choice, or the next stop
-  // in the rotation -- see resolveSceneForWave/SCENE_LIST). A forest
-  // scene's trees/moon/fireflies are rerolled fresh every wave, same
+  // in the rotation -- see resolveSceneForWave/SCENE_LIST). A forest or
+  // beach scene's own decorations are rerolled fresh every wave, same
   // spirit as a new wave's own starfield/celestial-body reveal.
   STATE.scene = resolveSceneForWave(waveNumber);
   STATE.forestScene = STATE.scene === 'forest' ? generateForestScene() : null;
+  STATE.beachScene = STATE.scene === 'beach' ? generateBeachScene() : null;
+  // Stop any leftover ambience from whatever scene the previous wave was
+  // on the instant this wave's scene turns out to be different -- see
+  // syncAmbienceToScene's own comment for why this can't just wait for
+  // this wave's own completion.
+  syncAmbienceToScene();
   STATE.waveStartScore = STATE.score;
 
   showTutorialHint(waveNumber);
@@ -7806,22 +7867,70 @@ const FOREST_CONFIG = {
 };
 
 // Lazily-created, reused offscreen canvas the moon composites onto before
-// being drawn into the main scene -- see drawForestScene's own comment on
+// being drawn into the main scene -- see drawNightMoon's own comment on
 // why the crescent's destination-out erase can't run directly on the main
 // canvas. Square and sized to the moon's glow diameter; resized (rare --
 // only actually changes with moonRadiusFrac's small random range or a
-// canvas resize) rather than recreated every call.
-let forestMoonLayer = null;
-function getForestMoonLayer(size) {
-  if (!forestMoonLayer) {
-    forestMoonLayer = document.createElement('canvas');
-    forestMoonLayer.ctx = forestMoonLayer.getContext('2d');
+// canvas resize) rather than recreated every call. Shared by every night
+// scene (forest, beach) rather than one offscreen canvas per scene, since
+// only one scene ever renders at a time.
+let nightMoonLayer = null;
+function getNightMoonLayer(size) {
+  if (!nightMoonLayer) {
+    nightMoonLayer = document.createElement('canvas');
+    nightMoonLayer.ctx = nightMoonLayer.getContext('2d');
   }
-  if (forestMoonLayer.width !== size) {
-    forestMoonLayer.width = size;
-    forestMoonLayer.height = size;
+  if (nightMoonLayer.width !== size) {
+    nightMoonLayer.width = size;
+    nightMoonLayer.height = size;
   }
-  return forestMoonLayer;
+  return nightMoonLayer;
+}
+
+// Moon — a flat disc with a crescent bite punched out via destination-out.
+// That erase has to happen on its own isolated layer, not directly on the
+// main canvas: destination-out removes whatever is already painted
+// underneath it, and by this point that's the sky gradient the calling
+// scene just drew. Erasing straight into the main canvas would punch a
+// genuinely transparent hole through the sky itself (visible as the
+// page's own background, and as a black hole in any screenshot/postcard
+// compositing) instead of just carving the moon. Composite the
+// glow+disc+bite on a small offscreen canvas first, then drawImage the
+// result onto the main canvas — normal source-over alpha blending there
+// lets the sky already painted show through the bite correctly, same as
+// compositing any other sprite. Shared by every night scene (forest,
+// beach) since the moon itself looks identical regardless of what's
+// underneath it.
+function drawNightMoon(moonXFrac, moonYFrac, moonRadiusFrac) {
+  const w = canvas.width, h = canvas.height;
+  const mx = moonXFrac * w, my = moonYFrac * h;
+  const mr = moonRadiusFrac * Math.min(w, h);
+  const glowR = mr * 3.2;
+  const moonLayer = getNightMoonLayer(Math.ceil(glowR * 2));
+  const mctx = moonLayer.ctx;
+  const half = moonLayer.width / 2;
+  mctx.clearRect(0, 0, moonLayer.width, moonLayer.height);
+  mctx.save();
+  mctx.translate(half, half);
+  const glow = mctx.createRadialGradient(0, 0, 0, 0, 0, glowR);
+  glow.addColorStop(0, 'rgba(255,250,230,0.32)');
+  glow.addColorStop(1, 'rgba(255,250,230,0)');
+  mctx.fillStyle = glow;
+  mctx.beginPath();
+  mctx.arc(0, 0, glowR, 0, Math.PI * 2);
+  mctx.fill();
+
+  mctx.beginPath();
+  mctx.arc(0, 0, mr, 0, Math.PI * 2);
+  mctx.fillStyle = '#fdf6e3';
+  mctx.fill();
+  mctx.globalCompositeOperation = 'destination-out';
+  mctx.beginPath();
+  mctx.arc(mr * 0.45, -mr * 0.2, mr * 0.95, 0, Math.PI * 2);
+  mctx.fillStyle = 'rgba(0,0,0,0.88)';
+  mctx.fill();
+  mctx.restore();
+  ctx.drawImage(moonLayer, mx - half, my - half);
 }
 
 function generateForestScene() {
@@ -7879,47 +7988,7 @@ function drawForestScene() {
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, w, h);
 
-  // Moon — a flat disc with a crescent bite punched out via
-  // destination-out. That erase has to happen on its own isolated layer,
-  // not directly on the main canvas: destination-out removes whatever is
-  // already painted underneath it, and by this point that's the sky
-  // gradient this function just drew. Erasing straight into the main
-  // canvas would punch a genuinely transparent hole through the sky
-  // itself (visible as the page's own background, and as a black hole in
-  // any screenshot/postcard compositing) instead of just carving the
-  // moon. Composite the glow+disc+bite on a small offscreen canvas first,
-  // then drawImage the result onto the main canvas — normal source-over
-  // alpha blending there lets the sky already painted show through the
-  // bite correctly, same as compositing any other sprite.
-  const mx = scene.moonXFrac * w, my = scene.moonYFrac * h;
-  const mr = scene.moonRadiusFrac * Math.min(w, h);
-  const glowR = mr * 3.2;
-  const moonLayer = getForestMoonLayer(Math.ceil(glowR * 2));
-  const mctx = moonLayer.ctx;
-  const half = moonLayer.width / 2;
-  mctx.clearRect(0, 0, moonLayer.width, moonLayer.height);
-  mctx.save();
-  mctx.translate(half, half);
-  const glow = mctx.createRadialGradient(0, 0, 0, 0, 0, glowR);
-  glow.addColorStop(0, 'rgba(255,250,230,0.32)');
-  glow.addColorStop(1, 'rgba(255,250,230,0)');
-  mctx.fillStyle = glow;
-  mctx.beginPath();
-  mctx.arc(0, 0, glowR, 0, Math.PI * 2);
-  mctx.fill();
-
-  mctx.beginPath();
-  mctx.arc(0, 0, mr, 0, Math.PI * 2);
-  mctx.fillStyle = '#fdf6e3';
-  mctx.fill();
-  mctx.globalCompositeOperation = 'destination-out';
-  mctx.beginPath();
-  mctx.arc(mr * 0.45, -mr * 0.2, mr * 0.95, 0, Math.PI * 2);
-  mctx.fillStyle = 'rgba(0,0,0,0.88)';
-  mctx.fill();
-  mctx.restore();
-  ctx.drawImage(moonLayer, mx - half, my - half);
-
+  drawNightMoon(scene.moonXFrac, scene.moonYFrac, scene.moonRadiusFrac);
   drawStars(); // same twinkling starfield Space uses -- see this section's header comment
 
   for (const f of scene.fireflies) {
@@ -7955,6 +8024,132 @@ function drawForestScene() {
 
   ctx.fillStyle = FOREST_CONFIG.GROUND_COLOR;
   ctx.fillRect(0, h - 6, w, 6);
+}
+
+// ============================================================
+// SECTION 7F: BEACH AT NIGHT BACKGROUND
+// ============================================================
+// Space's second alternate scene (see SCENE_LIST/resolveSceneForWave),
+// built the same way the Night Forest above is: a moonlit sky (sharing
+// drawNightMoon and drawStars with the forest scene), a dark ocean with a
+// glittering moon-reflection path and a few gently undulating surf lines
+// standing in for waves, and a sand strip at the very bottom -- the
+// forest's tree line and ground, reimagined.
+//
+// Wave lines/glitter dots/moon are stored as fractions of canvas.width/
+// height, not absolute pixels, same reasoning as the forest's trees.
+const BEACH_CONFIG = {
+  SKY_TOP: '#050b17',
+  SKY_MID: '#12253d',
+  SKY_HORIZON: '#2f4f5f',
+  WATER_HORIZON: '#1c3a44',
+  WATER_COLOR: '#0a1a22',
+  SAND_COLOR: '#241d13',
+};
+
+function generateBeachScene() {
+  const waveLineCount = 4 + Math.floor(Math.random() * 3);
+  const waveLines = [];
+  for (let i = 0; i < waveLineCount; i++) {
+    waveLines.push({
+      yFrac: 0.15 + (i / waveLineCount) * 0.8 + Math.random() * 0.05,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.0008 + Math.random() * 0.0008,
+      amplitude: 2 + Math.random() * 3,
+      opacity: 0.12 + Math.random() * 0.14,
+    });
+  }
+
+  const moonXFrac = 0.15 + Math.random() * 0.7;
+  // The moon's reflection on the water: a loose vertical scatter of dots
+  // under the moon's own x position, widening as it nears the shore --
+  // the same "glitter path" a real moon casts on open water.
+  const glitterCount = 14 + Math.floor(Math.random() * 8);
+  const glitterDots = [];
+  for (let i = 0; i < glitterCount; i++) {
+    const depth = i / glitterCount; // 0 near the horizon, 1 near the shore
+    glitterDots.push({
+      xFrac: moonXFrac + (Math.random() - 0.5) * (0.03 + depth * 0.12),
+      yFrac: depth,
+      phase: Math.random() * Math.PI * 2,
+      twinkleSpeed: 0.003 + Math.random() * 0.004,
+      alpha: 0.3 + Math.random() * 0.5,
+      size: 1.5 + Math.random() * 2.5,
+    });
+  }
+
+  return {
+    waveLines,
+    glitterDots,
+    horizonYFrac: 0.4 + Math.random() * 0.06,
+    sandHeightFrac: 0.08 + Math.random() * 0.03,
+    moonXFrac,
+    moonYFrac: 0.08 + Math.random() * 0.12,
+    moonRadiusFrac: 0.045 + Math.random() * 0.02,
+    phase: 0, // frame accumulator driving the surf/glitter animation below -- see updateBeachScene
+  };
+}
+
+function updateBeachScene() {
+  if (STATE.scene !== 'beach' || !STATE.beachScene) return;
+  STATE.beachScene.phase += 1;
+}
+
+function drawBeachScene() {
+  const scene = STATE.beachScene;
+  if (!scene) return;
+  const w = canvas.width, h = canvas.height, t = scene.phase;
+
+  const sky = ctx.createLinearGradient(0, 0, 0, h);
+  sky.addColorStop(0, BEACH_CONFIG.SKY_TOP);
+  sky.addColorStop(0.55, BEACH_CONFIG.SKY_MID);
+  sky.addColorStop(1, BEACH_CONFIG.SKY_HORIZON);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+
+  drawNightMoon(scene.moonXFrac, scene.moonYFrac, scene.moonRadiusFrac);
+  drawStars(); // same twinkling starfield Space/Forest use -- see this section's header comment
+
+  const horizonY = scene.horizonYFrac * h;
+  const sandY = h - scene.sandHeightFrac * h;
+
+  // Water -- a flat, dark fill from the horizon down to the sand, its own
+  // gradient so it reads darker/denser than the sky rather than looking
+  // like a continuation of it. Drawn after the stars specifically so it
+  // covers up any that would otherwise appear to twinkle underwater.
+  const water = ctx.createLinearGradient(0, horizonY, 0, sandY);
+  water.addColorStop(0, BEACH_CONFIG.WATER_HORIZON);
+  water.addColorStop(1, BEACH_CONFIG.WATER_COLOR);
+  ctx.fillStyle = water;
+  ctx.fillRect(0, horizonY, w, sandY - horizonY);
+
+  for (const d of scene.glitterDots) {
+    const twinkle = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * d.twinkleSpeed + d.phase));
+    const gx = d.xFrac * w;
+    const gy = horizonY + d.yFrac * (sandY - horizonY);
+    ctx.fillStyle = `rgba(255, 250, 230, ${(d.alpha * twinkle).toFixed(3)})`;
+    ctx.fillRect(gx - d.size / 2, gy - d.size / 2, d.size, d.size);
+  }
+
+  // Surf lines -- a few gently undulating horizontal bands standing in
+  // for breaking waves, without animating full particle foam.
+  for (const wl of scene.waveLines) {
+    const ly = horizonY + wl.yFrac * (sandY - horizonY);
+    ctx.beginPath();
+    ctx.moveTo(0, ly);
+    const segments = 8;
+    for (let i = 1; i <= segments; i++) {
+      const x = (i / segments) * w;
+      const wobble = Math.sin(t * wl.speed + wl.phase + i * 0.9) * wl.amplitude;
+      ctx.lineTo(x, ly + wobble);
+    }
+    ctx.strokeStyle = `rgba(210, 230, 235, ${wl.opacity})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = BEACH_CONFIG.SAND_COLOR;
+  ctx.fillRect(0, sandY, w, h - sandY);
 }
 
 // startX lets the wave-complete instant fill drop objects already on-screen;
@@ -8673,10 +8868,10 @@ function handleLoadGame() {
   }
   closePauseMenuUI();
   STATE.paused = false;
-  // A save only stores wave + score, not how many forest-ambience layers
+  // A save only stores wave + score, not how many scene-ambience layers
   // had built up -- there's no correct streak to resume into, so start
   // the reveal over rather than guess.
-  resetForestAmbience();
+  resetSceneAmbience();
   startFadeToBlack(() => {
     STATE.score = save.score;
     startWave(save.wave);
@@ -8702,7 +8897,7 @@ function handleRestartCurrentLevel() {
 function handleRestartGame() {
   closePauseMenuUI();
   STATE.paused = false;
-  resetForestAmbience(); // a genuine fresh start, same reasoning as handleLoadGame above
+  resetSceneAmbience(); // a genuine fresh start, same reasoning as handleLoadGame above
   startFadeToBlack(() => {
     STATE.score = 0;
     startWave(1);
@@ -8773,7 +8968,7 @@ function exitToTitle() {
   STATE.achievementQueue = [];
   STATE.achievementToastActive = false;
   if (STATE.audioCtx) stopAllScheduledAudio(STATE.audioCtx.currentTime);
-  resetForestAmbience(); // nothing should keep playing over the title screen
+  resetSceneAmbience(); // nothing should keep playing over the title screen
 
   // Re-check for a save (e.g. one made via "Save Game" earlier this
   // session) so the title screen accurately offers to continue from it.
@@ -9540,6 +9735,7 @@ function update() {
 
   updateStars();
   updateForestScene();
+  updateBeachScene();
   // Asteroids/satellites/comets only drift through once the whole wave's
   // line-galaxy is complete — they'd be a distraction while still connecting.
   if (STATE.phase === 'WAVE_COMPLETE') { updateSpaceObjects(); updateCelestialBodies(); }
@@ -9593,6 +9789,8 @@ function render() {
   // fixed backdrop behind the (possibly zoomed-out) board.
   if (STATE.scene === 'forest') {
     drawForestScene();
+  } else if (STATE.scene === 'beach') {
+    drawBeachScene();
   } else {
     drawStars();
     if (STATE.phase === 'WAVE_COMPLETE') { drawCelestialBodies(); drawSpaceObjects(); }

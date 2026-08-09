@@ -61,7 +61,7 @@ Public Domain Mark, no attribution legally required, credited anyway:
 
 All four were loudness-normalized and trimmed with short fades, no
 other editing. In-game, each one is looped (or, for the owl, retriggered
-at random intervals — see `FOREST_AMBIENT_CONFIG` in game.js) with
+at random intervals — see `SCENE_AMBIENT_CONFIG` in game.js) with
 per-repeat randomized pitch/rate, gain, and stereo pan, so the same
 ~20s recording never sounds like it's playing on an exact, identical
 loop.
@@ -70,6 +70,29 @@ A synthesized alternative (oscillators/filtered noise, the same
 technique the lofi family below uses) was built and compared side by
 side before this decision — real recordings won convincingly enough
 that it wasn't a close call, particularly for the owl.
+
+## Beach night ambience (sounds/ambient/beach-*.mp3)
+
+Same idea as the forest above — four more real field recordings, not
+synthesized, revealed progressively as their own scene (see
+`SCENE_AMBIENT_CONFIG` in game.js). All CC0 or Public Domain Mark:
+
+- `beach-waves.mp3` — "Midnight ocean waves," a field recording from
+  [Carrara, Italy](https://archive.org/details/aporee_63151_72659),
+  Public Domain Mark 1.0. Trimmed from a ~6-minute original.
+- `beach-wind.mp3` — "Struer Beach, heavy wind, distant sea," from
+  [Struer, Denmark](https://archive.org/details/aporee_58339_66925),
+  Public Domain Mark 1.0.
+- `beach-shorebirds.mp3` — gull flock calls, from
+  ["Hastings Beach: Gull Flock and Evening Shoreline"](https://archive.org/details/aporee_72526_84684),
+  Public Domain Mark 1.0.
+- `beach-foghorn.mp3` — a ship's foghorn sounding three times, from
+  ["ship foghorn," Ajaccio, France](https://archive.org/details/aporee_61190_70385),
+  Public Domain Mark 1.0.
+
+All four loudness-normalized and trimmed with short fades, no other
+editing. Waves and wind loop continuously; the gulls and foghorn are
+rarer one-shot retriggers, same distinction the forest's owl gets.
 
 ## The lofi genre family's instruments (rhodes, lofibass, lofikit)
 
