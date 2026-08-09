@@ -978,16 +978,17 @@ html, body {
   opacity: 1;
 }
 
-/* Small and dim on purpose -- the build stamp is a reference for
-   support/debugging (us checking what a player is actually running),
-   not something a player needs to notice while playing. */
+/* Dim on purpose -- the build stamp is a reference for support/debugging
+   (us checking what a player is actually running, or reading it off a
+   screenshot), not something a player needs to notice while playing.
+   Sized to actually be readable in a screenshot, just not eye-catching. */
 #version-display {
   position: fixed;
   bottom: 10px;
   left: 14px;
   font-family: 'Courier New', monospace;
-  font-size: 9px;
-  color: rgba(255, 255, 255, 0.35);
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.45);
   letter-spacing: 0.1em;
   pointer-events: none;
   z-index: 10;
