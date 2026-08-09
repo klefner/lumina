@@ -750,6 +750,46 @@ html, body {
   accent-color: rgba(120, 200, 255, 0.85);
 }
 
+/* Title-screen-only Scene picker (see showMessage's isTitleScreen option
+   and setupSceneSelectorListeners) -- which background plays behind the
+   board: a fixed one, or "Rotate every wave" to cycle through all of
+   them. Sits right below the difficulty picker since it's the other
+   title-screen dropdown-shaped setting. */
+#scene-row {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+  pointer-events: auto;
+}
+#scene-row.visible {
+  display: flex;
+}
+#scene-label {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.85);
+}
+#scene-selector {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 20px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+#scene-selector:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.95);
+}
+
 /* Title-screen-only Flight Mode toggle (see showMessage's isTitleScreen
    option and setupTitleLoadListeners) -- same checkbox+label pattern as
    #autoload-label above, just its own row so it reads as an independent
