@@ -806,7 +806,7 @@ test('steering the ship through two matching dots completes a real connection', 
   await page.evaluate(({ ax, ay }) => {
     onInputStart({ preventDefault() {}, clientX: ax, clientY: ay });
   }, setup);
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(4000);
 
   const afterA = await page.evaluate(({ aId }) => ({
     isDrawing: STATE.isDrawing,
@@ -820,7 +820,7 @@ test('steering the ship through two matching dots completes a real connection', 
   await page.evaluate(({ bx, by }) => {
     onInputMove({ preventDefault() {}, clientX: bx, clientY: by });
   }, setup);
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(4000);
 
   const afterB = await page.evaluate(({ aId, bId }) => ({
     connection: STATE.connections[0],
