@@ -3198,6 +3198,107 @@ test('in Relaxed difficulty, picking Erase from the menu then tapping a drawn li
   expect(errors).toEqual([]);
 });
 
+// Defect report: a player erased a line via the pause menu, and afterward
+// could no longer draw any new connections at all -- no line rendered on
+// screen for any subsequent drag. Root cause: Erase Mode has no auto-off
+// (confirmed sticky just above), and onInputStart fully bypasses normal
+// drawing while it's on (see its own comment on the erase-mode branch) --
+// but there was nothing on screen, once the pause menu closed, telling
+// the player it was still active. #erase-mode-banner (updateEraseModeBanner)
+// fixes the "silent" part; this test drives the exact reported sequence
+// end to end and confirms drawing is genuinely usable again afterward.
+test('the erase-mode banner appears the moment Erase is picked, and tapping it restores normal drawing', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
+  await page.reload();
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const dots = await page.evaluate(() => window.__lumina.getDots());
+  const byPair = {};
+  for (const d of dots) (byPair[d.pairId] = byPair[d.pairId] || []).push(d);
+  const pairs = Object.values(byPair);
+  const [a1, b1] = pairs[0];
+  const [a2, b2] = pairs[1]; // a second, still-unconnected pair to try drawing after erasing the first
+
+  await expect(page.locator('#erase-mode-banner')).not.toHaveClass(/visible/);
+
+  // Draw the first pair normally.
+  await page.mouse.move(a1.x, a1.y);
+  await page.mouse.down();
+  await page.mouse.move(b1.x, b1.y, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(200);
+  expect(await page.evaluate((pairId) =>
+    window.__lumina.getState().connections.some(c => c.pairId === pairId), a1.pairId)).toBe(true);
+
+  // Turn Erase Mode on -- the banner should appear immediately.
+  await page.click('#pause-button');
+  await page.click('#pause-erase');
+  await expect(page.locator('#erase-mode-banner')).toHaveClass(/visible/);
+
+  // Erase the first pair's line.
+  await page.mouse.click((a1.x + b1.x) / 2, (a1.y + b1.y) / 2);
+  await page.waitForTimeout(200);
+  expect(await page.evaluate((pairId) =>
+    window.__lumina.getState().connections.some(c => c.pairId === pairId), a1.pairId)).toBe(false);
+
+  // Erase Mode is still on (sticky by design) and so is the banner --
+  // this is the exact moment the reported defect happened: trying to draw
+  // the second pair right now must NOT create a connection.
+  await expect(page.locator('#erase-mode-banner')).toHaveClass(/visible/);
+  await page.mouse.move(a2.x, a2.y);
+  await page.mouse.down();
+  await page.mouse.move(b2.x, b2.y, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(200);
+  expect(await page.evaluate((pairId) =>
+    window.__lumina.getState().connections.some(c => c.pairId === pairId), a2.pairId)).toBe(false);
+
+  // Tapping the banner itself exits Erase Mode -- the fix's whole point:
+  // an always-visible way out that doesn't require finding the pause menu
+  // again.
+  await page.click('#erase-mode-banner');
+  await expect(page.locator('#erase-mode-banner')).not.toHaveClass(/visible/);
+  expect(await page.evaluate(() => STATE.eraseMode)).toBe(false);
+
+  // Drawing is genuinely restored: the exact same gesture that silently
+  // failed a moment ago now creates a real connection.
+  await page.mouse.move(a2.x, a2.y);
+  await page.mouse.down();
+  await page.mouse.move(b2.x, b2.y, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(200);
+  expect(await page.evaluate((pairId) =>
+    window.__lumina.getState().connections.some(c => c.pairId === pairId), a2.pairId)).toBe(true);
+
+  expect(errors).toEqual([]);
+});
+
+test('the erase-mode banner stays hidden while paused, even if Erase Mode is on underneath', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
+  await page.reload();
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  await page.click('#pause-button');
+  await page.click('#pause-erase'); // closes the menu, leaves eraseMode on
+  await expect(page.locator('#erase-mode-banner')).toHaveClass(/visible/);
+
+  await page.click('#pause-button'); // reopen the menu -- STATE.paused is now true again
+  await page.waitForTimeout(200);
+  await expect(page.locator('#erase-mode-banner')).not.toHaveClass(/visible/);
+
+  expect(errors).toEqual([]);
+});
+
 // Flagged by review: on a touch device, a pinch's first finger lands as
 // its own touchstart before the second one arrives. Erasing immediately
 // on that first contact (the original implementation) could permanently

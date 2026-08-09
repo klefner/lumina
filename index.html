@@ -73,6 +73,14 @@
   </div>
   <div id="tutorial-hint"></div>
   <div id="hint-toast"></div>
+  <!-- Persistent while STATE.eraseMode is on (see updateEraseModeBanner in
+       game.js, called every frame from render()) -- Erase Mode has no
+       auto-off, so without something always on screen, a player who
+       erased one line and closed the pause menu has no way to know why
+       every tap since has silently failed to draw a new one (see
+       onInputStart's erase-mode branch). Tapping the banner itself exits
+       the mode immediately, without a trip back through the menu. -->
+  <div id="erase-mode-banner">Erase Mode — tap a line to remove it, or tap here to stop</div>
   <div id="pause-overlay">
     <div id="pause-panel">
       <div id="pause-title">MENU</div>

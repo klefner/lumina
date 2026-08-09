@@ -6960,6 +6960,22 @@ function updateSleepModeTint() {
   document.getElementById('sleep-mode-tint').classList.toggle('visible', STATE.difficulty === 'sleep');
 }
 
+// Erase Mode's own persistent indicator (see #erase-mode-banner in
+// index.html/style.css) -- a DOM overlay synced every frame, same
+// reasoning as updateSleepModeTint just above. STATE.eraseMode gets
+// set/cleared from enough different places (the pause-erase toggle, every
+// ordinary way out of the pause menu, restart/load/exit) that a per-frame
+// sync here is far less error-prone than remembering to touch a DOM class
+// at each one individually. Without this, a player who erases a line and
+// closes the pause menu has nothing telling them Erase Mode -- which has
+// no auto-off -- is still on; every subsequent tap silently fails to draw
+// a new line (see onInputStart's erase-mode branch), reading exactly like
+// the game just stopped working rather than a mode they forgot to leave.
+function updateEraseModeBanner() {
+  const active = STATE.eraseMode && STATE.phase === 'PLAYING' && !STATE.paused;
+  document.getElementById('erase-mode-banner').classList.toggle('visible', active);
+}
+
 // ============================================================
 // SECTION 7B: BARRIERS (difficulty scaling obstacles)
 // ============================================================
@@ -9182,6 +9198,11 @@ function setupPauseMenuListeners() {
     toggleEraseMode(); // sets STATE.eraseMode to exactly what this tap intends
     resumeGame({ clearEraseMode: false }); // ...so the ordinary resume-clears-erase safety net must sit this one out
   });
+  // The banner itself doubles as an escape hatch -- only ever visible
+  // while erase mode is on (see updateEraseModeBanner), so toggling here
+  // always means turning it back off, no trip through the pause menu
+  // required.
+  document.getElementById('erase-mode-banner').addEventListener('click', toggleEraseMode);
   document.getElementById('pause-help').addEventListener('click', openHelp);
   document.getElementById('help-button').addEventListener('click', openHelp);
   document.getElementById('help-close').addEventListener('click', closeHelp);
@@ -9879,6 +9900,7 @@ function render() {
   // classic branches below identically, unlike drawFadeOverlay which
   // genuinely is per-rendering-path.
   updateSleepModeTint();
+  updateEraseModeBanner();
 
   // Cockpit Mode renders into its own Three.js overlay canvas, not this
   // one -- the 2D board never had geometry for these dots to begin with
