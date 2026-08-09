@@ -116,8 +116,8 @@ const TUTORIAL_MESSAGES = [
   // whichever wave this entry ends up on, even if messages are added or
   // reordered above it later.
   { text: 'This board is bigger than your screen — drag to pan, pinch or scroll to zoom, and find every dot.', dismissWhen: 'connect', unlocksWideWorld: true },
-  { text: 'Tap the pause button any time to save your progress.', dismissWhen: 'connect' },
-  { text: 'In Relaxed mode, tap ERASE, then tap a line to remove it and redraw.', dismissWhen: 'connect', relaxedOnly: true },
+  { text: 'Tap the ⋮ button any time to save your progress.', dismissWhen: 'connect' },
+  { text: 'In Relaxed mode, open the ⋮ menu and tap Erase a Line, then tap a line to remove it and redraw.', dismissWhen: 'connect', relaxedOnly: true },
   { text: 'Connect the dots, make music. Relax and Enjoy!', dismissWhen: 'connect' },
 ];
 
@@ -1228,7 +1228,7 @@ function updateCockpitConnectionStatus() {
   // #top-buttons-row can wrap to a second line on narrow viewports (see its
   // own comment) -- clear whatever it's actually rendering as right now
   // instead of a fixed offset sized for one line, or the badge lands on top
-  // of the wrapped HELP/PAUSE row instead of below it (review, #46).
+  // of the wrapped row instead of below it (review, #46).
   const overlayBottom = document.getElementById('ui-overlay').getBoundingClientRect().bottom;
   el.style.top = Math.max(16, overlayBottom + 8) + 'px';
   el.classList.add('visible');
@@ -4128,22 +4128,14 @@ function playHintChime() {
   trackSource(osc);
 }
 
-// Relaxed-difficulty only (see updateWaveDisplay for the button's own
-// visibility). Stays on across multiple erases -- rather than a one-shot
-// action -- so redoing several lines in a row doesn't mean re-tapping ERASE
-// each time; toggling it off, pausing, or leaving the wave all clear it.
+// Relaxed/Sleep-difficulty only (see updateWaveDisplay for #pause-erase's
+// own visibility). Stays on across multiple erases -- rather than a
+// one-shot action -- so redoing several lines in a row doesn't mean
+// reopening the menu each time; toggling it back off from the menu,
+// pausing via any other exit, or leaving the wave all clear it.
 function toggleEraseMode() {
   STATE.eraseMode = !STATE.eraseMode;
-  document.getElementById('erase-button').classList.toggle('active', STATE.eraseMode);
-}
-
-// Relaxed-difficulty only (see updateWaveDisplay for the button's own
-// visibility). Stays on across multiple erases -- rather than a one-shot
-// action -- so redoing several lines in a row doesn't mean re-tapping ERASE
-// each time; toggling it off, pausing, or leaving the wave all clear it.
-function toggleEraseMode() {
-  STATE.eraseMode = !STATE.eraseMode;
-  document.getElementById('erase-button').classList.toggle('active', STATE.eraseMode);
+  document.getElementById('pause-erase').classList.toggle('active', STATE.eraseMode);
 }
 
 // 0 at the very start/end/between flashes, 1 at each flash's peak -- same
@@ -6332,7 +6324,7 @@ function startWave(waveNumber) {
     STATE.isDrawing = false;
     STATE.eraseMode = false;
     STATE.eraseArmed = false;
-    document.getElementById('erase-button').classList.remove('active');
+    document.getElementById('pause-erase').classList.remove('active');
     STATE.portals = null;
     STATE.portalThreads = [];
     STATE.activePortalThread = null;
@@ -6406,7 +6398,7 @@ function startWave(waveNumber) {
   STATE.isDrawing = false;
   STATE.eraseMode = false;
   STATE.eraseArmed = false;
-  document.getElementById('erase-button').classList.remove('active');
+  document.getElementById('pause-erase').classList.remove('active');
   // Set below by generateBarriersSafely if this wave gets one -- reset
   // here first so a wave that doesn't roll one doesn't inherit the
   // previous wave's portal pair or any thread still pending on it.
@@ -8307,16 +8299,24 @@ function haptic(type) {
 // ============================================================
 // PAUSE MENU
 // ============================================================
-function closePauseMenuUI() {
+// clearEraseMode defaults to true -- every ordinary way out of the menu
+// (Resume, Save, Load, Restart, Exit, the title-screen backstop in
+// startWave) lands back in normal draw mode, so the ERASE toggle can never
+// stay lit with no visible cue why taps aren't drawing lines. The one
+// exception is #pause-erase's own click handler, which just set
+// STATE.eraseMode to exactly what it wants and passes false here --
+// otherwise this same safety reset would undo the very toggle the player
+// just asked for before they ever saw it take effect.
+function closePauseMenuUI({ clearEraseMode = true } = {}) {
   document.getElementById('pause-overlay').classList.remove('visible');
   document.getElementById('save-tip').classList.remove('visible');
   document.getElementById('pause-save').classList.remove('save-tip-pulse');
   stopPauseFactRotation();
-  // Resuming always lands back in normal draw mode -- otherwise the ERASE
-  // toggle could stay lit with no visible cue why taps aren't drawing lines.
-  STATE.eraseMode = false;
-  STATE.eraseArmed = false;
-  document.getElementById('erase-button').classList.remove('active');
+  if (clearEraseMode) {
+    STATE.eraseMode = false;
+    STATE.eraseArmed = false;
+    document.getElementById('pause-erase').classList.remove('active');
+  }
 }
 
 // A rare nudge toward Save Game for a player who might not have noticed it
@@ -8360,7 +8360,7 @@ function pauseGame() {
   maybeShowSaveTip();
 }
 
-function resumeGame() {
+function resumeGame({ clearEraseMode = true } = {}) {
   if (!STATE.paused) return;
   STATE.paused = false;
   if (STATE.audioCtx && STATE.masterGain) {
@@ -8369,7 +8369,7 @@ function resumeGame() {
     STATE.masterGain.gain.setValueAtTime(STATE.masterGain.gain.value, t);
     STATE.masterGain.gain.linearRampToValueAtTime(1.0, t + 0.25);
   }
-  closePauseMenuUI();
+  closePauseMenuUI({ clearEraseMode });
 }
 
 function togglePause() {
@@ -8380,16 +8380,24 @@ function togglePause() {
 // ============================================================
 // HOW-TO-PLAY OVERLAY
 // ============================================================
-// Reachable from the title screen and mid-game alike (see #help-button's
-// CSS). A plain reference, not a second pause mechanism -- its own opaque
-// backdrop already blocks every pointer event from reaching the board
-// underneath while it's open, so there's nothing else to freeze.
+// Two entry points: the standalone #help-button, title-screen-only (a
+// curious new player hasn't paused anything -- there's nothing to
+// resume), and #pause-help inside the in-game menu, which already
+// paused the board before getting here. Either way this overlay's own
+// opaque backdrop blocks every pointer event from reaching whatever's
+// underneath while it's open, so there's nothing else to freeze here.
 function openHelp() {
+  document.getElementById('pause-overlay').classList.remove('visible'); // no-op if reached from the title screen, where it was never shown
   document.getElementById('help-overlay').classList.add('visible');
 }
 
+// Closing lands back in the game, not back in the menu that opened this --
+// one tap out of Help is simpler than two. resumeGame() is already a
+// guarded no-op when STATE.paused is false, which is exactly the
+// title-screen case, so no separate branch is needed for it here.
 function closeHelp() {
   document.getElementById('help-overlay').classList.remove('visible');
+  resumeGame();
 }
 
 function handleSaveGame() {
@@ -8507,7 +8515,7 @@ function exitToTitle() {
   STATE.cockpitPath = [];
   STATE.cockpitLines = [];
   teardownCockpitScene();
-  document.getElementById('erase-button').classList.remove('active');
+  document.getElementById('pause-erase').classList.remove('active');
   hideTutorialHint(true); // in-wave UI must never linger over the title screen
   document.getElementById('achievement-toast').classList.remove('visible');
   STATE.achievementQueue = [];
@@ -8600,8 +8608,22 @@ function maybeFetchOnlineFacts() {
 
 function setupPauseMenuListeners() {
   document.getElementById('pause-button').addEventListener('click', togglePause);
-  document.getElementById('hint-button').addEventListener('click', triggerHintPulse);
-  document.getElementById('erase-button').addEventListener('click', toggleEraseMode);
+  // Hint and Erase both hand control straight back to the board after
+  // acting, instead of leaving the menu sitting over the very thing they
+  // just turned on -- a player who just armed erase mode needs to tap a
+  // line next, not tap through another menu first (review feedback: Mom
+  // finding the old standalone buttons undiscoverable is exactly what
+  // this menu fixes, but only if picking an action doesn't just trade one
+  // kind of confusion for another).
+  document.getElementById('pause-hint').addEventListener('click', () => {
+    triggerHintPulse();
+    resumeGame();
+  });
+  document.getElementById('pause-erase').addEventListener('click', () => {
+    toggleEraseMode(); // sets STATE.eraseMode to exactly what this tap intends
+    resumeGame({ clearEraseMode: false }); // ...so the ordinary resume-clears-erase safety net must sit this one out
+  });
+  document.getElementById('pause-help').addEventListener('click', openHelp);
   document.getElementById('help-button').addEventListener('click', openHelp);
   document.getElementById('help-close').addEventListener('click', closeHelp);
   document.getElementById('help-overlay').addEventListener('click', (e) => {
@@ -9188,6 +9210,12 @@ function updateWaveDisplay() {
   // intentionally absent one. Hidden here instead, at the same place
   // every phase transition already runs through.
   document.getElementById('pause-button').classList.toggle('visible', STATE.phase !== 'TITLE');
+  // The standalone HELP button is the mirror image of PAUSE above: useful
+  // pre-game (a curious new player, nothing to pause yet), redundant once
+  // a wave is running, where How to Play lives inside the one menu button
+  // instead (see #pause-help) rather than sitting on screen as a second
+  // permanently-visible control.
+  document.getElementById('help-button').classList.toggle('visible', STATE.phase === 'TITLE');
   // Free and functional in both Relaxed and Normal. Still shown (not
   // hidden) in Intense too -- see triggerHintPulse, which explains why via
   // a toast on tap instead of silently doing nothing, rather than the
@@ -9196,12 +9224,12 @@ function updateWaveDisplay() {
   // a 2D board that isn't being rendered, and ERASE's tap-a-line gesture
   // has no first-person analog (see updateCockpitDrawing's own, simpler
   // rejection rule instead).
-  document.getElementById('hint-button').classList.toggle('visible', STATE.phase !== 'TITLE' && !STATE.cockpitMode);
+  document.getElementById('pause-hint').classList.toggle('visible', STATE.phase !== 'TITLE' && !STATE.cockpitMode);
   // Unlike HINT/pause, gated to PLAYING specifically, not just "not TITLE"
   // -- during WAVE_COMPLETE, canvas taps advance to the next wave before
   // ever reaching the erase-mode branch in onInputStart, so a lit ERASE
   // button there would toggle a mode that can't actually do anything.
-  document.getElementById('erase-button').classList.toggle('visible', STATE.phase === 'PLAYING' && QOL_DIFFICULTIES.has(STATE.difficulty) && !STATE.cockpitMode);
+  document.getElementById('pause-erase').classList.toggle('visible', STATE.phase === 'PLAYING' && QOL_DIFFICULTIES.has(STATE.difficulty) && !STATE.cockpitMode);
 }
 
 // ============================================================

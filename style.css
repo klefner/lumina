@@ -246,78 +246,83 @@ html, body {
   min-height: 14px;
 }
 
-/* wrap + right-align rather than a fixed no-wrap row: with all four
-   controls spelled out as words (see below), the row can exceed
-   available width on narrow viewports (flagged by review, ~300px CSS
-   width or narrower) -- `body` has overflow:hidden, so an overflowing
-   nowrap row silently clips its rightmost button instead of erroring.
-   Wrapping is a no-op on anything wide enough to fit on one line. */
+/* Just two controls share this row now (HELP pre-game, the single MENU
+   button once playing -- see updateWaveDisplay), each hidden except in
+   its own phase, so it never actually shows both/wraps in practice
+   anymore -- wrap+right-align kept anyway as a cheap guard against an
+   unusually narrow viewport or long future addition. `body` has
+   overflow:hidden, so an overflowing nowrap row would silently clip its
+   rightmost button instead of erroring. */
 #top-buttons-row {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
   gap: 8px;
 }
 
-/* Hidden until a game is actually in progress (see updateWaveDisplay) —
-   togglePause() is a deliberate no-op on the title screen, and a visible
-   button that does nothing on tap reads as broken rather than absent.
-   #help-button is deliberately not part of that display:none rule below —
-   it's meaningful on the title screen too, so it's always visible.
-   #erase-button additionally only ever shows in Relaxed difficulty. All
-   four share one text brightness (0.95 -- close to solid white) rather
-   than the original dim 0.7, matching the buttons' own hover state; a
-   busy starfield background made the dimmer version hard to read. */
-#pause-button, #hint-button, #erase-button, #help-button {
+/* Both hidden until the right phase (see updateWaveDisplay): HELP is
+   title-screen-only now -- once a wave starts, How to Play lives inside
+   the MENU button's panel (#pause-help) instead of sitting on screen as
+   its own permanently-visible control. MENU is the mirror image, hidden
+   pre-game since togglePause() is a deliberate no-op there. Sharing one
+   text brightness (0.95, close to solid white) rather than a dimmer
+   tone -- a busy starfield/forest background made a dimmer version hard
+   to read. */
+#help-button, #pause-button {
+  display: none;
   pointer-events: auto;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.2);
   color: rgba(255, 255, 255, 0.95);
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+#help-button.visible, #pause-button.visible {
+  display: flex;
+}
+#help-button:hover, #help-button:active,
+#pause-button:hover, #pause-button:active {
+  background: rgba(255, 255, 255, 0.18);
+  color: rgba(255, 255, 255, 0.95);
+}
+
+/* HELP stays the same word-label pill it's always been. */
+#help-button {
   font-family: 'Courier New', monospace;
   font-size: 11px;
   letter-spacing: 0.1em;
   line-height: 1;
-  cursor: pointer;
-  transition: background 0.2s ease, color 0.2s ease;
-}
-#pause-button, #hint-button, #erase-button {
-  display: none;
-}
-#pause-button.visible, #hint-button.visible, #erase-button.visible {
-  display: block;
-}
-/* All four are word labels (PAUSE/HINT/ERASE/HELP), not single glyphs,
-   so they share one pill shape wide enough for a word. */
-#pause-button, #hint-button, #erase-button, #help-button {
   border-radius: 15px;
   padding: 0 12px;
   height: 30px;
   font-weight: 700;
 }
-#pause-button:hover, #pause-button:active,
-#hint-button:hover, #hint-button:active,
-#erase-button:hover, #erase-button:active,
-#help-button:hover, #help-button:active {
-  background: rgba(255, 255, 255, 0.18);
-  color: rgba(255, 255, 255, 0.95);
-}
-/* Lit while erase mode is engaged (see toggleEraseMode) -- a warm,
-   attention-getting fill rather than the neutral hover state above, so
-   it's obvious taps are currently erasing lines instead of drawing them. */
-#erase-button.active {
-  background: rgba(255, 120, 90, 0.85);
-  border-color: rgba(255, 150, 120, 0.9);
-  color: #1a0a05;
+
+/* The one on-screen control during a wave: everything ERASE/HINT/HELP/
+   PAUSE used to be, now behind a single unmistakable circular button
+   (see #pause-panel) instead of four to choose between. Sized well past
+   a typical ~44px touch-target minimum on purpose -- this button is the
+   entire answer to "how do I get out of this," so it needs to be the
+   easiest possible thing to find and hit, not just technically tappable. */
+#pause-button {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  line-height: 1;
 }
 
-/* Explains why tapping HINT in Intense doesn't do anything (see
+/* Explains why picking Hint in Intense doesn't do anything (see
    triggerHintPulse) -- anchored under the button row rather than a
    generic screen-center toast, so it visually points back at the
-   button that triggered it. `top` is set inline by showHintToast, not
-   here -- the button row can wrap to a second line on narrow viewports
-   (see its own flex-wrap rule), so a fixed CSS offset sized for one
-   line would land the toast on top of the wrapped row instead of
-   below it. */
+   corner control the menu (and this toast) live under. `top` is set
+   inline by showHintToast, not here -- the button row can wrap to a
+   second line on narrow viewports (see its own flex-wrap rule), so a
+   fixed CSS offset sized for one line would land the toast on top of
+   the wrapped row instead of below it. */
 #hint-toast {
   position: fixed;
   right: 24px;
@@ -438,6 +443,28 @@ html, body {
   border-color: rgba(120, 200, 255, 0.4);
 }
 
+/* Unlike the rest of #pause-panel's items, these two are conditionally
+   relevant, not always -- Hint is hidden in Cockpit Mode (a 2D-board
+   affordance with nothing to pulse there) and Erase only ever applies in
+   Relaxed/Sleep (see updateWaveDisplay for the exact gating, mirroring
+   the standalone buttons these replaced). display:none by default, same
+   pattern as #pause-button/#help-button above. */
+#pause-hint, #pause-erase {
+  display: none;
+}
+#pause-hint.visible, #pause-erase.visible {
+  display: block;
+}
+/* Lit while erase mode is engaged (see toggleEraseMode) -- a warm,
+   attention-getting fill rather than the neutral hover state above, so
+   reopening the menu makes it obvious erase is still on, not just
+   whether it's available at all. */
+#pause-erase.active {
+  background: rgba(255, 120, 90, 0.85);
+  border-color: rgba(255, 150, 120, 0.9);
+  color: #1a0a05;
+}
+
 /* A rare nudge toward Save Game for a player who's never used it (see
    maybeShowSaveTip) -- collapsed out of flow by default so it never
    reserves space in the menu on the vast majority of opens where it
@@ -504,11 +531,11 @@ html, body {
   opacity: 1;
 }
 
-/* How-to-play reference — reachable from the title screen (a curious new
-   player) and mid-game alike (see #help-button not being in the
-   TITLE-only display:none rule above). A plain informational overlay, not
-   a second pause mechanism: its own opaque backdrop already blocks every
-   pointer event from reaching the board underneath while it's open. */
+/* How-to-play reference — reachable from the title screen via the
+   standalone #help-button, and mid-game via #pause-help inside the menu
+   (see game.js's openHelp/closeHelp for how the two entry points share
+   this one overlay). Its own opaque backdrop already blocks every
+   pointer event from reaching whatever's underneath while it's open. */
 #help-overlay {
   position: fixed;
   top: 0;

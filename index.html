@@ -55,10 +55,17 @@
     </div>
     <div id="right-col">
       <div id="top-buttons-row">
-        <button id="erase-button" aria-label="Erase a line">ERASE</button>
-        <button id="hint-button" aria-label="Flash unconnected dots">HINT</button>
+        <!-- Title-screen-only reference (see updateWaveDisplay) -- once a
+             wave is in progress, How to Play moves into #pause-help
+             below so there's exactly one button on screen during play. -->
         <button id="help-button" aria-label="How to play">HELP</button>
-        <button id="pause-button" aria-label="Pause">PAUSE</button>
+        <!-- The single in-game control: pauses and opens #pause-overlay,
+             which now holds everything ERASE/HINT/HELP/PAUSE used to be
+             separately (see #pause-panel) -- one unmistakable button
+             instead of four to choose between mid-wave. -->
+        <button id="pause-button" aria-label="Menu" aria-haspopup="true" aria-expanded="false">
+          <span aria-hidden="true">&#8942;</span>
+        </button>
       </div>
       <div id="draw-score-display"></div>
       <div id="score-display"></div>
@@ -68,8 +75,16 @@
   <div id="hint-toast"></div>
   <div id="pause-overlay">
     <div id="pause-panel">
-      <div id="pause-title">PAUSED</div>
+      <div id="pause-title">MENU</div>
       <button class="pause-menu-item" id="pause-resume">Resume</button>
+      <!-- Same actions ERASE/HINT/HELP used to be on their own, now
+           reached through this one menu (see pause-button above). Each
+           closes the menu and hands control straight back to the board
+           instead of leaving a panel in the way of the very thing it
+           just turned on (see their game.js click handlers). -->
+      <button class="pause-menu-item" id="pause-hint">Hint</button>
+      <button class="pause-menu-item" id="pause-erase">Erase a Line</button>
+      <button class="pause-menu-item" id="pause-help">How to Play</button>
       <button class="pause-menu-item" id="pause-save">Save Game</button>
       <div id="save-tip">Tip: you can save your progress here!</div>
       <button class="pause-menu-item" id="pause-load">Load Game</button>
@@ -90,12 +105,10 @@
         <li>Longer, more winding lines score more than short direct ones — the scenic route pays better.</li>
         <li>A line can't cross a barrier (dashed) or another line. Some barriers rotate, and can snap a connection they sweep through even after it's finished.</li>
         <li>Pinch or scroll to zoom, and drag empty space to pan around once you're zoomed in.</li>
-        <li>Tap HINT if you're not sure what's still unconnected — every unconnected dot flashes white.</li>
-        <li>In Relaxed difficulty, tap ERASE, then tap any line you've drawn to remove it and redraw.</li>
+        <li>Tap the &#8942; button any time — it's everything in one place: Hint (flashes every unconnected dot white), Erase a Line (Relaxed/Sleep only — tap it, then tap any line you've drawn to remove it and redraw), saving, restarting, and this help.</li>
         <li>Later waves can hide a dot behind its own sealed wall, reachable only through a swirling portal pair. Drag to one side to lock in, then start a fresh drag from the other side to reach its match.</li>
         <li>Flight Mode (title screen toggle): pilot a ship instead of dragging — hold anywhere to steer it, and fly through one dot then another to connect them, momentum and all.</li>
         <li>Cockpit Mode (title screen toggle): a first-person 3D view — hold anywhere as a joystick to bank and thrust, and fly through one dot then another to connect them. The ship drifts on release instead of stopping dead.</li>
-        <li>Tap the pause button any time to save your progress or adjust settings.</li>
       </ul>
     </div>
   </div>
