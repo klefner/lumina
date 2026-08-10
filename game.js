@@ -3000,7 +3000,8 @@ async function decodeAllSamples() {
         const raw = await samplePromises[instrument][note];
         if (!raw) return;
         try {
-          const buffer = await STATE.audioCtx.decodeAudioData(raw.slice(0));
+          const decoded = await STATE.audioCtx.decodeAudioData(raw.slice(0));
+          const buffer = trimLeadingSilence(decoded, STATE.audioCtx);
           STATE.sampleBuffers[instrument][note] = buffer;
           registerSampleGain(instrument, note, buffer);
         } catch (e) { /* skip — playSample falls back gracefully */ }
@@ -3774,15 +3775,72 @@ const TARGET_SAMPLE_RMS = 0.15;
 // others hitting on nearby beats. Falls back to the whole buffer for
 // anything shorter (e.g. a drum one-shot).
 const ATTACK_WINDOW_SEC = 0.3;
+
+// Real recordings carry mic pre-roll before the string is actually struck
+// -- measured across this project's own piano set, onsets range from
+// ~0.24s up to ~0.48s of near-silence before the note begins. This bites
+// twice. First, measuring the attack window from literal sample 0 means
+// that lead-in silence dominates the RMS for any sample whose onset is a
+// meaningful fraction of ATTACK_WINDOW_SEC, understating true loudness and
+// producing a wildly inflated gain multiplier (400-600x seen on the
+// worst offenders here) that then clips the real attack once it finally
+// arrives. Second and more serious: every note is scheduled assuming
+// "starts playing at t" means "audible at t" -- with up to half a second
+// of silence baked into the front of the buffer, a note's real sound
+// doesn't arrive until t+onset, an offset that differs per sample. For
+// a fixed melody with notes under a second apart (see
+// generateBirthdaySong), that smears the actual rhythm into something
+// unrecognizable even when every pitch and gain is correct, and a short
+// holdSec can release/stop a note before its audible attack ever plays.
+// trimLeadingSilence (below) removes this at its source, once per sample
+// at decode time, so every downstream consumer -- gain calibration here
+// and playback scheduling everywhere else -- gets a buffer that actually
+// starts when it sounds.
+function findSampleOnset(buffer) {
+  let peakAbs = 0;
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    const data = buffer.getChannelData(ch);
+    for (let i = 0; i < data.length; i++) peakAbs = Math.max(peakAbs, Math.abs(data[i]));
+  }
+  if (peakAbs <= 0) return 0;
+  const threshold = peakAbs * 0.1;
+  for (let i = 0; i < buffer.length; i++) {
+    for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+      if (Math.abs(buffer.getChannelData(ch)[i]) >= threshold) return i;
+    }
+  }
+  return 0;
+}
+
 function computeAttackRms(buffer) {
-  const windowSamples = Math.min(buffer.length, Math.round(ATTACK_WINDOW_SEC * buffer.sampleRate));
+  const onset = findSampleOnset(buffer);
+  const windowSamples = Math.min(buffer.length - onset, Math.round(ATTACK_WINDOW_SEC * buffer.sampleRate));
   if (windowSamples <= 0) return 0;
   let sumSquares = 0, count = 0;
   for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
     const data = buffer.getChannelData(ch);
-    for (let i = 0; i < windowSamples; i++) { sumSquares += data[i] * data[i]; count++; }
+    for (let i = onset; i < onset + windowSamples; i++) { sumSquares += data[i] * data[i]; count++; }
   }
   return count > 0 ? Math.sqrt(sumSquares / count) : 0;
+}
+
+// Copies [onset - preroll, buffer.length) into a fresh buffer, so index 0
+// of the result is (almost) where the note actually starts sounding --
+// undoes the recording's own mic pre-roll once, at decode time, instead
+// of leaving every future playback to account for it. Keeps a small
+// pre-roll because the real attack ramps up through the onset threshold
+// rather than starting exactly at it; trimming flush to the threshold
+// would clip the leading edge of the transient.
+function trimLeadingSilence(buffer, ctx) {
+  const onset = findSampleOnset(buffer);
+  const prerollSamples = Math.round(0.015 * buffer.sampleRate);
+  const start = Math.max(0, onset - prerollSamples);
+  if (start <= 0) return buffer;
+  const trimmed = ctx.createBuffer(buffer.numberOfChannels, buffer.length - start, buffer.sampleRate);
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    trimmed.copyToChannel(buffer.getChannelData(ch).subarray(start), ch);
+  }
+  return trimmed;
 }
 
 // The multiplier that brings one specific decoded sample up (or down) to
@@ -3794,7 +3852,23 @@ function sampleGainFor(instrument, name) {
   return g != null ? g : 1; // not measured yet (shouldn't happen once decode finishes) -- unity gain
 }
 
-function playResolvedSample(instrument, nearestName, targetMidi, t, peak, dest) {
+// holdSec, when given, cuts the note off with a short release instead of
+// its full natural sample length (~1.8-2.2s per real recording, see
+// sounds/CREDITS.md). Every existing caller leaves it undefined and gets
+// the old unconditional-decay behavior unchanged -- pads/drones/ambient
+// roles WANT their notes ringing/overlapping into each other, that's the
+// whole point of a sustained texture. It exists for exactly one caller
+// so far (see generateBirthdaySong/playScheduledNote): a real, recognizable
+// tune needs its notes actually articulated, not smeared -- rendered and
+// pitch-verified evidence (a fixed melody firing notes as little as 0.14s
+// apart, each left to ring its own full ~2s sample with no note-off at
+// all, produces 3-10+ simultaneously decaying overlapping tones at any
+// given instant) is what a monophonic pitch detector run against the
+// game's own actual synthesized audio measured before this existed --
+// individually correct pitches, playing in the correct order, rendering
+// as a wash rather than a legible melody.
+const NOTE_RELEASE_SEC = 0.05;
+function playResolvedSample(instrument, nearestName, targetMidi, t, peak, dest, holdSec) {
   const buffers = STATE.sampleBuffers[instrument];
   if (!buffers || !nearestName) return;
   const buffer = buffers[nearestName];
@@ -3806,15 +3880,23 @@ function playResolvedSample(instrument, nearestName, targetMidi, t, peak, dest) 
   src.playbackRate.value = Math.pow(2, (targetMidi - noteNameToMidi(nearestName)) / 12);
 
   const gain = ctx.createGain();
-  gain.gain.value = peak * sampleGainFor(instrument, nearestName);
+  const peakGain = peak * sampleGainFor(instrument, nearestName);
+  gain.gain.value = peakGain;
 
   src.connect(gain);
   gain.connect(dest);
   trackSource(src).start(t);
+
+  if (holdSec != null) {
+    const releaseStart = t + holdSec;
+    gain.gain.setValueAtTime(peakGain, releaseStart);
+    gain.gain.linearRampToValueAtTime(0.0001, releaseStart + NOTE_RELEASE_SEC);
+    src.stop(releaseStart + NOTE_RELEASE_SEC + 0.02);
+  }
 }
 
-function playSample(instrument, targetMidi, t, peak, dest, resolvedName) {
-  playResolvedSample(instrument, resolvedName || nearestSampleNote(instrument, targetMidi), targetMidi, t, peak, dest);
+function playSample(instrument, targetMidi, t, peak, dest, resolvedName, holdSec) {
+  playResolvedSample(instrument, resolvedName || nearestSampleNote(instrument, targetMidi), targetMidi, t, peak, dest, holdSec);
 }
 
 function playSampleChord(instrument, midiList, t, peak, dest, resolvedNames) {
@@ -3855,13 +3937,13 @@ function playDrumHit(instrument, piece, t, peak, dest) {
   trackSource(src).start(t);
 }
 
-function playNoteAt(note, t, peak, dest) {
+function playNoteAt(note, t, peak, dest, holdSec) {
   if (note.role === 'pad') {
     playSampleChord(note.instrument, note.midiList, t, peak, dest, note.resolvedSamples);
   } else if (note.role === 'drum') {
     playDrumHit(note.instrument, note.drumPiece, t, peak, dest);
   } else {
-    playSample(note.instrument, note.midi, t, peak, dest, note.resolvedSample);
+    playSample(note.instrument, note.midi, t, peak, dest, note.resolvedSample, holdSec);
   }
 }
 
@@ -3869,7 +3951,11 @@ function playScheduledNote(note, startTime, beatDur, dest) {
   const t = startTime + note.beat * beatDur;
   const vel = note.vel || 1;
   const peak = (KIND_PEAK[note.role] || 0.4) * vel;
-  playNoteAt(note, t, peak, dest);
+  // See playResolvedSample's own comment -- durBeats only exists on notes
+  // that need to be articulated (currently just generateBirthdaySong's
+  // melody), so this is a no-op for every other note in the game.
+  const holdSec = note.durBeats != null ? note.durBeats * beatDur : null;
+  playNoteAt(note, t, peak, dest, holdSec);
 }
 
 // unmuteChunk deliberately waits for this chunk's next clean note onset
@@ -4144,6 +4230,17 @@ function generateBirthdaySong(pairCount) {
       beat: humanizeBeat(beat, 0.015),
       midi: foldToInstrumentRange(instrument, scaleMidi(genre, n.deg, 0)),
       role: 'melody', instrument, vel: humanizeVelocity(), chunkIndex,
+      // Real piano samples ring their full ~1.8-2.2s length with no
+      // note-off (see playResolvedSample) -- fine for a pad/drone role
+      // that's SUPPOSED to blend into the next one, wrong for a fixed,
+      // recognizable tune whose shortest notes are only ~0.14s apart:
+      // rendered and pitch-verified, that left 3-10+ notes ringing over
+      // each other at any instant, an unrecognizable wash rather than
+      // "Happy Birthday." durBeats gives playScheduledNote something to
+      // release against; the *0.85 leaves a small gap before the next
+      // note's onset so consecutive notes read as separately articulated,
+      // not legato-tied into one continuous tone.
+      durBeats: n.dur * 0.85,
     });
     beat += n.dur;
   });
