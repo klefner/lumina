@@ -3494,8 +3494,13 @@ const SCENE_DISPLAY_NAMES = { space: 'Space', forest: 'Forest', beach: 'Beach' }
 function queueSceneCompleteToast(scene) {
   const celebration = SCENE_COMPLETE_CELEBRATIONS[scene];
   if (!celebration) return;
-  const sceneIndex = SCENE_LIST.indexOf(scene);
-  const nextScene = SCENE_LIST[(sceneIndex + 1) % SCENE_LIST.length];
+  // Must walk the same filtered list resolveSceneBlock actually rotates
+  // through (see activeSceneList) -- under Sleep mode, the unfiltered
+  // SCENE_LIST could name a scene as "next" that Sleep mode is about to
+  // skip right over, announcing an arrival that never happens.
+  const scenes = activeSceneList();
+  const sceneIndex = scenes.indexOf(scene);
+  const nextScene = scenes[(sceneIndex + 1) % scenes.length];
   queueAchievement({
     glyph: celebration.glyph,
     bg: celebration.bg,
