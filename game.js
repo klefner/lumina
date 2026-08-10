@@ -3796,18 +3796,37 @@ const ATTACK_WINDOW_SEC = 0.3;
 // at decode time, so every downstream consumer -- gain calibration here
 // and playback scheduling everywhere else -- gets a buffer that actually
 // starts when it sounds.
+// Onset relative to the recording's own noise floor, not a fraction of
+// its eventual peak (review catch, PR #77: a fixed-fraction-of-peak
+// threshold can't distinguish a genuinely quiet, gradual attack -- a
+// bowed cello swell, a mallet roll -- from real silence, and would trim
+// straight into it). Every sample in this project's library opens with
+// at least a few ms of true room silence before any note, fast or slow
+// attack alike, physically begins -- measuring that as the floor and
+// looking for a sustained rise clearly above it (a short RMS window, not
+// a single-sample peak, so one stray click can't false-trigger) finds
+// the real onset for a percussive piano hit and a gradual swell alike,
+// and safely resolves to "no silence found" (onset 0, nothing trimmed)
+// for a sample whose attack is already audible in that opening window.
 function findSampleOnset(buffer) {
-  let peakAbs = 0;
+  const floorWindow = Math.min(buffer.length, Math.round(0.01 * buffer.sampleRate));
+  let floorSumSq = 0, floorCount = 0;
   for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
     const data = buffer.getChannelData(ch);
-    for (let i = 0; i < data.length; i++) peakAbs = Math.max(peakAbs, Math.abs(data[i]));
+    for (let i = 0; i < floorWindow; i++) { floorSumSq += data[i] * data[i]; floorCount++; }
   }
-  if (peakAbs <= 0) return 0;
-  const threshold = peakAbs * 0.1;
-  for (let i = 0; i < buffer.length; i++) {
+  const noiseFloorRms = floorCount > 0 ? Math.sqrt(floorSumSq / floorCount) : 0;
+  const threshold = Math.max(noiseFloorRms * 6, 0.001);
+
+  const winSamples = Math.max(1, Math.round(0.005 * buffer.sampleRate));
+  for (let i = 0; i < buffer.length; i += winSamples) {
+    let sumSq = 0, count = 0;
     for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
-      if (Math.abs(buffer.getChannelData(ch)[i]) >= threshold) return i;
+      const data = buffer.getChannelData(ch);
+      for (let j = i; j < Math.min(i + winSamples, buffer.length); j++) { sumSq += data[j] * data[j]; count++; }
     }
+    const rms = count > 0 ? Math.sqrt(sumSq / count) : 0;
+    if (rms >= threshold) return i;
   }
   return 0;
 }
