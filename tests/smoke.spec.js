@@ -109,6 +109,40 @@ test('the score display reads "Score: <n>" once points are on the board', async 
   expect(errors).toEqual([]);
 });
 
+test('#scene-progress-display names the current background and counts its waves, hidden on the title screen and under Sleep mode (player request)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  // Hidden before a game starts.
+  await expect(page.locator('#scene-progress-display')).toHaveText('');
+
+  const result = await page.evaluate(() => {
+    STATE.sceneMode = 'beach';
+    STATE.difficulty = 'normal';
+    startWave(1);
+    const total = sceneWaveCount(STATE.scene);
+    const first = document.getElementById('scene-progress-display').textContent;
+
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete();
+    startWave(2);
+    const second = document.getElementById('scene-progress-display').textContent;
+
+    STATE.difficulty = 'sleep';
+    updateWaveDisplay();
+    const underSleep = document.getElementById('scene-progress-display').textContent;
+
+    return { total, first, second, underSleep };
+  });
+
+  expect(result.first).toBe(`Beach at Night 1 of ${result.total} waves`);
+  expect(result.second).toBe(`Beach at Night 2 of ${result.total} waves`);
+  expect(result.underSleep).toBe('');
+  expect(errors).toEqual([]);
+});
+
 // Regression guard for a defect where a completed connection's stored
 // line/segments could trail off short of the dot it was actually drawn
 // to. Root cause: the recorded path only ever gained points from move
