@@ -3588,6 +3588,15 @@ const SCENE_COMPLETE_CELEBRATIONS = {
 };
 const SCENE_DISPLAY_NAMES = { space: 'Space', forest: 'Forest', beach: 'Beach', birthday: 'Birthday', halloween: 'Halloween', christmas: 'Christmas' };
 
+// Full names matching the title screen's own scene-selector option text
+// (see index.html) -- used by #scene-progress-display below, which names
+// the actual scene being played, not the shorter toast-label wording
+// SCENE_DISPLAY_NAMES uses ("Beach at Night", not just "Beach").
+const SCENE_HUD_NAMES = {
+  space: 'Space', forest: 'Night Forest', beach: 'Beach at Night',
+  birthday: 'Birthday Party', halloween: 'Halloween', christmas: 'Christmas',
+};
+
 function queueSceneCompleteToast(scene) {
   const celebration = SCENE_COMPLETE_CELEBRATIONS[scene];
   if (!celebration) return;
@@ -10758,6 +10767,19 @@ function updateWaveDisplay() {
   // competitive thinking, which works against that (player request).
   document.getElementById('score-display').textContent =
     (STATE.difficulty !== 'sleep' && STATE.score > 0) ? `Score: ${STATE.score}` : '';
+  // Which wave of the current background's set this is (player request) --
+  // same visibility rule as the score above (hidden pre-game and under
+  // Sleep, which wants minimal UI). STATE.ambienceStreak already tracks
+  // exactly this -- consecutive completed waves on the current scene,
+  // capped at its sound-layer count -- for both Rotate and a fixed scene
+  // pick alike (see catchUpAmbienceStreakForWave), so "current position"
+  // is just one more than however many of this scene's waves are already
+  // behind us, capped at the scene's own total (sceneWaveCount).
+  const sceneTotal = sceneWaveCount(STATE.scene);
+  document.getElementById('scene-progress-display').textContent =
+    (STATE.difficulty !== 'sleep' && STATE.phase !== 'TITLE')
+      ? `${SCENE_HUD_NAMES[STATE.scene]} ${Math.min(STATE.ambienceStreak + 1, sceneTotal)} of ${sceneTotal} waves`
+      : '';
   // Playtest feedback aid, not a permanent gameplay element -- lets a
   // player name which specific generated song (family + seed) they're
   // hearing, so "this one didn't come together" is reportable instead of
