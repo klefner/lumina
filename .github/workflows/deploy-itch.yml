@@ -1,0 +1,39 @@
+name: Deploy to itch.io
+
+# Deliberately manual-only. Established workflow: a push to main
+# auto-deploys GitHub Pages + Cloudflare Pages (see deploy-pages.yml) for
+# testing; itch.io is the storefront and only receives a build once
+# that's been played and approved there, by running this workflow by
+# hand (Actions tab -> Deploy to itch.io -> Run workflow, or triggered on
+# request).
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag, or commit to deploy'
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Stage site files
+        id: stage
+        uses: ./.github/actions/stage-site
+      - name: Install butler
+        run: |
+          curl -L -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip -d butler
+          chmod +x butler/butler
+      - name: Push to itch.io
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: ./butler/butler push _site draclif/lumina:html5 --userversion "${{ steps.stage.outputs.build }}"
