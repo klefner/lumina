@@ -164,6 +164,31 @@ retriggers, all easing in over the same short fade
 (`AMBIENT_VARIATION.EVENT_FADE_IN_SEC`) every event sound in the game
 uses now.
 
+## Christmas ambience (sounds/ambient/christmas-*.mp3)
+
+Four real recordings, genuinely calm this time (see `SLEEP_SAFE_SCENES`
+in game.js) rather than Birthday/Halloween's higher-energy sets. All CC0:
+
+- `christmas-fire.mp3` — "Close Up Burning Fire," from
+  [Red Library: Fire](https://archive.org/details/Red_Library_Fire)
+  (USC Cinema / Sunset Editorial Collection).
+- `christmas-wind.mp3` — "Cold Arctic wind," from
+  [SSE Library: WIND](https://archive.org/details/SSE_Library_WIND)
+  (same USC/Sunset collection family as the Halloween creak/Forest owl).
+- `christmas-bells.mp3` — "Two Metal Bells Clank Randomly," standing in
+  for sleigh bells (Pixabay/Mixkit, the platforms that actually host
+  standalone sleigh-bell recordings, returned HTTP 403 to this project's
+  fetch tooling) — real small metal bells clanking is, mechanically,
+  what a sleigh bell jingle *is*, from
+  [Red Library: Bells, Horns, Whistles](https://archive.org/details/Red_Library_Bells_Horns_Whistles).
+- `christmas-chimes.mp3` — "Church Bell Chimes," from the same Bells,
+  Horns, Whistles collection.
+
+Fire and wind loop continuously; bells and chimes are rarer one-shot
+retriggers, easing in over the same short fade
+(`AMBIENT_VARIATION.EVENT_FADE_IN_SEC`) every event sound in the game
+uses.
+
 ## The lofi genre family's instruments (rhodes, lofibass, lofikit)
 
 Not recordings — synthesized entirely in-browser (game.js,

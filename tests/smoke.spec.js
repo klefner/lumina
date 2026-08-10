@@ -6384,6 +6384,53 @@ test('Halloween ground fog stays at least partially visible through its whole dr
   expect(errors).toEqual([]);
 });
 
+test('the Christmas scene generates and draws without error, sharing the moon/starfield with Forest', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'christmas';
+    STATE.christmasScene = generateChristmasScene();
+    for (let i = 0; i < 60; i++) updateChristmasScene(); // give snow/smoke somewhere to have moved to
+    drawChristmasScene(); // throws if anything in the draw path is broken
+    return {
+      hasSnowflakes: STATE.christmasScene.snowflakes.length > 0,
+      hasLights: STATE.christmasScene.lights.length > 0,
+      hasSmoke: STATE.christmasScene.smoke.length > 0,
+      phaseAdvanced: STATE.christmasScene.phase === 60,
+      moonHelperShared: typeof drawNightMoon === 'function',
+    };
+  });
+
+  expect(result.hasSnowflakes).toBe(true);
+  expect(result.hasLights).toBe(true);
+  expect(result.hasSmoke).toBe(true);
+  expect(result.phaseAdvanced).toBe(true);
+  expect(result.moonHelperShared).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('Christmas chimney smoke recycles back to the chimney instead of resetting off-frame', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.scene = 'christmas';
+    STATE.christmasScene = generateChristmasScene();
+    const puff = STATE.christmasScene.smoke[0];
+    puff.riseFrac = 0.9995;
+    updateChristmasScene();
+    return { riseFrac: puff.riseFrac };
+  });
+
+  expect(result.riseFrac).toBeGreaterThanOrEqual(0);
+  expect(result.riseFrac).toBeLessThan(0.01);
+  expect(errors).toEqual([]);
+});
+
 // ------------------------------------------------------------
 // Rotate mode's per-scene block schedule (see resolveSceneForWave/
 // sceneWaveCount) -- each scene holds for as many consecutive waves as it
@@ -6399,20 +6446,21 @@ test('Rotate mode holds each scene for as many waves as it has ambient sounds, t
   const scenes = await page.evaluate(() => {
     STATE.sceneMode = 'rotate';
     const result = [];
-    for (let wave = 1; wave <= 22; wave++) result.push(resolveSceneForWave(wave));
+    for (let wave = 1; wave <= 27; wave++) result.push(resolveSceneForWave(wave));
     return result;
   });
 
-  // space:1, forest:5, beach:5, birthday:5, halloween:5 (each scene's
-  // SCENE_AMBIENT_CONFIG.<scene>.order.length + one bonus wave -- see
-  // sceneWaveCount), then the cycle (length 21) wraps back to space at
-  // wave 22.
+  // space:1, forest:5, beach:5, birthday:5, halloween:5, christmas:5 (each
+  // scene's SCENE_AMBIENT_CONFIG.<scene>.order.length + one bonus wave --
+  // see sceneWaveCount), then the cycle (length 26) wraps back to space at
+  // wave 27.
   expect(scenes).toEqual([
     'space',
     'forest', 'forest', 'forest', 'forest', 'forest',
     'beach', 'beach', 'beach', 'beach', 'beach',
     'birthday', 'birthday', 'birthday', 'birthday', 'birthday',
     'halloween', 'halloween', 'halloween', 'halloween', 'halloween',
+    'christmas', 'christmas', 'christmas', 'christmas', 'christmas',
     'space',
   ]);
   expect(errors).toEqual([]);
@@ -6665,9 +6713,12 @@ test('activeSceneList only narrows things down under Sleep mode -- every other d
   // raven caws -- gentle, but "spooky" still trades on a little tension)
   // are the non-sleep-safe scenes shipped so far -- Sleep mode should
   // narrow both out while every other difficulty still offers them.
+  // Christmas is genuinely calm and stays available under Sleep mode same
+  // as Forest/Beach/Space.
   const nonSleepSafe = ['birthday', 'halloween'];
   expect(result.perDifficulty.sleep).toEqual(result.fullList.filter(s => !nonSleepSafe.includes(s)));
   for (const scene of nonSleepSafe) expect(result.perDifficulty.sleep).not.toContain(scene);
+  expect(result.perDifficulty.sleep).toContain('christmas');
   expect(errors).toEqual([]);
 });
 
