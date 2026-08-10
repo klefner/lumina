@@ -36,15 +36,13 @@ test('loads cleanly and shows the title screen', async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test('tapping to begin starts the game and initializes audio', async ({ page }) => {
+test('clicking Start Game begins the game and initializes audio', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
 
-  // Well below the title/tagline/difficulty-selector block — see the
-  // session note about that region intercepting clicks.
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1500);
 
   const state = await page.evaluate(() => {
@@ -62,7 +60,7 @@ test('connecting a dot pair registers and scores', async ({ page }) => {
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
 
   const dots = await page.evaluate(() => window.__lumina.getDots());
@@ -91,7 +89,7 @@ test('the score display reads "Score: <n>" once points are on the board', async 
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
 
   await expect(page.locator('#score-display')).toHaveText('');
@@ -127,7 +125,7 @@ test('a completed connection reaches exactly to the dot it was drawn to, not sho
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
 
   const dots = await page.evaluate(() => window.__lumina.getDots());
@@ -180,7 +178,7 @@ test('crowded intense-difficulty waves never place two dots close enough to over
   await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'intense'));
   await page.reload();
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(500);
 
   const result = await page.evaluate(() => {
@@ -267,7 +265,7 @@ test('stars reset on a fresh wave, a connection line never fully disappears, and
   // See the equivalent comment further down this file (the long-winding-
   // connection test) -- a generic `click('body')` risks landing on the
   // title screen's own UI now that it has more rows than it used to.
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(300);
 
   const freshStars = await page.evaluate(() => { startWave(1); return STATE.stars.length; });
@@ -335,13 +333,10 @@ test('a long, winding connection settles within a fixed time regardless of point
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
-  // A generic `click('body')` used to land on empty canvas space below
-  // the title screen's centered content block, but that block has since
-  // grown a Start Game row -- clicking well below it (the same coordinate
-  // other tests already use to reliably hit real canvas, not a UI
-  // element) avoids depending on exactly how tall that block happens to
-  // be on any given change.
-  await page.mouse.click(200, 700);
+  // Starting a wave now requires the explicit Start Game button -- a
+  // plain click/tap on the title screen's canvas backdrop no longer does
+  // anything (player feedback: too easy to start by accident).
+  await page.click('#start-game-button');
   await page.waitForTimeout(300);
 
   const setup = await page.evaluate(() => {
@@ -459,7 +454,7 @@ test('pause button appears once playing and opens the pause menu', async ({ page
   await page.waitForTimeout(300);
 
   await expect(page.locator('#pause-button')).toBeHidden();
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
 
   await expect(page.locator('#pause-button')).toBeVisible();
@@ -565,7 +560,7 @@ test('drawing through a portal is two separate hops that only complete the real 
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const setup = await page.evaluate(() => {
@@ -644,7 +639,7 @@ test('a rejected second hop through a portal leaves the first hop\'s thread avai
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const setup = await page.evaluate(() => {
@@ -699,7 +694,7 @@ test('portal state resets cleanly on both a new wave and exiting to the title sc
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const afterNewWave = await page.evaluate(() => {
@@ -1160,7 +1155,7 @@ test('the Hint menu item appears once playing, flashes unconnected dots white at
   // difficulty-gating tests below) -- select Relaxed explicitly so this
   // test covers the actual pulse/sound mechanics regardless of default.
   await page.click('.difficulty-btn[data-difficulty="relaxed"]');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
   // The item only actually renders once the menu that holds it is open
   // (see #pause-overlay) -- open it to check, then close it again before
@@ -1219,7 +1214,7 @@ test('HINT is free and functional in both Relaxed and Normal', async ({ page }) 
   await page.waitForTimeout(300);
 
   await page.click('.difficulty-btn[data-difficulty="normal"]');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
   await page.click('#pause-button');
   await expect(page.locator('#pause-hint')).toBeVisible();
@@ -1240,7 +1235,7 @@ test('HINT stays visible in Intense but shows an explanatory toast instead of fi
   await page.goto('/index.html');
   await page.waitForTimeout(300);
   await page.click('.difficulty-btn[data-difficulty="intense"]');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
   await page.click('#pause-button');
   await expect(page.locator('#pause-hint')).toBeVisible();
@@ -1298,7 +1293,7 @@ test('triggering a hint pulse in Relaxed plays a short confirmation chime', asyn
   await page.goto('/index.html');
   await page.waitForTimeout(300);
   await page.click('.difficulty-btn[data-difficulty="relaxed"]');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
 
   const started = await page.evaluate(() => {
@@ -1358,7 +1353,7 @@ test('the help button opens a how-to-play overlay on the title screen, and the i
 
   // Mid-game, the standalone button is hidden -- How to Play moves inside
   // the single MENU button's panel instead (see #pause-help).
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(500);
   await expect(page.locator('#help-button')).toBeHidden();
   await page.click('#pause-button');
@@ -1491,7 +1486,7 @@ test('dragging empty board space pans the camera when zoomed in, but is a total 
   expect(errors).toEqual([]);
 });
 
-test('a plain tap on the title screen always starts wave 1 unless Auto Load Last Save is checked, and Load Game always resumes explicitly regardless', async ({ page }) => {
+test('clicking Start Game always starts wave 1 unless Auto Load Last Save is checked, and Load Game always resumes explicitly regardless', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
@@ -1505,12 +1500,12 @@ test('a plain tap on the title screen always starts wave 1 unless Auto Load Last
   expect(fresh.loadBtnVisible).toBe(false);
   expect(fresh.checkboxChecked).toBe(false);
 
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
   expect(await page.evaluate(() => window.__lumina.getState().wave)).toBe(1);
 
-  // Save at wave 5, return to title -- autoload is off by default, so a
-  // plain tap must NOT silently resume it.
+  // Save at wave 5, return to title -- autoload is off by default, so
+  // Start Game must NOT silently resume it.
   await page.evaluate(() => {
     STATE.wave = 5; STATE.score = 500;
     saveGame();
@@ -1524,7 +1519,7 @@ test('a plain tap on the title screen always starts wave 1 unless Auto Load Last
   expect(withSave.loadBtnVisible).toBe(true);
   expect(withSave.subtitle).not.toMatch(/resume/);
 
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
   expect(await page.evaluate(() => window.__lumina.getState().wave)).toBe(1); // NOT 5 -- autoload was off
 
@@ -1535,7 +1530,7 @@ test('a plain tap on the title screen always starts wave 1 unless Auto Load Last
   await page.waitForTimeout(500);
   expect(await page.evaluate(() => window.__lumina.getState().wave)).toBe(5);
 
-  // Checking the box persists across a reload, and a plain tap resumes
+  // Checking the box persists across a reload, and Start Game resumes
   // from then on.
   await page.evaluate(() => { STATE.wave = 7; STATE.score = 700; saveGame(); exitToTitle(); });
   await page.waitForTimeout(300);
@@ -1551,7 +1546,7 @@ test('a plain tap on the title screen always starts wave 1 unless Auto Load Last
   expect(afterReload.checkboxChecked).toBe(true);
   expect(afterReload.subtitle).toMatch(/resume — wave 7/);
 
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
   expect(await page.evaluate(() => window.__lumina.getState().wave)).toBe(7);
   expect(errors).toEqual([]);
@@ -1587,7 +1582,7 @@ test('rotating the device mid-wave grows the world to fill the new aspect ratio 
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
 
   const portrait = await page.evaluate(() => ({ w: STATE.world.w, h: STATE.world.h, canvasW: canvas.width, canvasH: canvas.height }));
@@ -1635,7 +1630,7 @@ test('growing the world on rotation re-centers everything already placed instead
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
 
   const before = await page.evaluate(() => ({
@@ -2115,7 +2110,7 @@ test('every real instrument sample still decodes even when its fetch is much slo
 
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(6000); // real decode time under the simulated slow network
 
   const counts = await page.evaluate(() => {
@@ -2196,7 +2191,7 @@ test('a wide wave holds the camera at the full-world view before easing to a com
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000); // real wave 1 underway, audio/game loop running
 
   const first = await page.evaluate(() => {
@@ -2322,7 +2317,7 @@ test('an orientation change during a wide wave\'s intro hold keeps the camera at
   await page.setViewportSize({ width: 400, height: 800 });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
 
   await page.evaluate(() => startWave(WIDE_WORLD_START_WAVE));
@@ -2565,7 +2560,7 @@ test('resizing/rotating during the wave-complete reveal does not restore a wide 
   await page.setViewportSize({ width: 400, height: 800 });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
 
   await page.evaluate(() => {
@@ -2805,7 +2800,7 @@ test('connection praise popups close (drop the open class) shortly before they e
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
 
   const result = await page.evaluate(() => {
@@ -2841,7 +2836,7 @@ test('connection praise never appears on a tutorial wave, even for a connection 
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
 
   const result = await page.evaluate(() => {
@@ -3121,14 +3116,14 @@ test('the Erase menu item only appears while playing on Relaxed difficulty', asy
   await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'normal'));
   await page.reload();
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(500);
   await expect(page.locator('#pause-erase')).toBeHidden();
 
   await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
   await page.reload();
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(500);
   await page.click('#pause-button'); // the item only actually renders with its menu open
   await expect(page.locator('#pause-erase')).toBeVisible();
@@ -3143,7 +3138,7 @@ test('in Relaxed difficulty, picking Erase from the menu then tapping a drawn li
   await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
   await page.reload();
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const dots = await page.evaluate(() => window.__lumina.getDots());
@@ -3214,7 +3209,7 @@ test('the erase-mode banner appears the moment Erase is picked, and tapping it r
   await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
   await page.reload();
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const dots = await page.evaluate(() => window.__lumina.getDots());
@@ -3285,7 +3280,7 @@ test('the erase-mode banner stays hidden while paused, even if Erase Mode is on 
   await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
   await page.reload();
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   await page.click('#pause-button');
@@ -3311,7 +3306,7 @@ test('the erase-mode banner is a real, focusable control that leaves the accessi
   await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
   await page.reload();
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const banner = page.locator('#erase-mode-banner');
@@ -3353,7 +3348,7 @@ test('a second finger landing mid-tap in erase mode cancels the pending erase in
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const setup = await page.evaluate(() => {
@@ -3614,7 +3609,7 @@ test('erasing a connection reverses the score it awarded, so redrawing the same 
   await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
   await page.reload();
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const dots = await page.evaluate(() => window.__lumina.getDots());
@@ -3709,7 +3704,7 @@ test('recoverAudioAfterVisible does nothing when the audio context was never act
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const result = await page.evaluate(() => {
@@ -3729,7 +3724,7 @@ test('recoverAudioAfterVisible resumes a genuinely suspended context and resched
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const dots = await page.evaluate(() => window.__lumina.getDots());
@@ -3799,7 +3794,7 @@ test('a mid-wave audio context rebuild (initAudio after a wedge) reschedules the
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const before = await page.evaluate(() => STATE.songStartTime);
@@ -3838,7 +3833,7 @@ test('scheduleCurrentSongOnceReady schedules whichever song is actually current,
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const result = await page.evaluate(async () => {
@@ -4016,7 +4011,7 @@ test('the Share row is title-screen only, and the postcard row never lingers int
   expect(errors).toEqual([]);
 });
 
-test('the title-screen Start Game button starts the game the same way a plain tap does, and is title-only', async ({ page }) => {
+test('a plain tap on the title screen does nothing; only the Start Game button starts the game, and is title-only', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
@@ -4024,6 +4019,14 @@ test('the title-screen Start Game button starts the game the same way a plain ta
 
   await expect(page.locator('#start-game-button')).toBeVisible();
   await page.click('.difficulty-btn[data-difficulty="normal"]');
+
+  // A plain tap/click on the title screen's canvas backdrop (empty space,
+  // not any UI element) must NOT start the game -- player feedback: it was
+  // too easy to start by accident. Only the explicit button does.
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => STATE.phase)).toBe('TITLE');
+
   await page.click('#start-game-button');
   await page.waitForTimeout(1000);
 
@@ -4041,7 +4044,7 @@ test('mid-game, the top button row holds only the single MENU button, and its pa
   await page.goto('/index.html');
   await page.waitForTimeout(300);
   await page.click('.difficulty-btn[data-difficulty="relaxed"]'); // only difficulty where the Erase item also shows
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(1000);
 
   // Both buttons are always in the DOM (see index.html) -- only one is
@@ -4304,7 +4307,7 @@ test('trumpet and double bass samples decode successfully alongside the rest of 
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
 
   // Await the real decode promise directly rather than a fixed timeout --
   // ~140 real samples decoding over a local dev server is normally fast,
@@ -4365,7 +4368,7 @@ test('per-sample gain normalization brings flute\'s quietest and loudest real re
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700); // unlocks audio + kicks off decodeAllSamples, same as the trumpet/bass test
+  await page.click('#start-game-button'); // unlocks audio + kicks off decodeAllSamples, same as the trumpet/bass test
 
   const result = await page.evaluate(async () => {
     await STATE.samplesReadyPromise;
@@ -4403,7 +4406,7 @@ test('drum kit pieces keep their relative loudness balance instead of each norma
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForTimeout(300);
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
 
   const result = await page.evaluate(async () => {
     await STATE.samplesReadyPromise;
@@ -5374,7 +5377,7 @@ test('relaxed mode dims every dot outside the matching group while a line is bei
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.click('.difficulty-btn[data-difficulty="relaxed"]');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const setup = await page.evaluate(() => {
@@ -5438,7 +5441,7 @@ test('the relaxed-mode dimming assist never activates outside relaxed difficulty
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.click('.difficulty-btn[data-difficulty="normal"]');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const result = await page.evaluate(() => {
@@ -5567,7 +5570,7 @@ test('the Sleep difficulty button exists, is selectable, and starts a real game 
   await page.click('.difficulty-btn[data-difficulty="sleep"]');
   await expect(page.locator('.difficulty-btn[data-difficulty="sleep"]')).toHaveClass(/active/);
 
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const difficulty = await page.evaluate(() => STATE.difficulty);
@@ -5734,7 +5737,7 @@ test('Sleep mode gets the same QOL affordances as Relaxed: erase item visible, d
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.click('.difficulty-btn[data-difficulty="sleep"]');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   await page.click('#pause-button');
@@ -5796,7 +5799,7 @@ test('the sleep-mode tint overlay is stacked above the cockpit canvas, not hidde
   await page.goto('/index.html');
   await page.click('.difficulty-btn[data-difficulty="sleep"]');
   await page.click('#cockpit-mode-checkbox');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const result = await page.evaluate(() => {
@@ -5932,7 +5935,7 @@ test('switching directly from one ambient scene to another stops the outgoing la
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await injectSceneWaveSetup(page);
   await page.goto('/index.html');
-  await page.mouse.click(200, 700); // unlocks real audio -- STATE.ambienceLayers only actually populates once startSceneAmbienceLayer can reach a live AudioContext
+  await page.click('#start-game-button'); // unlocks real audio -- STATE.ambienceLayers only actually populates once startSceneAmbienceLayer can reach a live AudioContext
   await page.waitForTimeout(800);
 
   // Forest and beach each have their own "wind" sound (different
@@ -5997,7 +6000,7 @@ test('forest ambient layers actually start playing (real decoded audio) as the s
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await injectSceneWaveSetup(page);
   await page.goto('/index.html');
-  await page.mouse.click(200, 700); // starts wave 1, unlocks real audio (initAudio -> initAudioGraph)
+  await page.click('#start-game-button'); // starts wave 1, unlocks real audio (initAudio -> initAudioGraph)
   await page.waitForTimeout(800);
 
   const snapshots = await page.evaluate(async () => {
@@ -6024,7 +6027,7 @@ test('beach ambient layers actually start playing (real decoded audio) as the st
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await injectSceneWaveSetup(page);
   await page.goto('/index.html');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const snapshots = await page.evaluate(async () => {
@@ -6051,7 +6054,7 @@ test('resetSceneAmbience clears the streak and every active layer', async ({ pag
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await injectSceneWaveSetup(page);
   await page.goto('/index.html');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const result = await page.evaluate(async () => {
@@ -6076,7 +6079,7 @@ test('the scene ambience gain node exists once audio initializes, feeding into t
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(500);
 
   const result = await page.evaluate(() => ({
@@ -6107,7 +6110,7 @@ test('each ambient layer repeat gets a fresh, in-range randomized playback rate,
   });
   await injectSceneWaveSetup(page);
   await page.goto('/index.html');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(500);
 
   const result = await page.evaluate(async () => {
@@ -6516,7 +6519,7 @@ test('a Birthday-scene wave uses the real melody, and every other scene keeps th
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
-  await page.mouse.click(200, 700); // START GAME -- STATE.audioCtx etc. need a real gesture-driven init
+  await page.click('#start-game-button'); // START GAME -- STATE.audioCtx etc. need a real gesture-driven init
   await page.waitForTimeout(600);
 
   const result = await page.evaluate(() => {
@@ -6596,7 +6599,7 @@ test('completing a scene\'s ambient set under Rotate mode queues a celebration t
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await injectSceneWaveSetup(page);
   await page.goto('/index.html');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const result = await page.evaluate(async () => {
@@ -6637,7 +6640,7 @@ test('completing a scene\'s ambient set under a FIXED scene mode does not queue 
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await injectSceneWaveSetup(page);
   await page.goto('/index.html');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const result = await page.evaluate(async () => {
@@ -6671,7 +6674,7 @@ test('the bonus wave after a scene completes keeps the full soundscape playing, 
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await injectSceneWaveSetup(page);
   await page.goto('/index.html');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const result = await page.evaluate(async () => {
@@ -6730,7 +6733,7 @@ test('loading or restarting mid-block backfills already-revealed sounds so the s
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await injectSceneWaveSetup(page);
   await page.goto('/index.html');
-  await page.mouse.click(200, 700);
+  await page.click('#start-game-button');
   await page.waitForTimeout(800);
 
   const result = await page.evaluate(async () => {

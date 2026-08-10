@@ -969,12 +969,13 @@ html, body {
 }
 
 /* Title-screen-only explicit "start" CTA (see showMessage's isTitleScreen
-   option and setupTitleLoadListeners) -- testers reported not realizing
-   a plain tap anywhere starts the game, so this exists purely for
-   discoverability alongside the tap-to-begin behavior, which still works
-   unchanged. Styled as the one accent-colored button in this row group
-   (same blue used by #pause-resume/.difficulty-btn.active) so it reads
-   as the primary action, not just another secondary link like Load/Share. */
+   option and setupTitleLoadListeners) -- the only way to start a game.
+   A plain tap/click anywhere else on the title screen used to work too,
+   but player feedback: that made it too easy to start by accident while
+   still looking over the title screen's own options. Styled as the one
+   accent-colored button in this row group (same blue used by
+   #pause-resume/.difficulty-btn.active) so it reads as the primary
+   action, not just another secondary link like Load/Share. */
 #start-game-row {
   display: none;
   margin-top: 4px;

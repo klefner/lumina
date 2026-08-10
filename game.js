@@ -2338,18 +2338,20 @@ function handleLoadGameFromTitle() {
   startWave(resume.wave);
 }
 
-// Shared by a plain tap anywhere on the title screen (onInputStart) and
-// the explicit Start Game button (setupTitleLoadListeners) -- testers
-// reported not realizing a tap alone was enough, so the button exists
-// purely for discoverability; both paths do exactly the same thing.
+// The explicit Start Game button's handler (setupTitleLoadListeners) --
+// a plain tap/click anywhere on the title screen used to trigger this
+// too (see onInputStart), but player feedback: that made it too easy to
+// start a wave by accident while still looking over the title screen's
+// own options (scene, difficulty, etc.), so starting now requires
+// actually pressing the button.
 function startGameFromTitle() {
   initAudio();
   hideMessage();
-  // A plain tap/click only resumes automatically when the player has
-  // opted into that via the Auto Load Last Save checkbox -- otherwise it
-  // always starts wave 1, same as if there were no save at all. An
-  // existing save is still reachable through the explicit Load Game
-  // button (see handleLoadGameFromTitle), just never picked up silently.
+  // Start Game only resumes automatically when the player has opted into
+  // that via the Auto Load Last Save checkbox -- otherwise it always
+  // starts wave 1, same as if there were no save at all. An existing save
+  // is still reachable through the explicit Load Game button (see
+  // handleLoadGameFromTitle), just never picked up silently.
   if (STATE.autoLoadEnabled && STATE.pendingResume) {
     const resume = STATE.pendingResume;
     STATE.pendingResume = null;
@@ -2369,7 +2371,7 @@ function setupTitleLoadListeners() {
     saveAutoLoadSetting(STATE.autoLoadEnabled);
     // Otherwise toggling the checkbox leaves whatever subtitle was set at
     // page load/exitToTitle in place, silently promising the opposite of
-    // what a plain tap is now actually about to do.
+    // what Start Game is now actually about to do.
     document.getElementById('message-subtitle').textContent = titleSubtitleText();
   });
   document.getElementById('flight-mode-checkbox').addEventListener('change', (e) => {
@@ -2608,8 +2610,8 @@ const STATE = {
   pauseFactHistory: [],    // last few pause-menu fact/tip strings shown, so the rotation never repeats too soon
   pauseFactTimer: null,    // setInterval id for the 13s rotation, running only while paused
   onlineFacts: [],         // bonus facts fetched live this session (see fetchOnlineFacts) — empty if offline/failed
-  pendingResume: null,     // { wave, score } loaded from a save, offered on the title screen (see init/onInputStart)
-  autoLoadEnabled: false,  // persisted (see AUTOLOAD_KEY) -- whether a plain tap on the title screen should
+  pendingResume: null,     // { wave, score } loaded from a save, offered on the title screen (see init/startGameFromTitle)
+  autoLoadEnabled: false,  // persisted (see AUTOLOAD_KEY) -- whether clicking Start Game should
                            // silently resume pendingResume instead of always starting wave 1
 
   flightMode: false,   // persisted (see FLIGHT_MODE_KEY) -- picked on the title screen, alongside difficulty
@@ -5503,10 +5505,10 @@ function onInputStart(e) {
 
   initAudio();
 
-  if (STATE.phase === 'TITLE') {
-    startGameFromTitle();
-    return;
-  }
+  // Starting a wave from the title screen is now only reachable through
+  // the explicit Start Game button (see startGameFromTitle) -- a plain
+  // tap/click here on the title screen's canvas backdrop is a no-op,
+  // falling through to the `phase !== 'PLAYING'` return below.
 
   if (STATE.phase === 'WAVE_COMPLETE') {
     if (STATE.waveCompleteAdvanceFn) STATE.waveCompleteAdvanceFn();
@@ -10010,14 +10012,14 @@ function handleExitGame() {
 
 // Returns to the same pristine state the game boots into — dots, lines,
 // barriers, and the starfield all cleared, any in-flight audio hard-stopped.
-// A plain tap only silently resumes when Auto Load Last Save is checked
-// (see onInputStart) -- the subtitle should promise exactly that, not
-// more, or a save sitting there unloaded (the normal case, since it's
-// off by default) would read as a broken promise the moment tapping
-// starts wave 1 instead.
+// Start Game only silently resumes when Auto Load Last Save is checked
+// (see startGameFromTitle) -- the subtitle should promise exactly that,
+// not more, or a save sitting there unloaded (the normal case, since
+// it's off by default) would read as a broken promise the moment
+// starting begins wave 1 instead.
 function titleSubtitleText() {
   if (STATE.autoLoadEnabled && STATE.pendingResume) {
-    return `tap or click to resume — wave ${STATE.pendingResume.wave}`;
+    return `Start Game will resume — wave ${STATE.pendingResume.wave}`;
   }
   return 'connect the dots. make the music.';
 }
