@@ -3417,8 +3417,16 @@ function resetSceneAmbience() {
     const now = STATE.audioCtx.currentTime;
     for (const { source, gain } of STATE.ambienceActiveSources) {
       try {
-        gain.gain.cancelScheduledValues(now);
-        gain.gain.setValueAtTime(gain.gain.value, now);
+        // cancelScheduledValues() alone doesn't preserve wherever an
+        // in-progress ramp (e.g. an event sound's EVENT_FADE_IN_SEC
+        // attack) had actually gotten to -- reading gain.gain.value right
+        // after cancelling can hand back the ramp's start value, not its
+        // current interpolated one, undoing the fade-in and re-creating
+        // exactly the "sudden sound" this was meant to prevent (P2 review
+        // catch, PR #68). cancelAndHoldAtTime is the API built for this:
+        // cancel-and-freeze-at-the-actual-current-value in one call.
+        if (gain.gain.cancelAndHoldAtTime) gain.gain.cancelAndHoldAtTime(now);
+        else { gain.gain.cancelScheduledValues(now); gain.gain.setValueAtTime(gain.gain.value, now); }
         gain.gain.linearRampToValueAtTime(0, now + 0.3);
         source.stop(now + 0.35);
       } catch (e) { /* already stopped */ }
