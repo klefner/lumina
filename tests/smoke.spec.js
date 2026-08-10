@@ -6406,3 +6406,109 @@ test('loading or restarting mid-block backfills already-revealed sounds so the s
   expect(errors).toEqual([]);
 });
 
+// ------------------------------------------------------------
+// Sleep mode scene gating (see SLEEP_SAFE_SCENES/activeSceneList) and
+// score hiding (player request: a running, only-ever-increasing number
+// works against Sleep mode's whole point of winding down).
+// ------------------------------------------------------------
+
+test('activeSceneList only narrows things down under Sleep mode -- every other difficulty sees the full SCENE_LIST', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const perDifficulty = {};
+    for (const level of ['relaxed', 'normal', 'intense', 'sleep']) {
+      STATE.difficulty = level;
+      perDifficulty[level] = activeSceneList();
+    }
+    return { perDifficulty, fullList: SCENE_LIST };
+  });
+
+  expect(result.perDifficulty.relaxed).toEqual(result.fullList);
+  expect(result.perDifficulty.normal).toEqual(result.fullList);
+  expect(result.perDifficulty.intense).toEqual(result.fullList);
+  // Every scene shipped so far (space/forest/beach) happens to be
+  // sleep-safe, so this is currently the same list -- the real narrowing
+  // only shows up once a non-sleep-safe scene (Birthday) exists. This
+  // test exists to catch a regression in the *mechanism* (activeSceneList
+  // actually branching on STATE.difficulty) ahead of that, not to prove
+  // the exclusion itself yet.
+  expect(result.perDifficulty.sleep).toEqual(result.fullList);
+  expect(errors).toEqual([]);
+});
+
+test('Sleep mode hides both the running score and the live per-line draw score; every other difficulty still shows them', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.wave = 1;
+    STATE.score = 500;
+    STATE.isDrawing = true;
+    STATE.currentPath = [{ x: 0, y: 0 }, { x: 100, y: 0 }];
+    STATE.phase = 'PLAYING';
+
+    STATE.difficulty = 'normal';
+    updateWaveDisplay();
+    updateDrawScoreDisplay();
+    const normal = {
+      score: document.getElementById('score-display').textContent,
+      drawScore: document.getElementById('draw-score-display').textContent,
+    };
+
+    STATE.difficulty = 'sleep';
+    updateWaveDisplay();
+    updateDrawScoreDisplay();
+    const sleep = {
+      score: document.getElementById('score-display').textContent,
+      drawScore: document.getElementById('draw-score-display').textContent,
+    };
+
+    return { normal, sleep };
+  });
+
+  expect(result.normal.score).toBe('Score: 500');
+  expect(result.normal.drawScore).not.toBe('');
+  expect(result.sleep.score).toBe('');
+  expect(result.sleep.drawScore).toBe('');
+  expect(errors).toEqual([]);
+});
+
+test('the scene selector disables non-rotate options under Sleep mode that aren\'t sleep-safe, and re-enables them otherwise', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // No shipped scene is unsafe yet (see the activeSceneList test above),
+    // so temporarily mark 'space' unsafe just for this test -- purely
+    // in-memory, never persisted -- to exercise the disabling branch
+    // itself ahead of Birthday existing for real.
+    const original = new Set(SLEEP_SAFE_SCENES);
+    SLEEP_SAFE_SCENES.delete('space');
+
+    STATE.difficulty = 'sleep';
+    refreshSceneSelector();
+    const spaceDisabledUnderSleep = document.querySelector('#scene-selector option[value="space"]').disabled;
+    const rotateEnabledUnderSleep = !document.querySelector('#scene-selector option[value="rotate"]').disabled;
+
+    STATE.difficulty = 'normal';
+    refreshSceneSelector();
+    const spaceEnabledUnderNormal = !document.querySelector('#scene-selector option[value="space"]').disabled;
+
+    SLEEP_SAFE_SCENES.clear();
+    for (const s of original) SLEEP_SAFE_SCENES.add(s);
+
+    return { spaceDisabledUnderSleep, rotateEnabledUnderSleep, spaceEnabledUnderNormal };
+  });
+
+  expect(result.spaceDisabledUnderSleep).toBe(true);
+  expect(result.rotateEnabledUnderSleep).toBe(true);
+  expect(result.spaceEnabledUnderNormal).toBe(true);
+  expect(errors).toEqual([]);
+});
+
