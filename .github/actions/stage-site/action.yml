@@ -1,0 +1,31 @@
+name: Stage site files
+description: Stamps the build version and copies player-facing files into _site/, shared by every deploy target so they're never out of sync.
+outputs:
+  build:
+    description: Short git SHA used as the build stamp
+    value: ${{ steps.stamp.outputs.build }}
+runs:
+  using: composite
+  steps:
+    - name: Stamp build version
+      id: stamp
+      shell: bash
+      run: |
+        # GITHUB_SHA is the event's own revision, not necessarily what's
+        # actually checked out -- a workflow_dispatch with a custom `ref`
+        # input (see deploy-itch.yml) checks out that ref while GITHUB_SHA
+        # stays fixed to the triggering revision, which would stamp a build
+        # label that doesn't match the files actually being shipped (review
+        # catch, PR #78). git rev-parse reads the real checked-out HEAD.
+        BUILD="$(git rev-parse --short HEAD)"
+        VERSION="${BUILD} . $(date -u +%Y-%m-%d)"
+        sed -i "s/__BUILD__/${BUILD}/g; s/__VERSION__/${VERSION}/g" index.html version.json
+        echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+    # package.json/tests/CI config etc. exist for the CI workflow, not for
+    # players, and have no reason to ever be part of the deployed artifact.
+    - name: Stage site files
+      shell: bash
+      run: |
+        mkdir -p _site
+        cp index.html game.js style.css manifest.json version.json _site/
+        cp -r icons sounds _site/
