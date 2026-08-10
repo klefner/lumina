@@ -1835,6 +1835,71 @@ const GENRE_FAMILIES = [
       },
     ],
   },
+  // Halloween's own family (sceneOnly: 'halloween' -- see
+  // availableGenreFamilies) -- every other scene draws a random genre
+  // from the pool above with zero connection to what's on screen, which
+  // is exactly why Halloween never actually sounded spooky: the same
+  // bright major-key 'spa'/'lofi' material any other scene could roll.
+  // The engine itself doesn't need anything new to sound eerie instead of
+  // pleasant -- chord quality falls straight out of scaleIntervals, so
+  // harmonic minor (a natural minor with a raised 7th) turns the exact
+  // same triad/arpeggio/pad machinery every other family already uses
+  // into minor i/iv chords against a major V, the classic "spooky
+  // cadence" interval used across horror and Halloween-themed music, via
+  // the augmented 2nd it creates between scale degrees 6 and 7. Kept to
+  // the same real-recording instrument pool 'spa' uses (piano/flute/
+  // cello/marimba/vibraphone) rather than anything synthesized, and keeps
+  // flute/cello out of pad/drone roles -- both have a documented history
+  // of reading as "a horn" when sustained continuously there (see
+  // 'lullaby' family's own comment) -- in favor of marimba/vibraphone/
+  // piano, already proven safe in those roles.
+  {
+    name: 'eerie',
+    sceneOnly: 'halloween',
+    chordVocabulary: 'triad',
+    groove: { swing: 0, hasDrumRole: false },
+    seeds: [
+      {
+        name: 'witching hour', bpm: 68, rootMidi: 57,
+        scaleIntervals: [0, 2, 3, 5, 7, 8, 11], // harmonic minor
+        chordProgression: [0, 3, 4, 0],          // i - iv - V - i
+        roles: [
+          { kind: 'melody',   instrument: 'flute' },
+          { kind: 'arpeggio', instrument: 'piano' },
+          { kind: 'pad',      instrument: 'vibraphone' },
+          { kind: 'drone',    instrument: 'marimba' },
+          { kind: 'accent',   instrument: 'marimba' },
+          { kind: 'accent',   instrument: 'cello' },
+        ],
+      },
+      {
+        name: 'hollow trees', bpm: 64, rootMidi: 62,
+        scaleIntervals: [0, 2, 3, 5, 7, 8, 11],
+        chordProgression: [0, 5, 3, 4],          // i - VI - iv - V
+        roles: [
+          { kind: 'melody',   instrument: 'cello' },
+          { kind: 'arpeggio', instrument: 'marimba' },
+          { kind: 'pad',      instrument: 'piano' },
+          { kind: 'drone',    instrument: 'vibraphone' },
+          { kind: 'accent',   instrument: 'flute' },
+          { kind: 'accent',   instrument: 'marimba' },
+        ],
+      },
+      {
+        name: 'crooked path', bpm: 72, rootMidi: 55,
+        scaleIntervals: [0, 2, 3, 5, 7, 8, 11],
+        chordProgression: [0, 4, 5, 3],          // i - V - VI - iv
+        roles: [
+          { kind: 'melody',   instrument: 'flute' },
+          { kind: 'arpeggio', instrument: 'vibraphone' },
+          { kind: 'pad',      instrument: 'marimba' },
+          { kind: 'drone',    instrument: 'piano' },
+          { kind: 'accent',   instrument: 'cello' },
+          { kind: 'accent',   instrument: 'piano' },
+        ],
+      },
+    ],
+  },
 ];
 
 // Chord-tone degree offsets from the chord root, keyed by family-level
@@ -4041,9 +4106,22 @@ function availableGenreFamilies() {
   // exclusive to Sleep mode -- it would undercut the "always calm, always
   // slow" promise of the mode if it could also turn up at random in a
   // normal-difficulty rotation.
-  return STATE.difficulty === 'sleep'
+  const bySleep = STATE.difficulty === 'sleep'
     ? unlocked.filter(f => f.sleepOnly)
     : unlocked.filter(f => !f.sleepOnly);
+  // Same idea, one level down: a family scoped to a specific scene (see
+  // 'eerie'/Halloween) should never turn up anywhere else, and that scene
+  // should never play anything BUT its own scoped family once it has one
+  // -- otherwise it would only sound right some of the time, at random,
+  // which is the exact complaint that prompted 'eerie' to exist. Skipped
+  // in Cockpit Mode, which -- like the birthday-song special case just
+  // above this function's own caller -- never reads STATE.scene as a
+  // real signal; it renders its own Three.js scene regardless, so a
+  // stale 'halloween' left over from classic mode would otherwise lock
+  // Cockpit's music to 'eerie' for a scene it isn't actually showing.
+  return STATE.scene && !STATE.cockpitMode && bySleep.some(f => f.sceneOnly === STATE.scene)
+    ? bySleep.filter(f => f.sceneOnly === STATE.scene)
+    : bySleep.filter(f => !f.sceneOnly);
 }
 
 function generateSong(pairCount) {
@@ -9120,7 +9198,9 @@ const HALLOWEEN_CONFIG = {
   SKY_HORIZON: '#7a3a1e',
   TREE_COLOR: '#0a0710',
   GROUND_COLOR: '#0c0710',
-  PUMPKIN_COLOR: '#e8720c',
+  PUMPKIN_COLOR: '#c85f0a', // deeper/more muted than the original -- less like a bright saturated dot
+  STEM_COLOR: '#4a3418',
+  HAYBALE_COLOR: '#5c4420',
 };
 
 function generateHalloweenScene() {
@@ -9138,15 +9218,21 @@ function generateHalloweenScene() {
     });
   }
 
-  const pumpkinCount = 2 + Math.floor(Math.random() * 2);
+  // Pumpkins sit together in one cluster on a haybale, not spread
+  // independently across the ground -- a cluster silhouette reads as "one
+  // porch/yard display," the same principle the Birthday scene's balloon
+  // bouquets use, rather than several separate glowing round things that
+  // could be mistaken for connectable dots (player report).
+  const pumpkinCount = 2 + Math.floor(Math.random() * 3); // 2-4
   const pumpkins = [];
   for (let i = 0; i < pumpkinCount; i++) {
     pumpkins.push({
-      xFrac: (i + 0.5) / pumpkinCount + (Math.random() - 0.5) * 0.08,
-      sizeFrac: 0.03 + Math.random() * 0.015,
+      dxFrac: (i - (pumpkinCount - 1) / 2) * 0.045 + (Math.random() - 0.5) * 0.012,
+      sizeFrac: 0.026 + Math.random() * 0.012,
       flickerPhase: Math.random() * Math.PI * 2,
     });
   }
+  const clusterXFrac = 0.15 + Math.random() * 0.7;
 
   const batCount = 5 + Math.floor(Math.random() * 4);
   const bats = [];
@@ -9177,6 +9263,7 @@ function generateHalloweenScene() {
   return {
     trees,
     pumpkins,
+    clusterXFrac,
     bats,
     fogBands,
     moonXFrac: 0.15 + Math.random() * 0.7,
@@ -9291,30 +9378,65 @@ function drawHalloweenScene() {
   ctx.fillStyle = HALLOWEEN_CONFIG.GROUND_COLOR;
   ctx.fillRect(0, h - 6, w, 6);
 
-  // Jack-o'-lanterns -- same flicker technique as the birthday candle and
-  // forest fireflies (layered sine noise), sitting on the ground line.
+  // A haybale under the pumpkin cluster -- grounds the whole group as one
+  // obviously-styled porch/yard display (same principle as Birthday's
+  // cake/punch bowl/plate table), and gives the pumpkins something to
+  // visibly sit ON rather than floating at the ground line on their own.
+  // Ellipse center is offset up by its own vertical radius so the bottom
+  // edge lands exactly on the ground line rather than straddling it.
+  const clusterX = scene.clusterXFrac * w;
+  const groundY = h - 6;
+  const haleW = 0.22 * w;
+  const haleH = 0.02 * h;
+  const haleTopY = groundY - 2 * haleH;
+  ctx.fillStyle = HALLOWEEN_CONFIG.HAYBALE_COLOR;
+  ctx.beginPath();
+  ctx.ellipse(clusterX, groundY - haleH, haleW / 2, haleH, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Jack-o'-lanterns -- clustered together on the haybale above rather
+  // than spread solo across the ground (player report: individually
+  // glowing round shapes read as connectable dots). Each one's body is a
+  // few overlapping vertical lobes instead of a plain circle/oval, so the
+  // silhouette itself reads as "pumpkin," not "dot" -- same flicker
+  // technique as the birthday candle and forest fireflies (layered sine
+  // noise) for the carved-face glow, now much smaller and tighter to the
+  // face instead of a large ambient halo.
   for (const p of scene.pumpkins) {
-    const px = p.xFrac * w;
+    const px = clusterX + p.dxFrac * w;
     const r = p.sizeFrac * Math.min(w, h);
-    // Anchored from the ellipse's own rendered vertical radius (r * 0.82,
-    // matching the ellipse call below) rather than a separate h-based
-    // offset -- those disagreed on portrait canvases (min(w,h) = w there),
-    // leaving every pumpkin visibly floating above the ground line
-    // (review catch, PR #70).
-    const py = h - 6 - r * 0.82;
+    const py = haleTopY - r * 0.82;
     const flicker = 0.75 + 0.25 * Math.sin(t * 0.15 + p.flickerPhase) * Math.sin(t * 0.047 + p.flickerPhase * 1.3);
 
-    const glow = ctx.createRadialGradient(px, py, 0, px, py, r * 3);
-    glow.addColorStop(0, `rgba(255, 170, 60, ${(0.4 * flicker).toFixed(3)})`);
+    // Ridged body: 4 overlapping vertical lobes plus a short stem, rather
+    // than one plain ellipse.
+    const lobeCount = 4;
+    ctx.fillStyle = HALLOWEEN_CONFIG.PUMPKIN_COLOR;
+    for (let i = 0; i < lobeCount; i++) {
+      const lobeX = px + (i - (lobeCount - 1) / 2) * (r * 0.42);
+      ctx.beginPath();
+      ctx.ellipse(lobeX, py, r * 0.34, r * 0.82, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.strokeStyle = 'rgba(0,0,0,0.18)';
+    ctx.lineWidth = Math.max(1, r * 0.05);
+    for (let i = 1; i < lobeCount; i++) {
+      const lineX = px + (i - (lobeCount - 1) / 2) * (r * 0.42) - r * 0.21;
+      ctx.beginPath();
+      ctx.moveTo(lineX, py - r * 0.75);
+      ctx.quadraticCurveTo(lineX + r * 0.02, py, lineX, py + r * 0.75);
+      ctx.stroke();
+    }
+    ctx.fillStyle = HALLOWEEN_CONFIG.STEM_COLOR;
+    ctx.fillRect(px - r * 0.08, py - r * 0.92, r * 0.16, r * 0.22);
+
+    // Carved-face glow -- tight to the cutouts, not a broad ambient halo.
+    const glow = ctx.createRadialGradient(px, py, 0, px, py, r * 1.2);
+    glow.addColorStop(0, `rgba(255, 170, 60, ${(0.35 * flicker).toFixed(3)})`);
     glow.addColorStop(1, 'rgba(255, 170, 60, 0)');
     ctx.fillStyle = glow;
     ctx.beginPath();
-    ctx.arc(px, py, r * 3, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.ellipse(px, py, r, r * 0.82, 0, 0, Math.PI * 2);
-    ctx.fillStyle = HALLOWEEN_CONFIG.PUMPKIN_COLOR;
+    ctx.arc(px, py, r * 1.2, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.fillStyle = `rgba(255, 210, 120, ${(0.55 + 0.45 * flicker).toFixed(3)})`;

@@ -4502,8 +4502,74 @@ test('the premium supperclub family is well-formed and only reachable while PREM
   expect(result.seedCount).toBeGreaterThanOrEqual(3);
   expect(result.usesOnlySourcedInstruments).toBe(true);
   expect(result.referencesTrumpetAndBass).toBe(true);
-  expect(result.nonPremiumNames).toEqual(['spa', 'lofi', 'lullaby']); // the "flag off" pool
+  expect(result.nonPremiumNames).toEqual(['spa', 'lofi', 'lullaby', 'eerie']); // the "flag off" pool
   expect(result.availableWhileUnlocked).toContain('supperclub'); // the "flag on" pool, exercised via the real function
+  expect(errors).toEqual([]);
+});
+
+test("Halloween's music is always the scoped eerie family, never the generic pool, and eerie never turns up on any other scene (player report: Halloween's music wasn't spooky, since it was just a random pick from the same pool every other scene draws from)", async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.difficulty = 'normal';
+    STATE.cockpitMode = false;
+
+    STATE.scene = 'halloween';
+    const onHalloween = availableGenreFamilies().map(f => f.name);
+
+    STATE.scene = 'forest';
+    const onForest = availableGenreFamilies().map(f => f.name);
+
+    const eerie = GENRE_FAMILIES.find(f => f.name === 'eerie');
+
+    return {
+      onHalloween,
+      onForest,
+      seedCount: eerie.seeds.length,
+      // Harmonic minor: minor 3rd (scale degree index 2) and a raised
+      // (major) 7th (scale degree index 6) -- the interval that gives the
+      // classic "spooky cadence" a plain natural minor doesn't have.
+      allHarmonicMinor: eerie.seeds.every(seed =>
+        seed.scaleIntervals[2] === 3 && seed.scaleIntervals[6] === 11
+      ),
+      usesOnlySourcedInstruments: eerie.seeds.every(seed =>
+        seed.roles.every(r => SAMPLE_MANIFEST[r.instrument] !== undefined)
+      ),
+      // Matches the 'lullaby' family's own established precedent: flute
+      // and cello have a documented history of reading as "a horn" when
+      // sustained continuously in a pad/drone role (see that family's own
+      // comment) -- eerie keeps them out of both.
+      keepsFluteCelloOutOfSustainedRoles: eerie.seeds.every(seed =>
+        seed.roles.every(r => !(['pad', 'drone'].includes(r.kind) && ['flute', 'cello'].includes(r.instrument)))
+      ),
+    };
+  });
+
+  expect(result.onHalloween).toEqual(['eerie']);
+  expect(result.onForest).not.toContain('eerie');
+  expect(result.seedCount).toBeGreaterThanOrEqual(3);
+  expect(result.allHarmonicMinor).toBe(true);
+  expect(result.usesOnlySourcedInstruments).toBe(true);
+  expect(result.keepsFluteCelloOutOfSustainedRoles).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test("Cockpit Mode's music picks from the generic pool even if STATE.scene is stale from classic mode, since Cockpit never actually shows that scene (review-anticipated edge case, Halloween's eerie-family scoping)", async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.difficulty = 'normal';
+    STATE.scene = 'halloween'; // stale leftover from classic mode
+    STATE.cockpitMode = true;
+    return availableGenreFamilies().map(f => f.name);
+  });
+
+  expect(result).not.toEqual(['eerie']);
+  expect(result.length).toBeGreaterThan(1);
   expect(errors).toEqual([]);
 });
 
@@ -6520,13 +6586,13 @@ test('Halloween bats wrap to the opposite edge instead of resetting mid-flight, 
   expect(errors).toEqual([]);
 });
 
-test('Halloween pumpkins sit on the ground line instead of floating above it on portrait canvases (review catch, PR #70)', async ({ page }) => {
+test('Halloween pumpkins sit clustered together on their haybale, which itself sits flush on the ground line, on portrait canvases (redesign of PR #70s own regression test: pumpkins now cluster on a haybale instead of sitting solo on the ground line -- player report, individually glowing pumpkins read as connectable dots)', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
 
   const result = await page.evaluate(() => {
-    canvas.width = 400; canvas.height = 800; // portrait -- min(w,h) = w, the case that exposed the bug
+    canvas.width = 400; canvas.height = 800; // portrait -- min(w,h) = w, the case PR #70 exposed
     STATE.scene = 'halloween';
     STATE.halloweenScene = generateHalloweenScene();
 
@@ -6543,15 +6609,31 @@ test('Halloween pumpkins sit on the ground line instead of floating above it on 
     }
 
     const groundY = canvas.height - 6;
-    // Each pumpkin draws exactly one ellipse (the body) -- its bottom
-    // (y + ry) should land right on the ground line, not float above it.
-    const gaps = ellipseCalls.map(c => Math.abs((c.y + c.ry) - groundY));
-    return { pumpkinCount: STATE.halloweenScene.pumpkins.length, ellipseCallCount: ellipseCalls.length, maxGap: Math.max(...gaps) };
+    const haleH = 0.02 * canvas.height;
+    const haleTopY = groundY - 2 * haleH;
+
+    // The haybale draws first, before any pumpkin -- its bottom (y + ry)
+    // should land right on the ground line.
+    const haybaleCall = ellipseCalls[0];
+    const haybaleGap = Math.abs((haybaleCall.y + haybaleCall.ry) - groundY);
+
+    // Every pumpkin lobe after it (4 per pumpkin, see drawHalloweenScene)
+    // should have its own bottom land right on the haybale's top surface.
+    const lobeCalls = ellipseCalls.slice(1);
+    const maxPumpkinGap = Math.max(...lobeCalls.map(c => Math.abs((c.y + c.ry) - haleTopY)));
+
+    return {
+      pumpkinCount: STATE.halloweenScene.pumpkins.length,
+      lobeCallCount: lobeCalls.length,
+      haybaleGap,
+      maxPumpkinGap,
+    };
   });
 
   expect(result.pumpkinCount).toBeGreaterThan(0);
-  expect(result.ellipseCallCount).toBe(result.pumpkinCount);
-  expect(result.maxGap).toBeLessThan(0.5); // sub-pixel float rounding only
+  expect(result.lobeCallCount).toBe(result.pumpkinCount * 4); // 4 lobes per pumpkin body
+  expect(result.haybaleGap).toBeLessThan(0.5); // sub-pixel float rounding only
+  expect(result.maxPumpkinGap).toBeLessThan(0.5);
   expect(errors).toEqual([]);
 });
 
