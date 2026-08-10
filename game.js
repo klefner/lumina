@@ -8612,6 +8612,13 @@ const BIRTHDAY_CONFIG = {
   CONFETTI_COLORS: ['#ff5d8f', '#ffd23f', '#3fd0c9', '#a06cff', '#ff9a3f', '#ffffff'],
   PUNCH_COLOR: '#c22a5e',
   TABLEWARE_COLOR: '#fdeef7',
+  // Shared by the table's own draw code and the balloon bouquets' knot
+  // placement (see generateBalloonBunches) -- the whole point of tying
+  // balloons to the table is that they visibly sit ON it, so both need
+  // the exact same fraction, not two independently-tuned numbers that can
+  // drift apart (review catch, PR #79: the knot used to float 6.5-8.5%
+  // of screen height above the table with nothing tethering it down).
+  TABLE_TOP_FRAC: 0.95,
 };
 
 // Balloons used to be independent solo shapes drifting freely across the
@@ -8644,7 +8651,7 @@ function generateBalloonBunches() {
     }
     bunches.push({
       anchorXFrac: anchorSlots[i],
-      knotYFrac: 0.865 + Math.random() * 0.02, // tied off right at the table edge
+      knotYFrac: BIRTHDAY_CONFIG.TABLE_TOP_FRAC, // tied off exactly at the table edge, not floating above it
       swayPhase: Math.random() * Math.PI * 2,
       swaySpeed: 0.0004 + Math.random() * 0.0003,
       // A small tied-down nudge, not a free drift -- the whole bouquet
@@ -8773,7 +8780,7 @@ function drawBirthdayScene() {
   // the confetti above happens to be scattered. The balloon bouquets (drawn
   // after, see below) are tied to this same table rather than floating
   // free, so the whole bottom strip reads as one piece of party decor.
-  const tableY = h - 0.05 * h;
+  const tableY = BIRTHDAY_CONFIG.TABLE_TOP_FRAC * h;
   ctx.fillStyle = BIRTHDAY_CONFIG.TABLE_COLOR;
   ctx.fillRect(0, tableY, w, h - tableY);
 
