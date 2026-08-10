@@ -2561,7 +2561,7 @@ const STATE = {
                          // scene === 'forest' (see generateForestScene); null otherwise
   beachScene: null,      // { waveLines, glitterDots, moonXFrac, ... } for the current wave when
                           // scene === 'beach' (see generateBeachScene); null otherwise
-  birthdayScene: null,    // { balloons, confetti, lights, cakeXFrac, ... } for the current wave
+  birthdayScene: null,    // { balloonBunches, confetti, lights, cakeXFrac, ... } for the current wave
                            // when scene === 'birthday' (see generateBirthdayScene); null otherwise
   halloweenScene: null,   // { pumpkins, bats, trees, fogBands, ... } for the current wave when
                            // scene === 'halloween' (see generateHalloweenScene); null otherwise
@@ -8714,8 +8714,8 @@ function drawBeachScene() {
 // and its odd one out: an indoor party instead of a night sky, deliberately
 // warm and bright rather than moonlit/calm (see SLEEP_SAFE_SCENES -- this
 // is the one scene Sleep mode never offers). A string-light garland, a
-// scatter of drifting balloons, a small table cake with one flickering
-// candle, and continuous falling confetti.
+// party table (cake, punch bowl, plate stack, and tied balloon bouquets),
+// and continuous falling confetti.
 //
 // Balloons/confetti/lights are stored as fractions of canvas.width/height,
 // not absolute pixels, same reasoning as the forest's trees.
@@ -8726,23 +8726,62 @@ const BIRTHDAY_CONFIG = {
   TABLE_COLOR: '#241221',
   BALLOON_COLORS: ['#ff5d8f', '#ffd23f', '#3fd0c9', '#a06cff', '#ff9a3f'],
   CONFETTI_COLORS: ['#ff5d8f', '#ffd23f', '#3fd0c9', '#a06cff', '#ff9a3f', '#ffffff'],
+  PUNCH_COLOR: '#c22a5e',
+  TABLEWARE_COLOR: '#fdeef7',
+  // Shared by the table's own draw code and the balloon bouquets' knot
+  // placement (see generateBalloonBunches) -- the whole point of tying
+  // balloons to the table is that they visibly sit ON it, so both need
+  // the exact same fraction, not two independently-tuned numbers that can
+  // drift apart (review catch, PR #79: the knot used to float 6.5-8.5%
+  // of screen height above the table with nothing tethering it down).
+  TABLE_TOP_FRAC: 0.95,
 };
 
-function generateBirthdayScene() {
-  const balloonCount = 8 + Math.floor(Math.random() * 5);
-  const balloons = [];
-  for (let i = 0; i < balloonCount; i++) {
-    balloons.push({
-      xFrac: Math.random(),
-      yFrac: Math.random(),
-      colorIndex: Math.floor(Math.random() * BIRTHDAY_CONFIG.BALLOON_COLORS.length),
-      radiusFrac: 0.028 + Math.random() * 0.02,
-      riseSpeed: 0.00012 + Math.random() * 0.00014, // fraction of height per frame -- slow, steady drift upward
+// Balloons used to be independent solo shapes drifting freely across the
+// whole board -- a bright round glossy circle, slowly rising, was reported
+// by a low-vision playtester (severe macular degeneration) as
+// indistinguishable from an actual dot: the slow drift that would
+// normally read as "this is background, not a target" at a glance simply
+// wasn't perceptible to her, so she kept trying to connect them and
+// nothing happened. Tying 3-4 balloons into one bouquet per knot, anchoring
+// each bouquet to the party table alongside the cake/punch bowl/plates
+// (rather than floating through the middle of the play area), and dropping
+// the old per-balloon glossy highlight (the one trait they shared with
+// drawDot's white core) all push the same direction: read as one piece of
+// scenery grouped with other obvious scenery, not several loose things
+// that might be interactive.
+function generateBalloonBunches() {
+  const bunchCount = 2 + Math.floor(Math.random() * 2); // 2-3 bouquets
+  const anchorSlots = [0.08, 0.2, 0.8, 0.92].sort(() => Math.random() - 0.5);
+  const bunches = [];
+  for (let i = 0; i < bunchCount; i++) {
+    const balloonCount = 3 + Math.floor(Math.random() * 2); // 3-4 per bouquet
+    const balloons = [];
+    for (let j = 0; j < balloonCount; j++) {
+      balloons.push({
+        dxFrac: (Math.random() - 0.5) * 0.045,
+        dyFrac: -0.02 - Math.random() * 0.09, // stacked upward from the knot
+        colorIndex: Math.floor(Math.random() * BIRTHDAY_CONFIG.BALLOON_COLORS.length),
+        radiusFrac: 0.022 + Math.random() * 0.01,
+      });
+    }
+    bunches.push({
+      anchorXFrac: anchorSlots[i],
+      knotYFrac: BIRTHDAY_CONFIG.TABLE_TOP_FRAC, // tied off exactly at the table edge, not floating above it
       swayPhase: Math.random() * Math.PI * 2,
-      swaySpeed: 0.0006 + Math.random() * 0.0006,
-      swayAmount: 0.02 + Math.random() * 0.025, // fraction of width
+      swaySpeed: 0.0004 + Math.random() * 0.0003,
+      // A small tied-down nudge, not a free drift -- the whole bouquet
+      // sways together as one rigid unit around its knot, the opposite
+      // motion of a dot (which never moves as a group with anything).
+      swayAmount: 0.006 + Math.random() * 0.005,
+      balloons,
     });
   }
+  return bunches;
+}
+
+function generateBirthdayScene() {
+  const balloonBunches = generateBalloonBunches();
 
   const confettiCount = 26 + Math.floor(Math.random() * 14);
   const confetti = [];
@@ -8775,11 +8814,11 @@ function generateBirthdayScene() {
   }
 
   return {
-    balloons,
+    balloonBunches,
     confetti,
     lights,
     cakeXFrac: 0.5 + (Math.random() - 0.5) * 0.1,
-    phase: 0, // frame accumulator driving balloon rise/sway/confetti fall/light twinkle/candle flicker below
+    phase: 0, // frame accumulator driving balloon-bouquet sway/confetti fall/light twinkle/candle flicker below
   };
 }
 
@@ -8787,13 +8826,9 @@ function updateBirthdayScene() {
   if (STATE.scene !== 'birthday' || !STATE.birthdayScene) return;
   const scene = STATE.birthdayScene;
   scene.phase += 1;
-  for (const b of scene.balloons) {
-    b.yFrac -= b.riseSpeed;
-    if (b.yFrac < -0.08) { // drifted off the top -- recycle from below, same trick the confetti loop uses
-      b.yFrac = 1.05;
-      b.xFrac = Math.random();
-    }
-  }
+  // Balloon bouquets have no per-frame state of their own -- each one's
+  // sway is computed straight from scene.phase at draw time (see
+  // drawBirthdayScene), same as the light garland's twinkle below.
   for (const c of scene.confetti) {
     c.yFrac += c.fallSpeed;
     c.rotation += c.rotSpeed;
@@ -8856,39 +8891,12 @@ function drawBirthdayScene() {
     ctx.restore();
   }
 
-  // Balloons -- a filled circle, a small triangular knot, and a thin
-  // string down to wherever it happens to be drifting.
-  for (const b of scene.balloons) {
-    const drift = t * b.swaySpeed + b.swayPhase;
-    const bx = (b.xFrac + Math.sin(drift) * b.swayAmount) * w;
-    const by = b.yFrac * h;
-    const r = b.radiusFrac * Math.min(w, h);
-    const color = BIRTHDAY_CONFIG.BALLOON_COLORS[b.colorIndex];
-
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(bx, by + r);
-    ctx.lineTo(bx + Math.sin(drift * 1.3) * r * 0.4, by + r * 3.2);
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.ellipse(bx, by, r * 0.82, r, 0, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-    // A soft highlight so the balloon reads as glossy/round rather than a flat disc.
-    const shine = ctx.createRadialGradient(bx - r * 0.3, by - r * 0.35, 0, bx - r * 0.3, by - r * 0.35, r * 0.6);
-    shine.addColorStop(0, 'rgba(255,255,255,0.45)');
-    shine.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = shine;
-    ctx.beginPath();
-    ctx.ellipse(bx, by, r * 0.82, r, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Table + cake + candle -- anchored near the bottom, always in frame
-  // regardless of how the balloons/confetti above happen to be scattered.
-  const tableY = h - 0.05 * h;
+  // Table + cake + candle + punch bowl + plate stack -- one obviously-styled
+  // tablescape anchored near the bottom, always in frame regardless of how
+  // the confetti above happens to be scattered. The balloon bouquets (drawn
+  // after, see below) are tied to this same table rather than floating
+  // free, so the whole bottom strip reads as one piece of party decor.
+  const tableY = BIRTHDAY_CONFIG.TABLE_TOP_FRAC * h;
   ctx.fillStyle = BIRTHDAY_CONFIG.TABLE_COLOR;
   ctx.fillRect(0, tableY, w, h - tableY);
 
@@ -8900,6 +8908,81 @@ function drawBirthdayScene() {
   ctx.fillRect(cakeX - cakeW / 2, cakeY, cakeW, cakeH);
   ctx.fillStyle = '#ff8fb8';
   ctx.fillRect(cakeX - cakeW / 2, cakeY, cakeW, cakeH * 0.28);
+
+  // Punch bowl -- a squat wide ellipse (bowl body) with a lighter rim
+  // ellipse suggesting the concave inside, plus two small cups beside it.
+  // Flat fills only, same as the cake -- deliberately styled like static
+  // tableware, not like a dot (no glow, no pulse, no glossy highlight).
+  const bowlX = cakeX - cakeW * 1.6;
+  const bowlW = 0.075 * w;
+  const bowlH = 0.022 * h;
+  const bowlY = tableY - bowlH * 0.6;
+  ctx.fillStyle = BIRTHDAY_CONFIG.TABLEWARE_COLOR;
+  ctx.beginPath();
+  ctx.ellipse(bowlX, bowlY, bowlW / 2, bowlH, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = BIRTHDAY_CONFIG.PUNCH_COLOR;
+  ctx.beginPath();
+  ctx.ellipse(bowlX, bowlY - bowlH * 0.28, bowlW / 2 * 0.8, bowlH * 0.6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  for (const cupSign of [-1, 1]) {
+    const cupX = bowlX + cupSign * bowlW * 0.85;
+    const cupW = bowlW * 0.28;
+    const cupH = bowlH * 1.8;
+    ctx.fillStyle = BIRTHDAY_CONFIG.TABLEWARE_COLOR;
+    ctx.fillRect(cupX - cupW / 2, tableY - cupH, cupW, cupH);
+    ctx.fillStyle = BIRTHDAY_CONFIG.PUNCH_COLOR;
+    ctx.beginPath();
+    ctx.ellipse(cupX, tableY - cupH, cupW / 2, cupW / 2 * 0.4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Plate stack -- a few overlapping thin ellipses, on the cake's other side.
+  const plateX = cakeX + cakeW * 1.6;
+  const plateW = 0.06 * w;
+  const plateH = 0.012 * h;
+  for (let p = 0; p < 3; p++) {
+    ctx.fillStyle = BIRTHDAY_CONFIG.TABLEWARE_COLOR;
+    ctx.globalAlpha = 0.55 + p * 0.15;
+    ctx.beginPath();
+    ctx.ellipse(plateX, tableY - plateH * 0.5 - p * plateH * 0.7, plateW / 2, plateH, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Balloon bouquets -- 3-4 balloons tied to one knot at the table edge,
+  // swaying together as a single rigid shape (not independently), so the
+  // silhouette reads as "one tied decoration" rather than several loose
+  // round things. No glossy highlight (see generateBalloonBunches).
+  for (const bunch of scene.balloonBunches) {
+    const sway = Math.sin(t * bunch.swaySpeed + bunch.swayPhase) * bunch.swayAmount;
+    const knotX = (bunch.anchorXFrac + sway) * w;
+    const knotY = bunch.knotYFrac * h;
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 1;
+    for (const b of bunch.balloons) {
+      const bx = knotX + b.dxFrac * w;
+      const by = knotY + b.dyFrac * h;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(knotX, knotY);
+      ctx.stroke();
+    }
+    for (const b of bunch.balloons) {
+      const bx = knotX + b.dxFrac * w;
+      const by = knotY + b.dyFrac * h;
+      const r = b.radiusFrac * Math.min(w, h);
+      ctx.beginPath();
+      ctx.ellipse(bx, by, r * 0.82, r, 0, 0, Math.PI * 2);
+      ctx.fillStyle = BIRTHDAY_CONFIG.BALLOON_COLORS[b.colorIndex];
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.arc(knotX, knotY, 2, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.fill();
+  }
 
   const candleX = cakeX;
   const candleTopY = cakeY - 0.035 * h;
