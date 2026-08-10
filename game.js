@@ -343,7 +343,7 @@ function saveSceneSetting(mode) {
 // sound is revealed on doubles as the scene's very last wave, so the
 // instant a player advances past that completion screen the scene (and
 // that brand new sound) gets cut off, often before an event layer like
-// the owl or foghorn even gets through its own 1.5-3.5s startup delay to
+// the owl or whale even gets through its own 1.5-3.5s startup delay to
 // make a single sound. Space has no ambient sounds of its own -- "no one
 // can hear you scream in space" -- so it just gets a single wave, same as
 // it always has.
@@ -3263,7 +3263,7 @@ function stopAllScheduledAudio(atTime) {
 // always underneath the puzzle's own generated music, never replacing
 // it. Most sounds loop continuously; a couple per scene are rarer
 // one-shot events instead of a loop (the forest's owl, the beach's
-// gulls and foghorn).
+// gulls and whale).
 // ============================================================
 const SCENE_AMBIENT_CONFIG = {
   forest: {
@@ -3278,12 +3278,16 @@ const SCENE_AMBIENT_CONFIG = {
   },
   beach: {
     // Waves first, same reasoning as the forest's wind -- the scene's floor.
-    order: ['waves', 'wind', 'shorebirds', 'foghorn'],
+    // The foghorn that used to round out this set (player feedback: "not
+    // relaxing") is gone -- replaced with a distant whale call, and the
+    // shorebirds' gain is down 20% (0.7 -> 0.56) on the same feedback that
+    // it ran a bit hot relative to everything else in the scene.
+    order: ['waves', 'wind', 'shorebirds', 'whale'],
     sounds: {
       waves: { file: 'beach-waves.mp3', gain: 0.6, isEvent: false },
       wind: { file: 'beach-wind.mp3', gain: 0.4, isEvent: false },
-      shorebirds: { file: 'beach-shorebirds.mp3', gain: 0.7, isEvent: true, minGapSec: 12, maxGapSec: 32 },
-      foghorn: { file: 'beach-foghorn.mp3', gain: 0.6, isEvent: true, minGapSec: 25, maxGapSec: 55 },
+      shorebirds: { file: 'beach-shorebirds.mp3', gain: 0.56, isEvent: true, minGapSec: 12, maxGapSec: 32 },
+      whale: { file: 'beach-whale.mp3', gain: 0.55, isEvent: true, minGapSec: 30, maxGapSec: 65 },
     },
   },
   // Deliberately the loudest, busiest, most high-energy set of the bunch
@@ -3311,6 +3315,11 @@ const AMBIENT_VARIATION = {
   GAIN_RANGE: [0.85, 1.15], // multiplies each sound's own base gain above
   PAN_RANGE: [-0.3, 0.3],
   CROSSFADE_SEC: 1.5, // overlap between an outgoing loop instance and the next
+  EVENT_FADE_IN_SEC: 0.35, // player feedback: a one-shot snapping straight to full
+                            // volume reads as a jump-scare, not relaxing -- softens
+                            // the attack on every event-type retrigger (owl, gulls,
+                            // whale, birthday's horn/cork) without erasing each
+                            // sound's own character
 };
 
 function randRange([lo, hi]) {
@@ -3403,9 +3412,10 @@ function startLoopingAmbientLayer(buffer, baseGain) {
 }
 
 // An occasional event sound (the forest's owl; the beach's gulls and
-// foghorn) rather than a loop, at a random gap after the previous one (or
+// whale) rather than a loop, at a random gap after the previous one (or
 // a beat after first being revealed). Same per-repeat pitch/gain/pan
-// variation as the looping layers above.
+// variation as the looping layers above, plus a short fade-in so the
+// sound eases in rather than snapping straight to full volume.
 function startEventAmbientLayer(buffer, baseGain, minGapSec, maxGapSec) {
   let stopped = false;
   let timer = null;
@@ -3423,7 +3433,10 @@ function startEventAmbientLayer(buffer, baseGain, minGapSec, maxGapSec) {
     if (panner) panner.pan.value = randRange(cfg.PAN_RANGE);
 
     const gain = ctx.createGain();
-    gain.gain.value = baseGain * randRange(cfg.GAIN_RANGE);
+    const peakGain = baseGain * randRange(cfg.GAIN_RANGE);
+    const fadeIn = Math.min(cfg.EVENT_FADE_IN_SEC, buffer.duration / source.playbackRate.value / 3);
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(peakGain, now + fadeIn);
 
     source.connect(gain);
     if (panner) { gain.connect(panner); panner.connect(STATE.ambientGain); }
@@ -3477,8 +3490,16 @@ function resetSceneAmbience() {
     const now = STATE.audioCtx.currentTime;
     for (const { source, gain } of STATE.ambienceActiveSources) {
       try {
-        gain.gain.cancelScheduledValues(now);
-        gain.gain.setValueAtTime(gain.gain.value, now);
+        // cancelScheduledValues() alone doesn't preserve wherever an
+        // in-progress ramp (e.g. an event sound's EVENT_FADE_IN_SEC
+        // attack) had actually gotten to -- reading gain.gain.value right
+        // after cancelling can hand back the ramp's start value, not its
+        // current interpolated one, undoing the fade-in and re-creating
+        // exactly the "sudden sound" this was meant to prevent (P2 review
+        // catch, PR #68). cancelAndHoldAtTime is the API built for this:
+        // cancel-and-freeze-at-the-actual-current-value in one call.
+        if (gain.gain.cancelAndHoldAtTime) gain.gain.cancelAndHoldAtTime(now);
+        else { gain.gain.cancelScheduledValues(now); gain.gain.setValueAtTime(gain.gain.value, now); }
         gain.gain.linearRampToValueAtTime(0, now + 0.3);
         source.stop(now + 0.35);
       } catch (e) { /* already stopped */ }

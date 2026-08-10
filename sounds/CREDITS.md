@@ -85,14 +85,26 @@ synthesized, revealed progressively as their own scene (see
   Public Domain Mark 1.0.
 - `beach-shorebirds.mp3` — gull flock calls, from
   ["Hastings Beach: Gull Flock and Evening Shoreline"](https://archive.org/details/aporee_72526_84684),
-  Public Domain Mark 1.0.
-- `beach-foghorn.mp3` — a ship's foghorn sounding three times, from
-  ["ship foghorn," Ajaccio, France](https://archive.org/details/aporee_61190_70385),
-  Public Domain Mark 1.0.
+  Public Domain Mark 1.0. Gain trimmed 20% below what shipped originally
+  — player feedback: it ran a bit hot relative to the rest of the scene.
+- `beach-whale.mp3` — humpback whale calls, trimmed from "Humpback whale
+  song 2," a hydrophone recording made by the National Park Service in
+  [Glacier Bay, Alaska](https://archive.org/details/HumpbackWhalesSongsSoundsVocalizations).
+  Public domain (US government work). Replaces an earlier ship's-foghorn
+  layer on player feedback that it read as jarring rather than relaxing —
+  a foghorn blast is inherently a sudden, loud sound no amount of mixing
+  fixes, so it was swapped for something with the same "occasional distant
+  event" role but an actually calm character. High-passed and denoised
+  (period hydrophone tape hiss) beyond the light touch the other three
+  needed.
 
-All four loudness-normalized and trimmed with short fades, no other
-editing. Waves and wind loop continuously; the gulls and foghorn are
-rarer one-shot retriggers, same distinction the forest's owl gets.
+All four loudness-adjusted and trimmed with short fades, no other editing
+beyond the whale's noise reduction above. Waves and wind loop continuously;
+the gulls and whale are rarer one-shot retriggers, same distinction the
+forest's owl gets — and, like the owl, now ease in over a short fade
+(`AMBIENT_VARIATION.EVENT_FADE_IN_SEC` in game.js) rather than snapping
+straight to full volume, on the same "sudden sounds aren't relaxing"
+feedback.
 
 ## Birthday party ambience (sounds/ambient/birthday-*.mp3)
 
