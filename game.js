@@ -1448,6 +1448,14 @@ function milestoneTierForWave(wave) {
 }
 
 function queueAchievement(entry) {
+  // Sleep mode already hides the score for the same reason (player
+  // request: a competitive stimulus works against winding down) -- the
+  // achievement toast (box + playAchievementJingle) is exactly that same
+  // stimulus, milestone-cleared/high-score bragging with a fanfare, so it
+  // gets the same treatment. Per-line connection praise
+  // (spawnConnectionPraise) is a separate system and stays on -- it's
+  // reward for the line just drawn, not a running competitive tally.
+  if (STATE.difficulty === 'sleep') return;
   STATE.achievementQueue.push(entry);
   maybeShowNextAchievement();
 }
@@ -8400,13 +8408,18 @@ function drawForestScene() {
 // Wave lines/glitter dots/boat/moon are stored as fractions of
 // canvas.width/height, not absolute pixels, same reasoning as the
 // forest's trees.
+//
+// Water/sand player feedback: the previous teal-black water and
+// brown-black sand were dark enough to read as no particular color at
+// all. Muted for nighttime, same as before, but now unmistakably ocean
+// blue and warm sand rather than a desaturated smear of either.
 const BEACH_CONFIG = {
   SKY_TOP: '#050b17',
   SKY_MID: '#12253d',
   SKY_HORIZON: '#2f4f5f',
-  WATER_HORIZON: '#1c3a44',
-  WATER_COLOR: '#0a1a22',
-  SAND_COLOR: '#241d13',
+  WATER_HORIZON: '#2a5170',
+  WATER_COLOR: '#0d2844',
+  SAND_COLOR: '#4d4330',
   BOAT_COLOR: '#050a14',
 };
 
