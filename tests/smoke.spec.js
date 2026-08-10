@@ -6225,6 +6225,88 @@ test('birthday balloons sway by their configured fraction of screen width, not a
 });
 
 // ------------------------------------------------------------
+// The Birthday scene's actual "Happy Birthday to You" melody
+// (generateBirthdaySong) -- player feedback: the generic chord-progression
+// engine's melody role never actually happened to spell out this tune, so
+// it gets its own fixed-note generator instead. See HAPPY_BIRTHDAY_MELODY.
+// ------------------------------------------------------------
+
+test('generateBirthdaySong produces the real "Happy Birthday to You" tune, note for note', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const NOTE_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+    const midiToName = (m) => NOTE_NAMES[m % 12] + (Math.floor(m / 12) - 1);
+
+    const song = generateBirthdaySong(6);
+    const namesInOrder = song.notes.slice().sort((a, b) => a.beat - b.beat).map(n => midiToName(n.midi));
+    const allMelodyRole = song.notes.every(n => n.role === 'melody' && n.instrument === 'piano');
+    const chunkIndexesUsed = new Set(song.notes.map(n => n.chunkIndex));
+
+    return {
+      noteCount: song.notes.length,
+      totalBeats: song.totalBeats,
+      genreFamily: song.genre.family,
+      genreName: song.genre.name,
+      namesInOrder,
+      allMelodyRole,
+      distinctChunksUsed: chunkIndexesUsed.size,
+    };
+  });
+
+  // The four sung phrases, in order -- "Happy birthday to you" x2, "Happy
+  // birthday dear ___", "Happy birthday to you" -- 25 notes total, the
+  // widely-cited note count for this tune.
+  expect(result.namesInOrder).toEqual([
+    'G4', 'G4', 'A4', 'G4', 'C5', 'B4',
+    'G4', 'G4', 'A4', 'G4', 'D5', 'C5',
+    'G4', 'G4', 'G5', 'E5', 'C5', 'B4', 'A4',
+    'F5', 'F5', 'E5', 'C5', 'D5', 'C5',
+  ]);
+  expect(result.noteCount).toBe(25);
+  expect(result.totalBeats).toBe(25);
+  expect(result.genreFamily).toBe('birthday');
+  expect(result.genreName).toBe('happy birthday');
+  expect(result.allMelodyRole).toBe(true);
+  // Every one of the 6 pairs a max-pairs wave can have should reveal at
+  // least one note when connected -- see generateBirthdaySong's chunk
+  // distribution comment.
+  expect(result.distinctChunksUsed).toBe(6);
+  expect(errors).toEqual([]);
+});
+
+test('a Birthday-scene wave uses the real melody, and every other scene keeps the generic chord-progression engine', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.mouse.click(200, 700); // START GAME -- STATE.audioCtx etc. need a real gesture-driven init
+  await page.waitForTimeout(600);
+
+  const result = await page.evaluate(() => {
+    // Set the FIXED scene mode, not STATE.scene directly -- startWave
+    // resolves STATE.scene itself from STATE.sceneMode via
+    // resolveSceneForWave, overwriting any direct assignment made before
+    // calling it.
+    STATE.sceneMode = 'birthday';
+    startWave(1);
+    const birthdaySongFamily = STATE.song.genre.family;
+
+    STATE.sceneMode = 'space';
+    startWave(2);
+    const spaceSongFamily = STATE.song.genre.family;
+
+    return { birthdaySongFamily, spaceSongFamily };
+  });
+
+  expect(result.birthdaySongFamily).toBe('birthday');
+  expect(result.spaceSongFamily).not.toBe('birthday');
+  expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------
 // Rotate mode's per-scene block schedule (see resolveSceneForWave/
 // sceneWaveCount) -- each scene holds for as many consecutive waves as it
 // has ambient sounds, so a player actually hears a scene's full set

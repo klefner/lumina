@@ -3299,8 +3299,14 @@ const SCENE_AMBIENT_CONFIG = {
     sounds: {
       crowd: { file: 'birthday-crowd.mp3', gain: 0.45, isEvent: false },
       balloon: { file: 'birthday-balloon.mp3', gain: 0.5, isEvent: false },
-      horn: { file: 'birthday-horn.mp3', gain: 0.8, isEvent: true, minGapSec: 10, maxGapSec: 28 },
-      cork: { file: 'birthday-cork.mp3', gain: 0.75, isEvent: true, minGapSec: 20, maxGapSec: 45 },
+      // Player feedback called these "really strange sounds" -- horn and
+      // cork were also, by a wide margin, the loudest layers in the whole
+      // scene (0.8/0.75 against a 0.45-0.5 ambient bed), so anything
+      // synthetic about their timbre got maximum spotlight. Rebuilt (see
+      // sounds/CREDITS.md) and brought down to sit with the bed rather
+      // than over it.
+      horn: { file: 'birthday-horn.mp3', gain: 0.55, isEvent: true, minGapSec: 10, maxGapSec: 28 },
+      cork: { file: 'birthday-cork.mp3', gain: 0.5, isEvent: true, minGapSec: 20, maxGapSec: 45 },
     },
   },
 };
@@ -4030,6 +4036,68 @@ function generateSong(pairCount) {
 
   capNoteGaps(notes, pairCount, totalBeats, 3.5);
   resolveInstrumentCollisions(notes);
+
+  return { genre, totalBeats, pairCount, notes };
+}
+
+// The actual "Happy Birthday to You" melody -- public domain (the tune,
+// originally "Good Morning to All," 1893, has been public domain in the US
+// since the 2015-2016 Marya v. Warner/Chappell Music ruling invalidated
+// the lyrics copyright claim). Encoded purely as scale-degree/duration
+// note data -- an original instrumental arrangement; no lyrics are
+// rendered anywhere in this project. Degrees are 0-indexed and extend past
+// the octave (7 = the octave root, 11 = a fourth above that, etc.) for
+// direct use with scaleMidi's own degreeIndex/octaveOffset math.
+const HAPPY_BIRTHDAY_MELODY = [
+  { deg: 4, dur: 0.75 }, { deg: 4, dur: 0.25 }, { deg: 5, dur: 1 }, { deg: 4, dur: 1 }, { deg: 7, dur: 1 }, { deg: 6, dur: 2 },
+  { deg: 4, dur: 0.75 }, { deg: 4, dur: 0.25 }, { deg: 5, dur: 1 }, { deg: 4, dur: 1 }, { deg: 8, dur: 1 }, { deg: 7, dur: 2 },
+  { deg: 4, dur: 0.75 }, { deg: 4, dur: 0.25 }, { deg: 11, dur: 1 }, { deg: 9, dur: 1 }, { deg: 7, dur: 1 }, { deg: 6, dur: 1 }, { deg: 5, dur: 2 },
+  { deg: 10, dur: 0.75 }, { deg: 10, dur: 0.25 }, { deg: 9, dur: 1 }, { deg: 7, dur: 1 }, { deg: 8, dur: 1 }, { deg: 7, dur: 2 },
+];
+
+// The Birthday scene (see SCENE_LIST) gets the real tune instead of the
+// generic chord/role-driven generateSong above -- player-requested, and
+// player feedback confirmed the generic engine's own chord-progression
+// melody role never actually happened to land on this one (it's derived
+// from a random chord progression, not composed to spell out any specific
+// tune). A fixed melody needs its own generator: generateSong's whole
+// design is "derive notes from a chord progression + role assignment",
+// which has no way to encode a pre-composed piece. Returns the exact same
+// shape generateSong does (notes carry beat/midi/role/instrument/vel/
+// chunkIndex), so the existing scheduler and chunkGains-gating machinery
+// need no changes at all -- only the note SOURCE differs.
+//
+// Deliberately a solo line, no chordal accompaniment: "Happy Birthday" is
+// most commonly performed exactly this way (sung a cappella), and it
+// sidesteps a real risk -- a hand-picked chord progression clashing with a
+// melody that already implies its own harmony at a couple of points (the
+// high climb on "dear ___", the "to" pickup resolving upward each time).
+function generateBirthdaySong(pairCount) {
+  const genre = {
+    family: 'birthday', name: 'happy birthday',
+    bpm: 108, rootMidi: 60,
+    scaleIntervals: [0, 2, 4, 5, 7, 9, 11], // Ionian (major) -- diatonic throughout, no borrowed tones
+  };
+  const instrument = 'piano';
+  const totalBeats = HAPPY_BIRTHDAY_MELODY.reduce((sum, n) => sum + n.dur, 0);
+
+  const notes = [];
+  let beat = 0;
+  HAPPY_BIRTHDAY_MELODY.forEach((n, i) => {
+    // Contiguous blocks of melody notes per pair (not round-robin) -- the
+    // notes themselves always play in their fixed chronological beat
+    // position regardless of connection order (chunkIndex only gates
+    // volume, same as generateSong), so connecting pairs in order reveals
+    // the tune from its opening phrase forward, the way a partial reveal
+    // should read.
+    const chunkIndex = Math.min(pairCount - 1, Math.floor((i / HAPPY_BIRTHDAY_MELODY.length) * pairCount));
+    notes.push({
+      beat: humanizeBeat(beat, 0.015),
+      midi: foldToInstrumentRange(instrument, scaleMidi(genre, n.deg, 0)),
+      role: 'melody', instrument, vel: humanizeVelocity(), chunkIndex,
+    });
+    beat += n.dur;
+  });
 
   return { genre, totalBeats, pairCount, notes };
 }
@@ -6948,7 +7016,11 @@ function startWave(waveNumber) {
   showTutorialHint(waveNumber);
 
   const pairCount = getPairCountForWave(waveNumber);
-  STATE.song = generateSong(pairCount);
+  // Cockpit Mode is deliberately excluded here (see its own STATE.song
+  // assignment above) -- it renders its own Three.js scene and never
+  // reads STATE.scene at all, so "birthday" would just be whatever scene
+  // classic mode last happened to leave behind, not a real signal.
+  STATE.song = STATE.scene === 'birthday' ? generateBirthdaySong(pairCount) : generateSong(pairCount);
   // Sleep mode: no barriers, ever -- bypassing generateBarriersSafely
   // entirely (rather than just tuning BARRIER_CONFIG.START_WAVE to
   // Infinity, which this difficulty's preset also does as a backstop) is
