@@ -3303,8 +3303,14 @@ const SCENE_AMBIENT_CONFIG = {
     sounds: {
       crowd: { file: 'birthday-crowd.mp3', gain: 0.45, isEvent: false },
       balloon: { file: 'birthday-balloon.mp3', gain: 0.5, isEvent: false },
-      horn: { file: 'birthday-horn.mp3', gain: 0.8, isEvent: true, minGapSec: 10, maxGapSec: 28 },
-      cork: { file: 'birthday-cork.mp3', gain: 0.75, isEvent: true, minGapSec: 20, maxGapSec: 45 },
+      // Player feedback called these "really strange sounds" -- horn and
+      // cork were also, by a wide margin, the loudest layers in the whole
+      // scene (0.8/0.75 against a 0.45-0.5 ambient bed), so anything
+      // synthetic about their timbre got maximum spotlight. Rebuilt (see
+      // sounds/CREDITS.md) and brought down to sit with the bed rather
+      // than over it.
+      horn: { file: 'birthday-horn.mp3', gain: 0.55, isEvent: true, minGapSec: 10, maxGapSec: 28 },
+      cork: { file: 'birthday-cork.mp3', gain: 0.5, isEvent: true, minGapSec: 20, maxGapSec: 45 },
     },
   },
   // Cozy-spooky rather than horror -- a gentle autumn wind floor with three
@@ -4064,6 +4070,79 @@ function generateSong(pairCount) {
   return { genre, totalBeats, pairCount, notes };
 }
 
+// The actual "Happy Birthday to You" melody -- public domain (the tune,
+// originally "Good Morning to All," 1893, has been public domain in the US
+// since the 2015-2016 Marya v. Warner/Chappell Music ruling invalidated
+// the lyrics copyright claim). Encoded purely as scale-degree/duration
+// note data -- an original instrumental arrangement; no lyrics are
+// rendered anywhere in this project. Degrees are 0-indexed and extend past
+// the octave (7 = the octave root, 11 = a fourth above that, etc.) for
+// direct use with scaleMidi's own degreeIndex/octaveOffset math.
+const HAPPY_BIRTHDAY_MELODY = [
+  { deg: 4, dur: 0.75 }, { deg: 4, dur: 0.25 }, { deg: 5, dur: 1 }, { deg: 4, dur: 1 }, { deg: 7, dur: 1 }, { deg: 6, dur: 2 },
+  { deg: 4, dur: 0.75 }, { deg: 4, dur: 0.25 }, { deg: 5, dur: 1 }, { deg: 4, dur: 1 }, { deg: 8, dur: 1 }, { deg: 7, dur: 2 },
+  { deg: 4, dur: 0.75 }, { deg: 4, dur: 0.25 }, { deg: 11, dur: 1 }, { deg: 9, dur: 1 }, { deg: 7, dur: 1 }, { deg: 6, dur: 1 }, { deg: 5, dur: 2 },
+  { deg: 10, dur: 0.75 }, { deg: 10, dur: 0.25 }, { deg: 9, dur: 1 }, { deg: 7, dur: 1 }, { deg: 8, dur: 1 }, { deg: 7, dur: 2 },
+];
+
+// The Birthday scene (see SCENE_LIST) gets the real tune instead of the
+// generic chord/role-driven generateSong above -- player-requested, and
+// player feedback confirmed the generic engine's own chord-progression
+// melody role never actually happened to land on this one (it's derived
+// from a random chord progression, not composed to spell out any specific
+// tune). A fixed melody needs its own generator: generateSong's whole
+// design is "derive notes from a chord progression + role assignment",
+// which has no way to encode a pre-composed piece. Returns the exact same
+// shape generateSong does (notes carry beat/midi/role/instrument/vel/
+// chunkIndex), so the existing scheduler and chunkGains-gating machinery
+// need no changes at all -- only the note SOURCE differs.
+//
+// Deliberately a solo line, no chordal accompaniment: "Happy Birthday" is
+// most commonly performed exactly this way (sung a cappella), and it
+// sidesteps a real risk -- a hand-picked chord progression clashing with a
+// melody that already implies its own harmony at a couple of points (the
+// high climb on "dear ___", the "to" pickup resolving upward each time).
+function generateBirthdaySong(pairCount) {
+  const genre = {
+    family: 'birthday', name: 'happy birthday',
+    bpm: 108, rootMidi: 60,
+    scaleIntervals: [0, 2, 4, 5, 7, 9, 11], // Ionian (major) -- diatonic throughout, no borrowed tones
+  };
+  const instrument = 'piano';
+  const totalBeats = HAPPY_BIRTHDAY_MELODY.reduce((sum, n) => sum + n.dur, 0);
+
+  const notes = [];
+  let beat = 0;
+  HAPPY_BIRTHDAY_MELODY.forEach((n, i) => {
+    // Contiguous blocks of melody notes per pair (not round-robin) -- the
+    // notes themselves always play in their fixed chronological beat
+    // position regardless of connection order (chunkIndex only gates
+    // volume, same as generateSong), so connecting pairs in order reveals
+    // the tune from its opening phrase forward, the way a partial reveal
+    // should read.
+    const chunkIndex = Math.min(pairCount - 1, Math.floor((i / HAPPY_BIRTHDAY_MELODY.length) * pairCount));
+    notes.push({
+      beat: humanizeBeat(beat, 0.015),
+      midi: foldToInstrumentRange(instrument, scaleMidi(genre, n.deg, 0)),
+      role: 'melody', instrument, vel: humanizeVelocity(), chunkIndex,
+    });
+    beat += n.dur;
+  });
+
+  // Contiguous per-pair blocks (see above) mean an early-connected pair's
+  // chunk can otherwise go most of a 25-beat loop (~12s at this bpm)
+  // between notes once its own short phrase has played -- the same
+  // bounded-audibility guarantee generateSong's own melody notes get.
+  // A single capNoteGaps pass only halves each gap (it fills one echo at
+  // the midpoint, not enough echoes to close the whole span), which is
+  // plenty for generateSong's per-bar-random gaps but not these ~22-beat
+  // contiguous-block ones -- so repeat until every chunk actually
+  // converges under the cap instead of just being cut in half once.
+  for (let i = 0; i < 6 && capNoteGaps(notes, pairCount, totalBeats, 3.5) > 0; i++);
+
+  return { genre, totalBeats, pairCount, notes };
+}
+
 // Genre seeds reassign roles to instruments (see GENRE_FAMILIES above), which can put
 // two different roles — say a drone and an accent — on the SAME instrument
 // with beats that land at (or drift close to) the exact same instant. If
@@ -4113,7 +4192,12 @@ function resolveInstrumentCollisions(notes) {
 // fixed to the downbeat, so they can never compound this way. Scans each
 // stem for gaps wider than maxGapBeats and fills the midpoint with a softer
 // echo of the note before it, capping the worst-case silence after a pair
-// is connected regardless of how the per-bar dice rolls landed.
+// is connected regardless of how the per-bar dice rolls landed. One pass
+// only halves each over-cap gap (a single midpoint echo, not enough to
+// close the whole span) -- fine for generateSong's usually-modest gaps,
+// but callers with much larger gaps (see generateBirthdaySong) need to
+// call this repeatedly until it reports no more fillers added. Returns
+// the number of fillers added, for exactly that.
 function capNoteGaps(notes, pairCount, totalBeats, maxGapBeats) {
   const fillers = [];
   for (let chunkIndex = 0; chunkIndex < pairCount; chunkIndex++) {
@@ -4133,6 +4217,7 @@ function capNoteGaps(notes, pairCount, totalBeats, maxGapBeats) {
     }
   }
   notes.push(...fillers);
+  return fillers.length;
 }
 
 // A song can have ~40-90 notes per loop pass, several of which are chords
@@ -6980,7 +7065,11 @@ function startWave(waveNumber) {
   showTutorialHint(waveNumber);
 
   const pairCount = getPairCountForWave(waveNumber);
-  STATE.song = generateSong(pairCount);
+  // Cockpit Mode is deliberately excluded here (see its own STATE.song
+  // assignment above) -- it renders its own Three.js scene and never
+  // reads STATE.scene at all, so "birthday" would just be whatever scene
+  // classic mode last happened to leave behind, not a real signal.
+  STATE.song = STATE.scene === 'birthday' ? generateBirthdaySong(pairCount) : generateSong(pairCount);
   // Sleep mode: no barriers, ever -- bypassing generateBarriersSafely
   // entirely (rather than just tuning BARRIER_CONFIG.START_WAVE to
   // Infinity, which this difficulty's preset also does as a backstop) is

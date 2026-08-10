@@ -6432,6 +6432,115 @@ test('Christmas chimney smoke recycles back to the chimney instead of resetting 
 });
 
 // ------------------------------------------------------------
+// The Birthday scene's actual "Happy Birthday to You" melody
+// (generateBirthdaySong) -- player feedback: the generic chord-progression
+// engine's melody role never actually happened to spell out this tune, so
+// it gets its own fixed-note generator instead. See HAPPY_BIRTHDAY_MELODY.
+// ------------------------------------------------------------
+
+test('generateBirthdaySong produces the real "Happy Birthday to You" tune, note for note', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const NOTE_NAMES = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'];
+    const midiToName = (m) => NOTE_NAMES[m % 12] + (Math.floor(m / 12) - 1);
+
+    const song = generateBirthdaySong(6);
+    // capNoteGaps (see generateBirthdaySong) appends gap-filling echoes
+    // after the 25 real melody notes without reordering them, so the
+    // first 25 in array order are the tune itself, already beat-increasing.
+    const coreNotes = song.notes.slice(0, 25);
+    const namesInOrder = coreNotes.map(n => midiToName(n.midi));
+    const allMelodyRole = song.notes.every(n => n.role === 'melody' && n.instrument === 'piano');
+    const chunkIndexesUsed = new Set(song.notes.map(n => n.chunkIndex));
+
+    // Worst-case silence within each chunk once it's connected, wrapping
+    // across the loop boundary -- the exact bound capNoteGaps enforces
+    // (review catch, PR #73: contiguous per-pair blocks left an early
+    // pair's chunk silent for most of every 25-beat loop otherwise).
+    const maxGapByChunk = [];
+    for (let c = 0; c < 6; c++) {
+      const chunkNotes = song.notes.filter(n => n.chunkIndex === c).sort((a, b) => a.beat - b.beat);
+      let maxGap = 0;
+      for (let i = 0; i < chunkNotes.length; i++) {
+        const cur = chunkNotes[i];
+        const next = chunkNotes[(i + 1) % chunkNotes.length];
+        const nextBeat = i + 1 < chunkNotes.length ? next.beat : next.beat + song.totalBeats;
+        maxGap = Math.max(maxGap, nextBeat - cur.beat);
+      }
+      maxGapByChunk.push(maxGap);
+    }
+
+    return {
+      noteCount: song.notes.length,
+      totalBeats: song.totalBeats,
+      genreFamily: song.genre.family,
+      genreName: song.genre.name,
+      namesInOrder,
+      allMelodyRole,
+      distinctChunksUsed: chunkIndexesUsed.size,
+      maxGapByChunk,
+    };
+  });
+
+  // The four sung phrases, in order -- "Happy birthday to you" x2, "Happy
+  // birthday dear ___", "Happy birthday to you" -- 25 notes total, the
+  // widely-cited note count for this tune.
+  expect(result.namesInOrder).toEqual([
+    'G4', 'G4', 'A4', 'G4', 'C5', 'B4',
+    'G4', 'G4', 'A4', 'G4', 'D5', 'C5',
+    'G4', 'G4', 'G5', 'E5', 'C5', 'B4', 'A4',
+    'F5', 'F5', 'E5', 'C5', 'D5', 'C5',
+  ]);
+  // 25 real notes + capNoteGaps fillers -- every one of the 6 chunks wraps
+  // with a gap far over the 3.5-beat cap, and one pass only halves a gap,
+  // so it takes several repeated passes (see generateBirthdaySong) to
+  // actually converge every chunk under the cap (see maxGapByChunk).
+  expect(result.noteCount).toBe(67);
+  expect(result.totalBeats).toBe(25);
+  expect(result.genreFamily).toBe('birthday');
+  expect(result.genreName).toBe('happy birthday');
+  expect(result.allMelodyRole).toBe(true);
+  // Every one of the 6 pairs a max-pairs wave can have should reveal at
+  // least one note when connected -- see generateBirthdaySong's chunk
+  // distribution comment.
+  expect(result.distinctChunksUsed).toBe(6);
+  for (const gap of result.maxGapByChunk) expect(gap).toBeLessThanOrEqual(3.55); // 3.5 cap + small beat-jitter slack
+  expect(errors).toEqual([]);
+});
+
+test('a Birthday-scene wave uses the real melody, and every other scene keeps the generic chord-progression engine', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.mouse.click(200, 700); // START GAME -- STATE.audioCtx etc. need a real gesture-driven init
+  await page.waitForTimeout(600);
+
+  const result = await page.evaluate(() => {
+    // Set the FIXED scene mode, not STATE.scene directly -- startWave
+    // resolves STATE.scene itself from STATE.sceneMode via
+    // resolveSceneForWave, overwriting any direct assignment made before
+    // calling it.
+    STATE.sceneMode = 'birthday';
+    startWave(1);
+    const birthdaySongFamily = STATE.song.genre.family;
+
+    STATE.sceneMode = 'space';
+    startWave(2);
+    const spaceSongFamily = STATE.song.genre.family;
+
+    return { birthdaySongFamily, spaceSongFamily };
+  });
+
+  expect(result.birthdaySongFamily).toBe('birthday');
+  expect(result.spaceSongFamily).not.toBe('birthday');
+  expect(errors).toEqual([]);
+});
+
+// ------------------------------------------------------------
 // Rotate mode's per-scene block schedule (see resolveSceneForWave/
 // sceneWaveCount) -- each scene holds for as many consecutive waves as it
 // has ambient sounds, so a player actually hears a scene's full set

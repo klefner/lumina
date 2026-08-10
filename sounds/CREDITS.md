@@ -124,17 +124,36 @@ path for "sometimes synthesized."
 - `birthday-crowd.mp3` — real field recording, "party crowd" ambience
   from [Hasenheide, Berlin](https://archive.org/details/aporee_49872_56880),
   Public Domain Mark 1.0.
-- `birthday-balloon.mp3` — synthesized: irregular resonant-filtered
-  noise bursts standing in for a balloon being rubbed/squeaked.
-- `birthday-horn.mp3` — synthesized: an additive buzzy tone (summed
-  harmonics, a quick pitch sweep, reed-flutter modulation) standing in
-  for a paper party horn.
+- `birthday-balloon.mp3` — synthesized: rebuilt after player feedback
+  ("really strange sounds") found a real bug, not just a taste problem —
+  the original built each squeak by filtering two independent noise
+  segments at different center frequencies and concatenating them for a
+  pitch glide, with no phase continuity across that splice, so every
+  burst had an audible click at the midpoint. A squeak is also
+  fundamentally a stick-slip friction tone (a wandering, mostly-pure
+  pitch) in the first place, not filtered noise. Rebuilt as a single
+  continuously phase-accumulated oscillator per burst instead, frequency
+  following a smooth random contour — no splice, so no click, and it
+  reads as tonal-squeak rather than noise-burst.
+- `birthday-horn.mp3` — synthesized: simplified from 8-9 summed
+  harmonics down to 4 with a faster amplitude rolloff (fewer, quieter
+  upper harmonics reads as a papery party-horn blat rather than a denser
+  electronic-buzz tone), and fixed a real bug in the per-harmonic detune
+  — it was being applied to each harmonic's already phase-integrated
+  signal directly, which compounds into large uncontrolled pitch drift
+  on the upper harmonics over the note's length, rather than to each
+  harmonic's own instantaneous frequency before integration.
 - `birthday-cork.mp3` — synthesized: a fast noise transient, a low
   body-resonance thud, and a fizzy noise tail standing in for a cork
-  pop.
+  pop. The transient-to-thud handoff now crossfades instead of
+  hard-concatenating, removing a small level-mismatch click at that
+  boundary.
 
 Crowd and balloon loop continuously; horn and cork are rarer one-shot
-retriggers.
+retriggers. Horn and cork's gain also came down significantly (0.8/0.75
+→ 0.55/0.5) — they were the loudest layers in the entire scene, well
+above the 0.45-0.5 ambient bed, which put any rough edge in their
+synthesis under a spotlight regardless of how the timbre itself sounded.
 
 ## Halloween ambience (sounds/ambient/halloween-*.mp3)
 
