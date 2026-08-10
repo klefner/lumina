@@ -352,6 +352,14 @@ html, body {
    passive toast (no auto-fade): it needs to keep being obvious for as
    long as the mode itself is active, however long that turns out to be. */
 #erase-mode-banner {
+  /* It's a <button> now (see index.html's comment -- keyboard/screen-reader
+     users need a real focusable control, not a bare div), so the usual UA
+     button chrome needs resetting before any of the visual rules below
+     apply cleanly. */
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+
   position: fixed;
   top: 64px;
   left: 50%;
@@ -378,6 +386,16 @@ html, body {
   opacity: 1;
   transform: translate(-50%, 0);
   pointer-events: auto;
+}
+/* A real, visible focus ring while active -- the whole point of making
+   this a real <button> was keyboard reachability, so it can't rely on the
+   browser's default outline alone against this custom background. Scoped
+   to .visible: aria-hidden/tabindex="-1" (see updateEraseModeBanner)
+   already keep it out of the tab order while hidden, but a stray
+   programmatic .focus() shouldn't paint a ring on an invisible control. */
+#erase-mode-banner.visible:focus-visible {
+  outline: 2px solid #2c0a06;
+  outline-offset: 2px;
 }
 
 /* Wave/score readout -- solid white and bold rather than the dim, small

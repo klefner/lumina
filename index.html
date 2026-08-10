@@ -80,7 +80,7 @@
        every tap since has silently failed to draw a new one (see
        onInputStart's erase-mode branch). Tapping the banner itself exits
        the mode immediately, without a trip back through the menu. -->
-  <div id="erase-mode-banner">Erase Mode — tap a line to remove it, or tap here to stop</div>
+  <button type="button" id="erase-mode-banner" tabindex="-1" aria-hidden="true">Erase Mode — tap a line to remove it, or tap here to stop</button>
   <div id="pause-overlay">
     <div id="pause-panel">
       <div id="pause-title">MENU</div>

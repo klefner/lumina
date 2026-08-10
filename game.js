@@ -6973,7 +6973,16 @@ function updateSleepModeTint() {
 // the game just stopped working rather than a mode they forgot to leave.
 function updateEraseModeBanner() {
   const active = STATE.eraseMode && STATE.phase === 'PLAYING' && !STATE.paused;
-  document.getElementById('erase-mode-banner').classList.toggle('visible', active);
+  const banner = document.getElementById('erase-mode-banner');
+  banner.classList.toggle('visible', active);
+  // The opacity/transform toggle above is purely visual -- a screen reader
+  // doesn't care that a hidden banner is 0% opaque, only whether it's in
+  // the accessibility tree and reachable at all. Keep both explicitly in
+  // sync with the same `active` flag so it's genuinely invisible to
+  // assistive tech (and untabbable) whenever Erase Mode isn't actually on,
+  // not just visually faded out.
+  banner.setAttribute('aria-hidden', String(!active));
+  banner.tabIndex = active ? 0 : -1;
 }
 
 // ============================================================

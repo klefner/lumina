@@ -3299,6 +3299,46 @@ test('the erase-mode banner stays hidden while paused, even if Erase Mode is on 
   expect(errors).toEqual([]);
 });
 
+// Review finding: a bare <div>, however visible, is neither focusable nor
+// exposed as a control to keyboard/screen-reader users, and CSS opacity
+// alone leaves its text sitting in the accessibility tree even while
+// hidden. Fixed by making it a real <button> with aria-hidden/tabindex
+// synced to the same visibility flag (see updateEraseModeBanner).
+test('the erase-mode banner is a real, focusable control that leaves the accessibility tree while hidden', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.evaluate(() => localStorage.setItem('lumina_difficulty_v1', 'relaxed'));
+  await page.reload();
+  await page.waitForTimeout(300);
+  await page.mouse.click(200, 700);
+  await page.waitForTimeout(800);
+
+  const banner = page.locator('#erase-mode-banner');
+  expect(await banner.evaluate(el => el.tagName)).toBe('BUTTON');
+
+  const hiddenState = await banner.evaluate(el => ({ ariaHidden: el.getAttribute('aria-hidden'), tabIndex: el.tabIndex }));
+  expect(hiddenState).toEqual({ ariaHidden: 'true', tabIndex: -1 });
+
+  await page.click('#pause-button');
+  await page.click('#pause-erase');
+  await expect(banner).toHaveClass(/visible/);
+
+  const visibleState = await banner.evaluate(el => ({ ariaHidden: el.getAttribute('aria-hidden'), tabIndex: el.tabIndex }));
+  expect(visibleState).toEqual({ ariaHidden: 'false', tabIndex: 0 });
+
+  // Keyboard-activatable, not just clickable -- focus it directly (as a
+  // screen-reader/keyboard user tabbing through the page would) and press
+  // Enter, the same way a real <button> always responds regardless of how
+  // it's styled.
+  await banner.focus();
+  await page.keyboard.press('Enter');
+  await expect(banner).not.toHaveClass(/visible/);
+  expect(await page.evaluate(() => STATE.eraseMode)).toBe(false);
+
+  expect(errors).toEqual([]);
+});
+
 // Flagged by review: on a touch device, a pinch's first finger lands as
 // its own touchstart before the second one arrives. Erasing immediately
 // on that first contact (the original implementation) could permanently
