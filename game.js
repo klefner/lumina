@@ -360,6 +360,28 @@ function sceneWaveCount(scene) {
   return config ? config.order.length + 1 : 1;
 }
 
+// Which scenes are appropriate for Sleep mode. Sleep exists specifically
+// for calm, low-arousal stimulus (see the sleep-mode tint, the score
+// display getting hidden below, and DIFFICULTY_CONFIG's own no-barriers
+// choice for it) -- a scene whose whole theme is deliberately high-energy
+// (a birthday party's balloon pops and horns) has no business playing
+// under it, no matter what a player last had selected under a different
+// difficulty. Every other difficulty can select any scene at all; this
+// set only ever narrows things down while STATE.difficulty === 'sleep'.
+const SLEEP_SAFE_SCENES = new Set(['space', 'forest', 'beach', 'christmas']);
+
+function isSceneSleepSafe(scene) {
+  return SLEEP_SAFE_SCENES.has(scene);
+}
+
+// The scenes actually available for selection/rotation right now -- every
+// one of them outside Sleep mode, but only the calm subset while it's
+// active (see SLEEP_SAFE_SCENES). 'space' being sleep-safe guarantees
+// this is never empty.
+function activeSceneList() {
+  return STATE.difficulty === 'sleep' ? SCENE_LIST.filter(isSceneSleepSafe) : SCENE_LIST;
+}
+
 // Shared by resolveSceneForWave and catchUpAmbienceStreakForWave --
 // besides which scene a given wave falls on, also returns that wave's
 // 0-indexed position within its scene's own block (e.g. the 3rd wave of
@@ -367,18 +389,27 @@ function sceneWaveCount(scene) {
 // sceneMode never has a "block" to be positioned within, so it's always
 // position 0 there.
 function resolveSceneBlock(waveNumber) {
+  const scenes = activeSceneList();
   if (STATE.sceneMode !== 'rotate') {
-    const scene = SCENE_LIST.includes(STATE.sceneMode) ? STATE.sceneMode : 'space';
+    const requested = SCENE_LIST.includes(STATE.sceneMode) ? STATE.sceneMode : 'space';
+    // A fixed pick that Sleep mode has ruled out (see SLEEP_SAFE_SCENES)
+    // falls back to Space for the rest of this Sleep session, rather than
+    // actually playing it -- the dropdown itself also disables picking it
+    // in the first place (see refreshSceneSelector), but this is the
+    // backstop that holds even if a player picked it under a different
+    // difficulty and only switched to Sleep afterward, without touching
+    // the scene dropdown again.
+    const scene = scenes.includes(requested) ? requested : 'space';
     return { scene, blockPosition: 0 };
   }
-  const counts = SCENE_LIST.map(sceneWaveCount);
+  const counts = scenes.map(sceneWaveCount);
   const cycleLength = counts.reduce((sum, n) => sum + n, 0);
   let position = (waveNumber - 1) % cycleLength;
-  for (let i = 0; i < SCENE_LIST.length; i++) {
-    if (position < counts[i]) return { scene: SCENE_LIST[i], blockPosition: position };
+  for (let i = 0; i < scenes.length; i++) {
+    if (position < counts[i]) return { scene: scenes[i], blockPosition: position };
     position -= counts[i];
   }
-  return { scene: SCENE_LIST[0], blockPosition: 0 }; // unreachable given the loop above covers the full cycle -- keeps this total
+  return { scene: scenes[0], blockPosition: 0 }; // unreachable given the loop above covers the full cycle -- keeps this total
 }
 
 function resolveSceneForWave(waveNumber) {
@@ -2367,6 +2398,7 @@ function setupDifficultySelectorListeners() {
       applyDifficulty(level);
       saveDifficulty(level);
       refreshDifficultyButtons();
+      refreshSceneSelector(); // Sleep mode disables non-sleep-safe options -- see its own comment
     });
   }
 }
@@ -2381,6 +2413,18 @@ function refreshSceneSelector() {
   // it so the reason ("not available right now") stays discoverable.
   select.disabled = STATE.cockpitMode;
   select.title = STATE.cockpitMode ? "Not available in Cockpit Mode — its 3D view doesn't use this" : '';
+
+  // A non-sleep-safe scene (e.g. Birthday) has no business being pickable
+  // at all under Sleep mode (see SLEEP_SAFE_SCENES) -- 'rotate' stays
+  // enabled regardless, since it already skips unsafe scenes on its own
+  // (see activeSceneList) rather than needing to be disabled outright.
+  const sleepModeActive = STATE.difficulty === 'sleep';
+  for (const option of select.options) {
+    if (option.value === 'rotate') continue;
+    const disable = sleepModeActive && !isSceneSleepSafe(option.value);
+    option.disabled = disable;
+    option.title = disable ? 'Not available in Sleep mode' : '';
+  }
 }
 
 function setupSceneSelectorListeners() {
@@ -3450,8 +3494,13 @@ const SCENE_DISPLAY_NAMES = { space: 'Space', forest: 'Forest', beach: 'Beach' }
 function queueSceneCompleteToast(scene) {
   const celebration = SCENE_COMPLETE_CELEBRATIONS[scene];
   if (!celebration) return;
-  const sceneIndex = SCENE_LIST.indexOf(scene);
-  const nextScene = SCENE_LIST[(sceneIndex + 1) % SCENE_LIST.length];
+  // Must walk the same filtered list resolveSceneBlock actually rotates
+  // through (see activeSceneList) -- under Sleep mode, the unfiltered
+  // SCENE_LIST could name a scene as "next" that Sleep mode is about to
+  // skip right over, announcing an arrival that never happens.
+  const scenes = activeSceneList();
+  const sceneIndex = scenes.indexOf(scene);
+  const nextScene = scenes[(sceneIndex + 1) % scenes.length];
   queueAchievement({
     glyph: celebration.glyph,
     bg: celebration.bg,
@@ -9786,7 +9835,12 @@ function enforceTutorialHintInvariant() {
 
 function updateWaveDisplay() {
   document.getElementById('wave-display').textContent = 'wave ' + STATE.wave;
-  document.getElementById('score-display').textContent = STATE.score > 0 ? `Score: ${STATE.score}` : '';
+  // Sleep mode hides the score outright rather than just letting it sit
+  // at 0 -- the whole point of Sleep is winding down, and a running
+  // number that only ever goes up is a small, constant nudge toward
+  // competitive thinking, which works against that (player request).
+  document.getElementById('score-display').textContent =
+    (STATE.difficulty !== 'sleep' && STATE.score > 0) ? `Score: ${STATE.score}` : '';
   // Playtest feedback aid, not a permanent gameplay element -- lets a
   // player name which specific generated song (family + seed) they're
   // hearing, so "this one didn't come together" is reportable instead of
@@ -9894,6 +9948,12 @@ function update() {
 // drawing a longer, more deliberate path instead of a quick short stroke.
 function updateDrawScoreDisplay() {
   const el = document.getElementById('draw-score-display');
+  // Same reasoning as updateWaveDisplay hiding #score-display -- Sleep
+  // mode drops the live per-line count too, not just the running total.
+  if (STATE.difficulty === 'sleep') {
+    if (el.textContent !== '') el.textContent = '';
+    return;
+  }
   if (STATE.isDrawing && STATE.phase === 'PLAYING') {
     el.textContent = '+' + Math.round(pathLength(STATE.currentPath) * SCORE_PER_LINE_PIXEL);
   } else if (STATE.cockpitActiveDot && STATE.phase === 'PLAYING') {
