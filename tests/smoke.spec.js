@@ -6870,6 +6870,40 @@ test('Sleep mode hides both the running score and the live per-line draw score; 
   expect(errors).toEqual([]);
 });
 
+test('Sleep mode suppresses the achievement toast (box + jingle) but not per-line connection praise', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.difficulty = 'sleep';
+    const queueLengthBefore = STATE.achievementQueue.length;
+    queueAchievement({ glyph: '🏆', bg: '#fff', glow: 'rgba(0,0,0,0)', label: 'Should Not Appear' });
+    const sleepResult = {
+      queueGrew: STATE.achievementQueue.length > queueLengthBefore,
+      toastVisible: document.getElementById('achievement-toast').classList.contains('visible'),
+      toastActive: STATE.achievementToastActive,
+    };
+
+    STATE.difficulty = 'normal';
+    queueAchievement({ glyph: '🏆', bg: '#fff', glow: 'rgba(0,0,0,0)', label: 'Should Appear' });
+    const normalResult = {
+      toastVisible: document.getElementById('achievement-toast').classList.contains('visible'),
+      toastText: document.getElementById('achievement-label').textContent,
+    };
+
+    return { sleepResult, normalResult };
+  });
+
+  expect(result.sleepResult.queueGrew).toBe(false);
+  expect(result.sleepResult.toastVisible).toBe(false);
+  expect(result.sleepResult.toastActive).toBe(false);
+  expect(result.normalResult.toastVisible).toBe(true);
+  expect(result.normalResult.toastText).toBe('Should Appear');
+  expect(errors).toEqual([]);
+});
+
 test('the scene selector disables non-rotate options under Sleep mode that aren\'t sleep-safe, and re-enables them otherwise', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
