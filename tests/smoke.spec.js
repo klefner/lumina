@@ -6241,9 +6241,30 @@ test('generateBirthdaySong produces the real "Happy Birthday to You" tune, note 
     const midiToName = (m) => NOTE_NAMES[m % 12] + (Math.floor(m / 12) - 1);
 
     const song = generateBirthdaySong(6);
-    const namesInOrder = song.notes.slice().sort((a, b) => a.beat - b.beat).map(n => midiToName(n.midi));
+    // capNoteGaps (see generateBirthdaySong) appends gap-filling echoes
+    // after the 25 real melody notes without reordering them, so the
+    // first 25 in array order are the tune itself, already beat-increasing.
+    const coreNotes = song.notes.slice(0, 25);
+    const namesInOrder = coreNotes.map(n => midiToName(n.midi));
     const allMelodyRole = song.notes.every(n => n.role === 'melody' && n.instrument === 'piano');
     const chunkIndexesUsed = new Set(song.notes.map(n => n.chunkIndex));
+
+    // Worst-case silence within each chunk once it's connected, wrapping
+    // across the loop boundary -- the exact bound capNoteGaps enforces
+    // (review catch, PR #73: contiguous per-pair blocks left an early
+    // pair's chunk silent for most of every 25-beat loop otherwise).
+    const maxGapByChunk = [];
+    for (let c = 0; c < 6; c++) {
+      const chunkNotes = song.notes.filter(n => n.chunkIndex === c).sort((a, b) => a.beat - b.beat);
+      let maxGap = 0;
+      for (let i = 0; i < chunkNotes.length; i++) {
+        const cur = chunkNotes[i];
+        const next = chunkNotes[(i + 1) % chunkNotes.length];
+        const nextBeat = i + 1 < chunkNotes.length ? next.beat : next.beat + song.totalBeats;
+        maxGap = Math.max(maxGap, nextBeat - cur.beat);
+      }
+      maxGapByChunk.push(maxGap);
+    }
 
     return {
       noteCount: song.notes.length,
@@ -6253,6 +6274,7 @@ test('generateBirthdaySong produces the real "Happy Birthday to You" tune, note 
       namesInOrder,
       allMelodyRole,
       distinctChunksUsed: chunkIndexesUsed.size,
+      maxGapByChunk,
     };
   });
 
@@ -6265,7 +6287,11 @@ test('generateBirthdaySong produces the real "Happy Birthday to You" tune, note 
     'G4', 'G4', 'G5', 'E5', 'C5', 'B4', 'A4',
     'F5', 'F5', 'E5', 'C5', 'D5', 'C5',
   ]);
-  expect(result.noteCount).toBe(25);
+  // 25 real notes + capNoteGaps fillers -- every one of the 6 chunks wraps
+  // with a gap far over the 3.5-beat cap, and one pass only halves a gap,
+  // so it takes several repeated passes (see generateBirthdaySong) to
+  // actually converge every chunk under the cap (see maxGapByChunk).
+  expect(result.noteCount).toBe(67);
   expect(result.totalBeats).toBe(25);
   expect(result.genreFamily).toBe('birthday');
   expect(result.genreName).toBe('happy birthday');
@@ -6274,6 +6300,7 @@ test('generateBirthdaySong produces the real "Happy Birthday to You" tune, note 
   // least one note when connected -- see generateBirthdaySong's chunk
   // distribution comment.
   expect(result.distinctChunksUsed).toBe(6);
+  for (const gap of result.maxGapByChunk) expect(gap).toBeLessThanOrEqual(3.55); // 3.5 cap + small beat-jitter slack
   expect(errors).toEqual([]);
 });
 

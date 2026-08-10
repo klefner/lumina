@@ -4099,6 +4099,17 @@ function generateBirthdaySong(pairCount) {
     beat += n.dur;
   });
 
+  // Contiguous per-pair blocks (see above) mean an early-connected pair's
+  // chunk can otherwise go most of a 25-beat loop (~12s at this bpm)
+  // between notes once its own short phrase has played -- the same
+  // bounded-audibility guarantee generateSong's own melody notes get.
+  // A single capNoteGaps pass only halves each gap (it fills one echo at
+  // the midpoint, not enough echoes to close the whole span), which is
+  // plenty for generateSong's per-bar-random gaps but not these ~22-beat
+  // contiguous-block ones -- so repeat until every chunk actually
+  // converges under the cap instead of just being cut in half once.
+  for (let i = 0; i < 6 && capNoteGaps(notes, pairCount, totalBeats, 3.5) > 0; i++);
+
   return { genre, totalBeats, pairCount, notes };
 }
 
@@ -4151,7 +4162,12 @@ function resolveInstrumentCollisions(notes) {
 // fixed to the downbeat, so they can never compound this way. Scans each
 // stem for gaps wider than maxGapBeats and fills the midpoint with a softer
 // echo of the note before it, capping the worst-case silence after a pair
-// is connected regardless of how the per-bar dice rolls landed.
+// is connected regardless of how the per-bar dice rolls landed. One pass
+// only halves each over-cap gap (a single midpoint echo, not enough to
+// close the whole span) -- fine for generateSong's usually-modest gaps,
+// but callers with much larger gaps (see generateBirthdaySong) need to
+// call this repeatedly until it reports no more fillers added. Returns
+// the number of fillers added, for exactly that.
 function capNoteGaps(notes, pairCount, totalBeats, maxGapBeats) {
   const fillers = [];
   for (let chunkIndex = 0; chunkIndex < pairCount; chunkIndex++) {
@@ -4171,6 +4187,7 @@ function capNoteGaps(notes, pairCount, totalBeats, maxGapBeats) {
     }
   }
   notes.push(...fillers);
+  return fillers.length;
 }
 
 // A song can have ~40-90 notes per loop pass, several of which are chords
