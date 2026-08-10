@@ -673,14 +673,36 @@ html, body {
   width: 100%;
   height: 100%;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 18px;
   pointer-events: none;
   z-index: 20;
   opacity: 1;
   transition: opacity 0.8s ease;
+}
+
+/* Split out from #message-overlay (review catch, PR #75, P1): on a short
+   landscape viewport the title screen's full row stack (title, subtitle,
+   difficulty, scene, Flight/Cockpit Mode, Load Game, Share, Start Game)
+   can be taller than the viewport, and html/body disable overflow --
+   without a scrollable cap here, Start Game (now the ONLY way to start a
+   game, see onInputStart) could get pushed off-screen with no way back.
+   Same max-height/overflow-y treatment already shipped for #pause-panel.
+   pointer-events stays inherited (none, from #message-overlay) except
+   during the title screen (see showMessage's .title-screen toggle) --
+   WAVE_COMPLETE's overlay (title/subtitle only) needs it to stay none so
+   its own "tap or click to advance" keeps reaching the canvas beneath. */
+#message-content {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  max-height: 86vh;
+  overflow-y: auto;
+}
+#message-content.title-screen {
+  pointer-events: auto;
 }
 
 #message-title {
@@ -700,7 +722,7 @@ html, body {
    continue"), not decorative flavor text — testers reported missing it
    entirely at the old 14px/40%-opacity styling. Bumped up and given a slow
    pulse so it visibly reads as something to act on, not part of the
-   background. The flex `gap` on #message-overlay (not margin-top here)
+   background. The flex `gap` on #message-content (not margin-top here)
    keeps this clear of the title even when both wrap to multiple lines on
    narrow screens. */
 #message-subtitle {
@@ -969,12 +991,13 @@ html, body {
 }
 
 /* Title-screen-only explicit "start" CTA (see showMessage's isTitleScreen
-   option and setupTitleLoadListeners) -- testers reported not realizing
-   a plain tap anywhere starts the game, so this exists purely for
-   discoverability alongside the tap-to-begin behavior, which still works
-   unchanged. Styled as the one accent-colored button in this row group
-   (same blue used by #pause-resume/.difficulty-btn.active) so it reads
-   as the primary action, not just another secondary link like Load/Share. */
+   option and setupTitleLoadListeners) -- the only way to start a game.
+   A plain tap/click anywhere else on the title screen used to work too,
+   but player feedback: that made it too easy to start by accident while
+   still looking over the title screen's own options. Styled as the one
+   accent-colored button in this row group (same blue used by
+   #pause-resume/.difficulty-btn.active) so it reads as the primary
+   action, not just another secondary link like Load/Share. */
 #start-game-row {
   display: none;
   margin-top: 4px;
