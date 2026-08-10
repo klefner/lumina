@@ -319,7 +319,7 @@ function saveCockpitModeSetting(enabled) {
 // mid-session. Defaults to 'rotate' (unlike flight/cockpit mode's
 // off-by-default) since picking a scene doesn't change how you play -- an
 // unconfigured player should just see everything.
-const SCENE_LIST = ['space', 'forest', 'beach', 'birthday'];
+const SCENE_LIST = ['space', 'forest', 'beach', 'birthday', 'halloween', 'christmas'];
 const SCENE_KEY = 'lumina_scene_v1';
 function loadSceneSetting() {
   try {
@@ -2553,6 +2553,10 @@ const STATE = {
                           // scene === 'beach' (see generateBeachScene); null otherwise
   birthdayScene: null,    // { balloons, confetti, lights, cakeXFrac, ... } for the current wave
                            // when scene === 'birthday' (see generateBirthdayScene); null otherwise
+  halloweenScene: null,   // { pumpkins, bats, trees, fogBands, ... } for the current wave when
+                           // scene === 'halloween' (see generateHalloweenScene); null otherwise
+  christmasScene: null,   // { snowflakes, lights, treeXFrac, ... } for the current wave when
+                           // scene === 'christmas' (see generateChristmasScene); null otherwise
 
   ambientGain: null,     // GainNode every scene ambience layer routes through (see initAudioGraph)
   ambientBuffers: {},     // { forest: { wind: AudioBuffer, ... }, beach: { waves: AudioBuffer, ... } }
@@ -3309,6 +3313,30 @@ const SCENE_AMBIENT_CONFIG = {
       cork: { file: 'birthday-cork.mp3', gain: 0.5, isEvent: true, minGapSec: 20, maxGapSec: 45 },
     },
   },
+  // Cozy-spooky rather than horror -- a gentle autumn wind floor with three
+  // occasional atmospheric events (creak/howl/caw). Not in SLEEP_SAFE_SCENES:
+  // even kept gentle, "spooky" trades on a little tension that cuts against
+  // Sleep mode's calm/low-arousal goal in a way Forest's owl doesn't.
+  halloween: {
+    order: ['wind', 'creak', 'howl', 'raven'],
+    sounds: {
+      wind: { file: 'halloween-wind.mp3', gain: 0.5, isEvent: false },
+      creak: { file: 'halloween-creak.mp3', gain: 0.6, isEvent: true, minGapSec: 14, maxGapSec: 34 },
+      howl: { file: 'halloween-wolfhowl.mp3', gain: 0.5, isEvent: true, minGapSec: 28, maxGapSec: 60 },
+      raven: { file: 'halloween-raven.mp3', gain: 0.65, isEvent: true, minGapSec: 10, maxGapSec: 26 },
+    },
+  },
+  // Genuinely calm -- already in SLEEP_SAFE_SCENES -- unlike Birthday/
+  // Halloween's deliberately higher-energy sets.
+  christmas: {
+    order: ['fire', 'wind', 'bells', 'chimes'],
+    sounds: {
+      fire: { file: 'christmas-fire.mp3', gain: 0.5, isEvent: false },
+      wind: { file: 'christmas-wind.mp3', gain: 0.35, isEvent: false },
+      bells: { file: 'christmas-bells.mp3', gain: 0.55, isEvent: true, minGapSec: 16, maxGapSec: 38 },
+      chimes: { file: 'christmas-chimes.mp3', gain: 0.45, isEvent: true, minGapSec: 30, maxGapSec: 65 },
+    },
+  },
 };
 
 // Applied fresh on every repeat (a loop's next crossfaded pass, or an
@@ -3545,8 +3573,10 @@ const SCENE_COMPLETE_CELEBRATIONS = {
   forest: { glyph: '🌲', bg: 'radial-gradient(circle at 35% 30%, #bfe3b0, #3f7d4a)', glow: 'rgba(80,170,90,0.6)' },
   beach: { glyph: '🌊', bg: 'radial-gradient(circle at 35% 30%, #bfe9f2, #2f7fa0)', glow: 'rgba(60,170,210,0.6)' },
   birthday: { glyph: '🎂', bg: 'radial-gradient(circle at 35% 30%, #ffd3e6, #c93f7a)', glow: 'rgba(255,93,143,0.6)' },
+  halloween: { glyph: '🎃', bg: 'radial-gradient(circle at 35% 30%, #ffcf8a, #9a4a12)', glow: 'rgba(255,140,20,0.6)' },
+  christmas: { glyph: '🎄', bg: 'radial-gradient(circle at 35% 30%, #cdeccb, #1f5c3a)', glow: 'rgba(60,190,110,0.6)' },
 };
-const SCENE_DISPLAY_NAMES = { space: 'Space', forest: 'Forest', beach: 'Beach', birthday: 'Birthday' };
+const SCENE_DISPLAY_NAMES = { space: 'Space', forest: 'Forest', beach: 'Beach', birthday: 'Birthday', halloween: 'Halloween', christmas: 'Christmas' };
 
 function queueSceneCompleteToast(scene) {
   const celebration = SCENE_COMPLETE_CELEBRATIONS[scene];
@@ -7018,6 +7048,8 @@ function startWave(waveNumber) {
   STATE.forestScene = STATE.scene === 'forest' ? generateForestScene() : null;
   STATE.beachScene = STATE.scene === 'beach' ? generateBeachScene() : null;
   STATE.birthdayScene = STATE.scene === 'birthday' ? generateBirthdayScene() : null;
+  STATE.halloweenScene = STATE.scene === 'halloween' ? generateHalloweenScene() : null;
+  STATE.christmasScene = STATE.scene === 'christmas' ? generateChristmasScene() : null;
   // Stop any leftover ambience from whatever scene the previous wave was
   // on the instant this wave's scene turns out to be different -- see
   // syncAmbienceToScene's own comment for why this can't just wait for
@@ -8695,6 +8727,455 @@ function drawBirthdayScene() {
   ctx.fill();
 }
 
+// ============================================================
+// SECTION 7H: HALLOWEEN BACKGROUND
+// ============================================================
+// Space's fifth scene: a cozy-spooky autumn evening rather than horror --
+// bare silhouette trees, drifting ground fog, a couple of flickering
+// jack-o'-lanterns, and bats swooping across the sky on looping paths (the
+// signature per-scene animation this scene needed, same spirit as "beach
+// gets a sailing boat"). Mirrors the Forest/Beach/Birthday
+// generate/update/draw architecture and reuses drawNightMoon/drawStars.
+const HALLOWEEN_CONFIG = {
+  SKY_TOP: '#160c22',
+  SKY_MID: '#3a1a2e',
+  SKY_HORIZON: '#7a3a1e',
+  TREE_COLOR: '#0a0710',
+  GROUND_COLOR: '#0c0710',
+  PUMPKIN_COLOR: '#e8720c',
+};
+
+function generateHalloweenScene() {
+  const treeCount = 6 + Math.floor(Math.random() * 4);
+  const trees = [];
+  for (let i = 0; i < treeCount; i++) {
+    trees.push({
+      xFrac: Math.random(),
+      heightFrac: 0.24 + Math.random() * 0.2,
+      widthFrac: 0.05 + Math.random() * 0.03,
+      swayPhase: Math.random() * Math.PI * 2,
+      swaySpeed: 0.0004 + Math.random() * 0.0005,
+      swayAmount: 2 + Math.random() * 3,
+      branchSeed: Math.random(), // drives branch count/length below -- see drawHalloweenScene
+    });
+  }
+
+  const pumpkinCount = 2 + Math.floor(Math.random() * 2);
+  const pumpkins = [];
+  for (let i = 0; i < pumpkinCount; i++) {
+    pumpkins.push({
+      xFrac: (i + 0.5) / pumpkinCount + (Math.random() - 0.5) * 0.08,
+      sizeFrac: 0.03 + Math.random() * 0.015,
+      flickerPhase: Math.random() * Math.PI * 2,
+    });
+  }
+
+  const batCount = 5 + Math.floor(Math.random() * 4);
+  const bats = [];
+  for (let i = 0; i < batCount; i++) {
+    bats.push({
+      xFrac: Math.random(),
+      baseYFrac: 0.1 + Math.random() * 0.35,
+      swoopAmount: 0.02 + Math.random() * 0.03,
+      swoopSpeed: 0.002 + Math.random() * 0.002,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.00035 + Math.random() * 0.00035, // fraction of width per frame -- see updateHalloweenScene
+      direction: Math.random() < 0.5 ? 1 : -1,
+      wingPhase: Math.random() * Math.PI * 2,
+      sizeFrac: 0.012 + Math.random() * 0.008,
+    });
+  }
+
+  const fogBands = [];
+  for (let i = 0; i < 3; i++) {
+    fogBands.push({
+      yFrac: 0.72 + i * 0.08 + Math.random() * 0.03,
+      xFrac: Math.random(),
+      speed: 0.00006 + Math.random() * 0.00008,
+      opacity: 0.1 + Math.random() * 0.08,
+    });
+  }
+
+  return {
+    trees,
+    pumpkins,
+    bats,
+    fogBands,
+    moonXFrac: 0.15 + Math.random() * 0.7,
+    moonYFrac: 0.08 + Math.random() * 0.14,
+    moonRadiusFrac: 0.05 + Math.random() * 0.02,
+    phase: 0, // frame accumulator driving sway/swoop/flap/drift/flicker below
+  };
+}
+
+function updateHalloweenScene() {
+  if (STATE.scene !== 'halloween' || !STATE.halloweenScene) return;
+  const scene = STATE.halloweenScene;
+  scene.phase += 1;
+  for (const b of scene.bats) {
+    b.xFrac += b.speed * b.direction;
+    // Wrapped rather than recycled from a random edge -- a bat keeps
+    // flying the same direction it was already going, just reappears on
+    // the opposite side, so the motion never visibly resets mid-flight.
+    if (b.xFrac > 1.08) { b.xFrac = -0.08; b.baseYFrac = 0.1 + Math.random() * 0.35; }
+    else if (b.xFrac < -0.08) { b.xFrac = 1.08; b.baseYFrac = 0.1 + Math.random() * 0.35; }
+  }
+  for (const f of scene.fogBands) {
+    f.xFrac += f.speed;
+    if (f.xFrac > 1) f.xFrac -= 1;
+  }
+}
+
+function drawHalloweenScene() {
+  const scene = STATE.halloweenScene;
+  if (!scene) return;
+  const w = canvas.width, h = canvas.height, t = scene.phase;
+
+  const sky = ctx.createLinearGradient(0, 0, 0, h);
+  sky.addColorStop(0, HALLOWEEN_CONFIG.SKY_TOP);
+  sky.addColorStop(0.55, HALLOWEEN_CONFIG.SKY_MID);
+  sky.addColorStop(1, HALLOWEEN_CONFIG.SKY_HORIZON);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+
+  drawNightMoon(scene.moonXFrac, scene.moonYFrac, scene.moonRadiusFrac);
+  drawStars(); // same twinkling starfield Space/Forest use -- see Forest's own comment
+
+  // Bats -- a simple double-arc silhouette on a looping swoop path, wings
+  // flapping via a fast sine. The signature per-scene animation this
+  // scene needed (see this section's header comment).
+  for (const b of scene.bats) {
+    const bx = b.xFrac * w;
+    const by = (b.baseYFrac + Math.sin(t * b.swoopSpeed + b.phase) * b.swoopAmount) * h;
+    const wingFlap = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * 0.35 + b.wingPhase));
+    const r = b.sizeFrac * Math.min(w, h);
+    ctx.strokeStyle = 'rgba(10, 6, 14, 0.85)';
+    ctx.lineWidth = Math.max(1, r * 0.35);
+    ctx.beginPath();
+    ctx.moveTo(bx - r * 1.6, by - r * wingFlap * 0.9);
+    ctx.quadraticCurveTo(bx - r * 0.6, by + r * 0.3, bx, by);
+    ctx.quadraticCurveTo(bx + r * 0.6, by + r * 0.3, bx + r * 1.6, by - r * wingFlap * 0.9);
+    ctx.stroke();
+  }
+
+  // Ground fog -- soft translucent horizontal bands drifting sideways,
+  // wrapping around once xFrac cycles past 1 (see updateHalloweenScene).
+  // A single gradient copy goes fully off-screen for a stretch near the
+  // wrap point no matter how wide it is (review catch, PR #70) -- drawing
+  // a second copy one canvas-width to the left keeps one of the two
+  // always at least partially in view, so the band reads as continuously
+  // drifting rather than periodically vanishing.
+  const FOG_BAND_WIDTH = 1.6; // multiple of canvas width -- wide enough that each copy's own fade is soft
+  for (const f of scene.fogBands) {
+    const fy = f.yFrac * h;
+    for (const fx of [f.xFrac * w, f.xFrac * w - w]) {
+      const grad = ctx.createLinearGradient(fx - w * FOG_BAND_WIDTH / 2, 0, fx + w * FOG_BAND_WIDTH / 2, 0);
+      grad.addColorStop(0, 'rgba(200,200,210,0)');
+      grad.addColorStop(0.5, `rgba(200,200,210,${f.opacity.toFixed(3)})`);
+      grad.addColorStop(1, 'rgba(200,200,210,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, fy - h * 0.03, w, h * 0.06);
+    }
+  }
+
+  // Bare trees -- forking branches rather than Forest's solid canopy, so
+  // the two scenes read as visually distinct silhouettes.
+  for (const tr of scene.trees) {
+    const baseX = tr.xFrac * w;
+    const treeH = tr.heightFrac * h;
+    const baseY = h;
+    const topY = baseY - treeH;
+    const sway = Math.sin(t * tr.swaySpeed + tr.swayPhase) * tr.swayAmount;
+    ctx.strokeStyle = HALLOWEEN_CONFIG.TREE_COLOR;
+    ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(2, tr.widthFrac * w);
+    ctx.beginPath();
+    ctx.moveTo(baseX, baseY);
+    ctx.lineTo(baseX + sway, topY);
+    ctx.stroke();
+    const branchCount = 3 + Math.floor(tr.branchSeed * 3);
+    for (let i = 0; i < branchCount; i++) {
+      const along = 0.35 + (i / branchCount) * 0.6;
+      const fromX = baseX + sway * along;
+      const fromY = baseY - treeH * along;
+      const side = i % 2 === 0 ? 1 : -1;
+      const branchLen = treeH * (0.16 + 0.1 * ((tr.branchSeed * (i + 1) * 37) % 1));
+      const toX = fromX + side * branchLen * 0.7 + sway * 0.3;
+      const toY = fromY - branchLen * 0.7;
+      ctx.lineWidth = Math.max(1, tr.widthFrac * w * 0.4);
+      ctx.beginPath();
+      ctx.moveTo(fromX, fromY);
+      ctx.lineTo(toX, toY);
+      ctx.stroke();
+    }
+  }
+
+  ctx.fillStyle = HALLOWEEN_CONFIG.GROUND_COLOR;
+  ctx.fillRect(0, h - 6, w, 6);
+
+  // Jack-o'-lanterns -- same flicker technique as the birthday candle and
+  // forest fireflies (layered sine noise), sitting on the ground line.
+  for (const p of scene.pumpkins) {
+    const px = p.xFrac * w;
+    const r = p.sizeFrac * Math.min(w, h);
+    // Anchored from the ellipse's own rendered vertical radius (r * 0.82,
+    // matching the ellipse call below) rather than a separate h-based
+    // offset -- those disagreed on portrait canvases (min(w,h) = w there),
+    // leaving every pumpkin visibly floating above the ground line
+    // (review catch, PR #70).
+    const py = h - 6 - r * 0.82;
+    const flicker = 0.75 + 0.25 * Math.sin(t * 0.15 + p.flickerPhase) * Math.sin(t * 0.047 + p.flickerPhase * 1.3);
+
+    const glow = ctx.createRadialGradient(px, py, 0, px, py, r * 3);
+    glow.addColorStop(0, `rgba(255, 170, 60, ${(0.4 * flicker).toFixed(3)})`);
+    glow.addColorStop(1, 'rgba(255, 170, 60, 0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(px, py, r * 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.ellipse(px, py, r, r * 0.82, 0, 0, Math.PI * 2);
+    ctx.fillStyle = HALLOWEEN_CONFIG.PUMPKIN_COLOR;
+    ctx.fill();
+
+    ctx.fillStyle = `rgba(255, 210, 120, ${(0.55 + 0.45 * flicker).toFixed(3)})`;
+    const eyeW = r * 0.28, eyeH = r * 0.32;
+    ctx.beginPath();
+    ctx.moveTo(px - r * 0.42, py - r * 0.1);
+    ctx.lineTo(px - r * 0.42 + eyeW, py - r * 0.1);
+    ctx.lineTo(px - r * 0.42 + eyeW * 0.5, py - r * 0.1 - eyeH);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(px + r * 0.42, py - r * 0.1);
+    ctx.lineTo(px + r * 0.42 - eyeW, py - r * 0.1);
+    ctx.lineTo(px + r * 0.42 - eyeW * 0.5, py - r * 0.1 - eyeH);
+    ctx.closePath();
+    ctx.fill();
+    // A jagged zigzag mouth, same fill as the eyes.
+    ctx.beginPath();
+    ctx.moveTo(px - r * 0.45, py + r * 0.35);
+    ctx.lineTo(px - r * 0.28, py + r * 0.2);
+    ctx.lineTo(px - r * 0.12, py + r * 0.35);
+    ctx.lineTo(px + r * 0.05, py + r * 0.2);
+    ctx.lineTo(px + r * 0.22, py + r * 0.35);
+    ctx.lineTo(px + r * 0.4, py + r * 0.22);
+    ctx.lineTo(px + r * 0.4, py + r * 0.38);
+    ctx.lineTo(px - r * 0.45, py + r * 0.38);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+// ============================================================
+// SECTION 7I: CHRISTMAS BACKGROUND
+// ============================================================
+// Space's sixth scene: a snowy winter night -- a lit pine tree, a small
+// house with a chimney puffing drifting smoke (the signature per-scene
+// animation, same spirit as Beach's boat/Halloween's bats), falling snow
+// in front of everything, and the shared drawNightMoon/drawStars so it
+// reads as a night scene consistent with Forest/Beach/Halloween. Already
+// genuinely calm -- see SLEEP_SAFE_SCENES -- unlike Birthday/Halloween's
+// deliberately higher-energy sets.
+const CHRISTMAS_CONFIG = {
+  SKY_TOP: '#050a1a',
+  SKY_MID: '#0f1f3d',
+  SKY_HORIZON: '#2a3a5c',
+  SNOW_COLOR: '#e8eef5',
+  TREE_COLOR: '#0d2818',
+  HOUSE_COLOR: '#171225',
+  ROOF_COLOR: '#241a30',
+  LIGHT_COLORS: ['#ff5d5d', '#5dc9ff', '#ffe15d', '#5dff8f', '#ff8fd6'],
+};
+
+function generateChristmasScene() {
+  const snowflakeCount = 50 + Math.floor(Math.random() * 30);
+  const snowflakes = [];
+  for (let i = 0; i < snowflakeCount; i++) {
+    snowflakes.push({
+      xFrac: Math.random(),
+      yFrac: Math.random(),
+      size: 1.5 + Math.random() * 2.5,
+      fallSpeed: 0.0003 + Math.random() * 0.0004,
+      driftPhase: Math.random() * Math.PI * 2,
+      driftSpeed: 0.001 + Math.random() * 0.0015,
+      driftAmount: 0.01 + Math.random() * 0.02,
+    });
+  }
+
+  const treeXFrac = 0.22 + Math.random() * 0.12;
+  const lightCount = 8 + Math.floor(Math.random() * 4);
+  const lights = [];
+  for (let i = 0; i < lightCount; i++) {
+    lights.push({
+      // Spread down the tree's own triangular silhouette rather than a
+      // straight garland line -- see drawChristmasScene for how heightFrac
+      // maps to an actual on-tree position.
+      heightFrac: (i + 0.5) / lightCount,
+      side: Math.random() < 0.5 ? -1 : 1,
+      inset: 0.2 + Math.random() * 0.5,
+      phase: Math.random() * Math.PI * 2,
+      twinkleSpeed: 0.003 + Math.random() * 0.004,
+      colorIndex: Math.floor(Math.random() * CHRISTMAS_CONFIG.LIGHT_COLORS.length),
+    });
+  }
+
+  const smokeCount = 6;
+  const smoke = [];
+  for (let i = 0; i < smokeCount; i++) {
+    smoke.push({
+      riseFrac: i / smokeCount, // 0 = just left the chimney, 1 = about to recycle -- see updateChristmasScene
+      xDriftPhase: Math.random() * Math.PI * 2,
+      sizeSeed: Math.random(),
+    });
+  }
+
+  return {
+    snowflakes,
+    lights,
+    smoke,
+    treeXFrac,
+    houseXFrac: 0.68 + Math.random() * 0.15,
+    moonXFrac: 0.15 + Math.random() * 0.7,
+    moonYFrac: 0.08 + Math.random() * 0.14,
+    moonRadiusFrac: 0.045 + Math.random() * 0.02,
+    phase: 0, // frame accumulator driving fall/drift/twinkle/rise below
+  };
+}
+
+function updateChristmasScene() {
+  if (STATE.scene !== 'christmas' || !STATE.christmasScene) return;
+  const scene = STATE.christmasScene;
+  scene.phase += 1;
+  for (const s of scene.snowflakes) {
+    s.yFrac += s.fallSpeed;
+    if (s.yFrac > 1.05) { s.yFrac = -0.05; s.xFrac = Math.random(); }
+  }
+  for (const p of scene.smoke) {
+    p.riseFrac += 0.0009;
+    if (p.riseFrac > 1) p.riseFrac -= 1; // recycles back to the chimney rather than resetting visibly off-frame
+  }
+}
+
+function drawChristmasScene() {
+  const scene = STATE.christmasScene;
+  if (!scene) return;
+  const w = canvas.width, h = canvas.height, t = scene.phase;
+
+  const sky = ctx.createLinearGradient(0, 0, 0, h);
+  sky.addColorStop(0, CHRISTMAS_CONFIG.SKY_TOP);
+  sky.addColorStop(0.55, CHRISTMAS_CONFIG.SKY_MID);
+  sky.addColorStop(1, CHRISTMAS_CONFIG.SKY_HORIZON);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+
+  drawNightMoon(scene.moonXFrac, scene.moonYFrac, scene.moonRadiusFrac);
+  drawStars(); // same twinkling starfield Space/Forest/Beach/Halloween use
+
+  // House with a chimney -- simple silhouette, always anchored to the
+  // ground line regardless of canvas size.
+  const groundY = h - 0.04 * h;
+  const houseX = scene.houseXFrac * w;
+  const houseW = 0.22 * w;
+  const houseH = 0.14 * h;
+  const houseY = groundY - houseH;
+  ctx.fillStyle = CHRISTMAS_CONFIG.HOUSE_COLOR;
+  ctx.fillRect(houseX - houseW / 2, houseY, houseW, houseH);
+  ctx.fillStyle = CHRISTMAS_CONFIG.ROOF_COLOR;
+  ctx.beginPath();
+  ctx.moveTo(houseX - houseW * 0.65, houseY);
+  ctx.lineTo(houseX, houseY - houseH * 0.55);
+  ctx.lineTo(houseX + houseW * 0.65, houseY);
+  ctx.closePath();
+  ctx.fill();
+  // A single warm window -- makes the house read as lived-in/cozy rather
+  // than a bare silhouette.
+  const winSize = houseW * 0.16;
+  ctx.fillStyle = 'rgba(255, 210, 130, 0.85)';
+  ctx.fillRect(houseX - winSize / 2, houseY + houseH * 0.4, winSize, winSize);
+
+  const chimneyW = houseW * 0.12;
+  const chimneyX = houseX + houseW * 0.28;
+  const chimneyH = houseH * 0.35;
+  const chimneyTopY = houseY - houseH * 0.3 - chimneyH;
+  ctx.fillStyle = CHRISTMAS_CONFIG.ROOF_COLOR;
+  ctx.fillRect(chimneyX - chimneyW / 2, chimneyTopY, chimneyW, chimneyH);
+
+  // Chimney smoke -- the signature per-scene animation this theme needed
+  // (see this section's header comment): soft puffs that rise and widen,
+  // fading out near the top of their own rise before recycling back to
+  // the chimney rather than popping back down visibly.
+  for (const p of scene.smoke) {
+    const riseH = 0.16 * h;
+    const py = chimneyTopY - p.riseFrac * riseH;
+    const px = chimneyX + Math.sin(t * 0.02 + p.xDriftPhase) * riseH * 0.18 * p.riseFrac;
+    const r = (2 + p.sizeSeed * 3) * (0.6 + p.riseFrac * 0.9);
+    const alpha = 0.35 * (1 - p.riseFrac);
+    ctx.beginPath();
+    ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(220, 220, 225, ${alpha.toFixed(3)})`;
+    ctx.fill();
+  }
+
+  // Christmas tree -- a stacked triangular silhouette with lights spread
+  // across its own outline (see generateChristmasScene's heightFrac/side/
+  // inset) rather than a straight garland line.
+  const treeX = scene.treeXFrac * w;
+  const treeH = 0.32 * h;
+  const treeW = 0.22 * w;
+  const treeBaseY = groundY;
+  const treeTopY = treeBaseY - treeH;
+  ctx.fillStyle = CHRISTMAS_CONFIG.TREE_COLOR;
+  for (let tier = 0; tier < 3; tier++) {
+    const tierBottom = treeBaseY - tier * treeH * 0.32;
+    const tierTop = treeTopY + tier * treeH * 0.22;
+    const tierW = treeW * (1 - tier * 0.22);
+    ctx.beginPath();
+    ctx.moveTo(treeX - tierW / 2, tierBottom);
+    ctx.lineTo(treeX, tierTop);
+    ctx.lineTo(treeX + tierW / 2, tierBottom);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // Trunk.
+  ctx.fillStyle = '#2a1a12';
+  ctx.fillRect(treeX - treeW * 0.04, treeBaseY, treeW * 0.08, treeH * 0.06);
+
+  for (const l of scene.lights) {
+    const rowW = treeW * (1 - l.heightFrac * 0.82) * l.inset;
+    const lx = treeX + l.side * rowW;
+    const ly = treeBaseY - l.heightFrac * treeH * 0.98;
+    const twinkle = 0.5 + 0.5 * Math.sin(t * l.twinkleSpeed + l.phase);
+    const color = CHRISTMAS_CONFIG.LIGHT_COLORS[l.colorIndex];
+    ctx.globalAlpha = 0.5 + 0.5 * twinkle;
+    ctx.beginPath();
+    ctx.arc(lx, ly, 3, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  // A star topper.
+  ctx.fillStyle = '#ffe9a0';
+  ctx.beginPath();
+  ctx.arc(treeX, treeTopY - 4, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = CHRISTMAS_CONFIG.SNOW_COLOR;
+  ctx.fillRect(0, groundY, w, h - groundY);
+
+  // Falling snow -- drawn last so it sits in front of the tree/house/
+  // ground the same way real falling snow would.
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+  for (const s of scene.snowflakes) {
+    const sx = (s.xFrac + Math.sin(t * s.driftSpeed + s.driftPhase) * s.driftAmount) * w;
+    const sy = s.yFrac * h;
+    ctx.beginPath();
+    ctx.arc(sx, sy, s.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 // startX lets the wave-complete instant fill drop objects already on-screen;
 // the normal trickle-spawn omits it so objects drift in from off-screen.
 function spawnSpaceObject(startX) {
@@ -10290,6 +10771,8 @@ function update() {
   updateForestScene();
   updateBeachScene();
   updateBirthdayScene();
+  updateHalloweenScene();
+  updateChristmasScene();
   // Asteroids/satellites/comets only drift through once the whole wave's
   // line-galaxy is complete — they'd be a distraction while still connecting.
   if (STATE.phase === 'WAVE_COMPLETE') { updateSpaceObjects(); updateCelestialBodies(); }
@@ -10354,6 +10837,10 @@ function render() {
     drawBeachScene();
   } else if (STATE.scene === 'birthday') {
     drawBirthdayScene();
+  } else if (STATE.scene === 'halloween') {
+    drawHalloweenScene();
+  } else if (STATE.scene === 'christmas') {
+    drawChristmasScene();
   } else {
     drawStars();
     if (STATE.phase === 'WAVE_COMPLETE') { drawCelestialBodies(); drawSpaceObjects(); }
