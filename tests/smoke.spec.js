@@ -6155,6 +6155,32 @@ test('the Beach at Night scene generates and draws without error, sharing the mo
   expect(errors).toEqual([]);
 });
 
+test('the Birthday Party scene generates and draws without error', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'birthday';
+    STATE.birthdayScene = generateBirthdayScene();
+    updateBirthdayScene();
+    drawBirthdayScene(); // throws if anything in the draw path is broken
+    return {
+      hasBalloons: STATE.birthdayScene.balloons.length > 0,
+      hasConfetti: STATE.birthdayScene.confetti.length > 0,
+      hasLights: STATE.birthdayScene.lights.length > 0,
+      phaseAdvanced: STATE.birthdayScene.phase === 1,
+    };
+  });
+
+  expect(result.hasBalloons).toBe(true);
+  expect(result.hasConfetti).toBe(true);
+  expect(result.hasLights).toBe(true);
+  expect(result.phaseAdvanced).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 // ------------------------------------------------------------
 // Rotate mode's per-scene block schedule (see resolveSceneForWave/
 // sceneWaveCount) -- each scene holds for as many consecutive waves as it
@@ -6170,17 +6196,19 @@ test('Rotate mode holds each scene for as many waves as it has ambient sounds, t
   const scenes = await page.evaluate(() => {
     STATE.sceneMode = 'rotate';
     const result = [];
-    for (let wave = 1; wave <= 12; wave++) result.push(resolveSceneForWave(wave));
+    for (let wave = 1; wave <= 17; wave++) result.push(resolveSceneForWave(wave));
     return result;
   });
 
-  // space:1, forest:5 (SCENE_AMBIENT_CONFIG.forest.order.length + one
-  // bonus wave -- see sceneWaveCount), beach:5, then the cycle (length
-  // 11) wraps back to space at wave 12.
+  // space:1, forest:5, beach:5, birthday:5 (each scene's
+  // SCENE_AMBIENT_CONFIG.<scene>.order.length + one bonus wave -- see
+  // sceneWaveCount), then the cycle (length 16) wraps back to space at
+  // wave 17.
   expect(scenes).toEqual([
     'space',
     'forest', 'forest', 'forest', 'forest', 'forest',
     'beach', 'beach', 'beach', 'beach', 'beach',
+    'birthday', 'birthday', 'birthday', 'birthday', 'birthday',
     'space',
   ]);
   expect(errors).toEqual([]);
@@ -6429,13 +6457,11 @@ test('activeSceneList only narrows things down under Sleep mode -- every other d
   expect(result.perDifficulty.relaxed).toEqual(result.fullList);
   expect(result.perDifficulty.normal).toEqual(result.fullList);
   expect(result.perDifficulty.intense).toEqual(result.fullList);
-  // Every scene shipped so far (space/forest/beach) happens to be
-  // sleep-safe, so this is currently the same list -- the real narrowing
-  // only shows up once a non-sleep-safe scene (Birthday) exists. This
-  // test exists to catch a regression in the *mechanism* (activeSceneList
-  // actually branching on STATE.difficulty) ahead of that, not to prove
-  // the exclusion itself yet.
-  expect(result.perDifficulty.sleep).toEqual(result.fullList);
+  // Birthday (party horns, upbeat crowd noise) is the first non-sleep-safe
+  // scene shipped -- Sleep mode should narrow it out while every other
+  // difficulty still offers it.
+  expect(result.perDifficulty.sleep).toEqual(result.fullList.filter(s => s !== 'birthday'));
+  expect(result.perDifficulty.sleep).not.toContain('birthday');
   expect(errors).toEqual([]);
 });
 
@@ -6484,31 +6510,21 @@ test('the scene selector disables non-rotate options under Sleep mode that aren\
   await page.waitForFunction(() => window.__lumina);
 
   const result = await page.evaluate(() => {
-    // No shipped scene is unsafe yet (see the activeSceneList test above),
-    // so temporarily mark 'space' unsafe just for this test -- purely
-    // in-memory, never persisted -- to exercise the disabling branch
-    // itself ahead of Birthday existing for real.
-    const original = new Set(SLEEP_SAFE_SCENES);
-    SLEEP_SAFE_SCENES.delete('space');
-
     STATE.difficulty = 'sleep';
     refreshSceneSelector();
-    const spaceDisabledUnderSleep = document.querySelector('#scene-selector option[value="space"]').disabled;
+    const birthdayDisabledUnderSleep = document.querySelector('#scene-selector option[value="birthday"]').disabled;
     const rotateEnabledUnderSleep = !document.querySelector('#scene-selector option[value="rotate"]').disabled;
 
     STATE.difficulty = 'normal';
     refreshSceneSelector();
-    const spaceEnabledUnderNormal = !document.querySelector('#scene-selector option[value="space"]').disabled;
+    const birthdayEnabledUnderNormal = !document.querySelector('#scene-selector option[value="birthday"]').disabled;
 
-    SLEEP_SAFE_SCENES.clear();
-    for (const s of original) SLEEP_SAFE_SCENES.add(s);
-
-    return { spaceDisabledUnderSleep, rotateEnabledUnderSleep, spaceEnabledUnderNormal };
+    return { birthdayDisabledUnderSleep, rotateEnabledUnderSleep, birthdayEnabledUnderNormal };
   });
 
-  expect(result.spaceDisabledUnderSleep).toBe(true);
+  expect(result.birthdayDisabledUnderSleep).toBe(true);
   expect(result.rotateEnabledUnderSleep).toBe(true);
-  expect(result.spaceEnabledUnderNormal).toBe(true);
+  expect(result.birthdayEnabledUnderNormal).toBe(true);
   expect(errors).toEqual([]);
 });
 

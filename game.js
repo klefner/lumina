@@ -319,7 +319,7 @@ function saveCockpitModeSetting(enabled) {
 // mid-session. Defaults to 'rotate' (unlike flight/cockpit mode's
 // off-by-default) since picking a scene doesn't change how you play -- an
 // unconfigured player should just see everything.
-const SCENE_LIST = ['space', 'forest', 'beach'];
+const SCENE_LIST = ['space', 'forest', 'beach', 'birthday'];
 const SCENE_KEY = 'lumina_scene_v1';
 function loadSceneSetting() {
   try {
@@ -2537,6 +2537,8 @@ const STATE = {
                          // scene === 'forest' (see generateForestScene); null otherwise
   beachScene: null,      // { waveLines, glitterDots, moonXFrac, ... } for the current wave when
                           // scene === 'beach' (see generateBeachScene); null otherwise
+  birthdayScene: null,    // { balloons, confetti, lights, cakeXFrac, ... } for the current wave
+                           // when scene === 'birthday' (see generateBirthdayScene); null otherwise
 
   ambientGain: null,     // GainNode every scene ambience layer routes through (see initAudioGraph)
   ambientBuffers: {},     // { forest: { wind: AudioBuffer, ... }, beach: { waves: AudioBuffer, ... } }
@@ -3270,6 +3272,19 @@ const SCENE_AMBIENT_CONFIG = {
       foghorn: { file: 'beach-foghorn.mp3', gain: 0.6, isEvent: true, minGapSec: 25, maxGapSec: 55 },
     },
   },
+  // Deliberately the loudest, busiest, most high-energy set of the bunch
+  // -- see SLEEP_SAFE_SCENES, which is exactly why Birthday isn't in it.
+  birthday: {
+    // Crowd chatter first, same reasoning as the forest's wind -- the
+    // scene's floor.
+    order: ['crowd', 'balloon', 'horn', 'cork'],
+    sounds: {
+      crowd: { file: 'birthday-crowd.mp3', gain: 0.45, isEvent: false },
+      balloon: { file: 'birthday-balloon.mp3', gain: 0.5, isEvent: false },
+      horn: { file: 'birthday-horn.mp3', gain: 0.8, isEvent: true, minGapSec: 10, maxGapSec: 28 },
+      cork: { file: 'birthday-cork.mp3', gain: 0.75, isEvent: true, minGapSec: 20, maxGapSec: 45 },
+    },
+  },
 };
 
 // Applied fresh on every repeat (a loop's next crossfaded pass, or an
@@ -3488,8 +3503,9 @@ function syncAmbienceToScene() {
 const SCENE_COMPLETE_CELEBRATIONS = {
   forest: { glyph: '🌲', bg: 'radial-gradient(circle at 35% 30%, #bfe3b0, #3f7d4a)', glow: 'rgba(80,170,90,0.6)' },
   beach: { glyph: '🌊', bg: 'radial-gradient(circle at 35% 30%, #bfe9f2, #2f7fa0)', glow: 'rgba(60,170,210,0.6)' },
+  birthday: { glyph: '🎂', bg: 'radial-gradient(circle at 35% 30%, #ffd3e6, #c93f7a)', glow: 'rgba(255,93,143,0.6)' },
 };
-const SCENE_DISPLAY_NAMES = { space: 'Space', forest: 'Forest', beach: 'Beach' };
+const SCENE_DISPLAY_NAMES = { space: 'Space', forest: 'Forest', beach: 'Beach', birthday: 'Birthday' };
 
 function queueSceneCompleteToast(scene) {
   const celebration = SCENE_COMPLETE_CELEBRATIONS[scene];
@@ -6881,6 +6897,7 @@ function startWave(waveNumber) {
   STATE.scene = resolveSceneForWave(waveNumber);
   STATE.forestScene = STATE.scene === 'forest' ? generateForestScene() : null;
   STATE.beachScene = STATE.scene === 'beach' ? generateBeachScene() : null;
+  STATE.birthdayScene = STATE.scene === 'birthday' ? generateBirthdayScene() : null;
   // Stop any leftover ambience from whatever scene the previous wave was
   // on the instant this wave's scene turns out to be different -- see
   // syncAmbienceToScene's own comment for why this can't just wait for
@@ -8335,6 +8352,223 @@ function drawBeachScene() {
 
   ctx.fillStyle = BEACH_CONFIG.SAND_COLOR;
   ctx.fillRect(0, sandY, w, h - sandY);
+}
+
+// ============================================================
+// SECTION 7G: BIRTHDAY PARTY BACKGROUND
+// ============================================================
+// Space's third alternate scene (see SCENE_LIST/resolveSceneForWave) --
+// and its odd one out: an indoor party instead of a night sky, deliberately
+// warm and bright rather than moonlit/calm (see SLEEP_SAFE_SCENES -- this
+// is the one scene Sleep mode never offers). A string-light garland, a
+// scatter of drifting balloons, a small table cake with one flickering
+// candle, and continuous falling confetti.
+//
+// Balloons/confetti/lights are stored as fractions of canvas.width/height,
+// not absolute pixels, same reasoning as the forest's trees.
+const BIRTHDAY_CONFIG = {
+  SKY_TOP: '#2a1030',
+  SKY_MID: '#4a1f3d',
+  SKY_HORIZON: '#7a3550',
+  TABLE_COLOR: '#241221',
+  BALLOON_COLORS: ['#ff5d8f', '#ffd23f', '#3fd0c9', '#a06cff', '#ff9a3f'],
+  CONFETTI_COLORS: ['#ff5d8f', '#ffd23f', '#3fd0c9', '#a06cff', '#ff9a3f', '#ffffff'],
+};
+
+function generateBirthdayScene() {
+  const balloonCount = 8 + Math.floor(Math.random() * 5);
+  const balloons = [];
+  for (let i = 0; i < balloonCount; i++) {
+    balloons.push({
+      xFrac: Math.random(),
+      yFrac: Math.random(),
+      colorIndex: Math.floor(Math.random() * BIRTHDAY_CONFIG.BALLOON_COLORS.length),
+      radiusFrac: 0.028 + Math.random() * 0.02,
+      riseSpeed: 0.00012 + Math.random() * 0.00014, // fraction of height per frame -- slow, steady drift upward
+      swayPhase: Math.random() * Math.PI * 2,
+      swaySpeed: 0.0006 + Math.random() * 0.0006,
+      swayAmount: 0.02 + Math.random() * 0.025, // fraction of width
+    });
+  }
+
+  const confettiCount = 26 + Math.floor(Math.random() * 14);
+  const confetti = [];
+  for (let i = 0; i < confettiCount; i++) {
+    confetti.push({
+      xFrac: Math.random(),
+      yFrac: Math.random(),
+      colorIndex: Math.floor(Math.random() * BIRTHDAY_CONFIG.CONFETTI_COLORS.length),
+      fallSpeed: 0.00018 + Math.random() * 0.00022,
+      driftXFrac: 0.01 + Math.random() * 0.015,
+      driftPhase: Math.random() * Math.PI * 2,
+      driftSpeed: 0.0008 + Math.random() * 0.0008,
+      size: 3 + Math.random() * 4,
+      rotation: Math.random() * Math.PI * 2,
+      rotSpeed: (Math.random() - 0.5) * 0.05,
+    });
+  }
+
+  // A gently sagging garland near the top -- a handful of bulbs evenly
+  // spaced along a shallow quadratic sag, each with its own twinkle phase.
+  const lightCount = 9 + Math.floor(Math.random() * 4);
+  const lights = [];
+  for (let i = 0; i < lightCount; i++) {
+    lights.push({
+      xFrac: (i + 0.5) / lightCount,
+      phase: Math.random() * Math.PI * 2,
+      twinkleSpeed: 0.003 + Math.random() * 0.004,
+      colorIndex: Math.floor(Math.random() * BIRTHDAY_CONFIG.BALLOON_COLORS.length),
+    });
+  }
+
+  return {
+    balloons,
+    confetti,
+    lights,
+    cakeXFrac: 0.5 + (Math.random() - 0.5) * 0.1,
+    phase: 0, // frame accumulator driving balloon rise/sway/confetti fall/light twinkle/candle flicker below
+  };
+}
+
+function updateBirthdayScene() {
+  if (STATE.scene !== 'birthday' || !STATE.birthdayScene) return;
+  const scene = STATE.birthdayScene;
+  scene.phase += 1;
+  for (const b of scene.balloons) {
+    b.yFrac -= b.riseSpeed;
+    if (b.yFrac < -0.08) { // drifted off the top -- recycle from below, same trick the confetti loop uses
+      b.yFrac = 1.05;
+      b.xFrac = Math.random();
+    }
+  }
+  for (const c of scene.confetti) {
+    c.yFrac += c.fallSpeed;
+    c.rotation += c.rotSpeed;
+    if (c.yFrac > 1.05) {
+      c.yFrac = -0.05;
+      c.xFrac = Math.random();
+    }
+  }
+}
+
+function drawBirthdayScene() {
+  const scene = STATE.birthdayScene;
+  if (!scene) return;
+  const w = canvas.width, h = canvas.height, t = scene.phase;
+
+  const sky = ctx.createLinearGradient(0, 0, 0, h);
+  sky.addColorStop(0, BIRTHDAY_CONFIG.SKY_TOP);
+  sky.addColorStop(0.6, BIRTHDAY_CONFIG.SKY_MID);
+  sky.addColorStop(1, BIRTHDAY_CONFIG.SKY_HORIZON);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+
+  // String-light garland -- a shallow sagging curve just below the top
+  // edge, bulbs twinkling along it independently.
+  const garlandY = 0.06 * h;
+  const sagY = 0.03 * h;
+  ctx.beginPath();
+  ctx.moveTo(0, garlandY);
+  ctx.quadraticCurveTo(w / 2, garlandY + sagY, w, garlandY);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  for (const light of scene.lights) {
+    const lx = light.xFrac * w;
+    const bendFrac = 4 * light.xFrac * (1 - light.xFrac); // quadratic bezier's own shape at this x
+    const ly = garlandY + sagY * bendFrac;
+    const twinkle = 0.5 + 0.5 * Math.sin(t * light.twinkleSpeed + light.phase);
+    const color = BIRTHDAY_CONFIG.BALLOON_COLORS[light.colorIndex];
+    const r = 5;
+    const glow = ctx.createRadialGradient(lx, ly, 0, lx, ly, r * 2.4);
+    glow.addColorStop(0, color);
+    glow.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalAlpha = 0.4 + 0.6 * twinkle;
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(lx, ly, r * 2.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // Confetti -- small rotating rectangles, continuously falling.
+  for (const c of scene.confetti) {
+    const cx = c.xFrac * w;
+    const cy = c.yFrac * h;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(c.rotation);
+    ctx.fillStyle = BIRTHDAY_CONFIG.CONFETTI_COLORS[c.colorIndex];
+    ctx.fillRect(-c.size / 2, -c.size / 3, c.size, c.size * 0.66);
+    ctx.restore();
+  }
+
+  // Balloons -- a filled circle, a small triangular knot, and a thin
+  // string down to wherever it happens to be drifting.
+  for (const b of scene.balloons) {
+    const drift = t * b.swaySpeed + b.swayPhase;
+    const bx = (b.xFrac + Math.sin(drift) * (b.swayAmount / (0.02 + b.radiusFrac))) * w;
+    const by = b.yFrac * h;
+    const r = b.radiusFrac * Math.min(w, h);
+    const color = BIRTHDAY_CONFIG.BALLOON_COLORS[b.colorIndex];
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(bx, by + r);
+    ctx.lineTo(bx + Math.sin(drift * 1.3) * r * 0.4, by + r * 3.2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.ellipse(bx, by, r * 0.82, r, 0, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    // A soft highlight so the balloon reads as glossy/round rather than a flat disc.
+    const shine = ctx.createRadialGradient(bx - r * 0.3, by - r * 0.35, 0, bx - r * 0.3, by - r * 0.35, r * 0.6);
+    shine.addColorStop(0, 'rgba(255,255,255,0.45)');
+    shine.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = shine;
+    ctx.beginPath();
+    ctx.ellipse(bx, by, r * 0.82, r, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Table + cake + candle -- anchored near the bottom, always in frame
+  // regardless of how the balloons/confetti above happen to be scattered.
+  const tableY = h - 0.05 * h;
+  ctx.fillStyle = BIRTHDAY_CONFIG.TABLE_COLOR;
+  ctx.fillRect(0, tableY, w, h - tableY);
+
+  const cakeX = scene.cakeXFrac * w;
+  const cakeW = 0.16 * w;
+  const cakeH = 0.06 * h;
+  const cakeY = tableY - cakeH;
+  ctx.fillStyle = '#fdeef7';
+  ctx.fillRect(cakeX - cakeW / 2, cakeY, cakeW, cakeH);
+  ctx.fillStyle = '#ff8fb8';
+  ctx.fillRect(cakeX - cakeW / 2, cakeY, cakeW, cakeH * 0.28);
+
+  const candleX = cakeX;
+  const candleTopY = cakeY - 0.035 * h;
+  ctx.fillStyle = '#ffe9a8';
+  ctx.fillRect(candleX - 2, candleTopY, 4, cakeY - candleTopY);
+
+  // Candle flame -- same soft radial-glow technique the forest's fireflies
+  // use, flickering via layered sine noise rather than a single steady sway.
+  const flicker = 0.7 + 0.3 * Math.sin(t * 0.19) * Math.sin(t * 0.053 + 1.7);
+  const flameY = candleTopY - 0.012 * h * flicker;
+  const flameR = 0.014 * h * (0.85 + 0.3 * flicker);
+  const flameGlow = ctx.createRadialGradient(candleX, flameY, 0, candleX, flameY, flameR * 3.2);
+  flameGlow.addColorStop(0, `rgba(255, 200, 90, ${(0.55 * flicker).toFixed(3)})`);
+  flameGlow.addColorStop(1, 'rgba(255, 200, 90, 0)');
+  ctx.fillStyle = flameGlow;
+  ctx.beginPath();
+  ctx.arc(candleX, flameY, flameR * 3.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(candleX, flameY, flameR * 0.5, flameR, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff3c4';
+  ctx.fill();
 }
 
 // startX lets the wave-complete instant fill drop objects already on-screen;
@@ -9931,6 +10165,7 @@ function update() {
   updateStars();
   updateForestScene();
   updateBeachScene();
+  updateBirthdayScene();
   // Asteroids/satellites/comets only drift through once the whole wave's
   // line-galaxy is complete — they'd be a distraction while still connecting.
   if (STATE.phase === 'WAVE_COMPLETE') { updateSpaceObjects(); updateCelestialBodies(); }
@@ -9993,6 +10228,8 @@ function render() {
     drawForestScene();
   } else if (STATE.scene === 'beach') {
     drawBeachScene();
+  } else if (STATE.scene === 'birthday') {
+    drawBirthdayScene();
   } else {
     drawStars();
     if (STATE.phase === 'WAVE_COMPLETE') { drawCelestialBodies(); drawSpaceObjects(); }
