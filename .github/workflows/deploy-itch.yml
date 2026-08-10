@@ -25,9 +25,27 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
+      # Deliberately inlined rather than `uses: ./.github/actions/stage-site`
+      # -- a local composite action only exists if the checked-out ref
+      # happens to contain it. `inputs.ref` is meant to support deploying
+      # (or rolling back to) an older approved commit, which could predate
+      # this action entirely; a local `uses:` step would fail before
+      # anything deployed (review catch, PR #78). These steps live in the
+      # workflow file itself, which GitHub always reads from the ref that
+      # registered the workflow_dispatch trigger, so they run regardless
+      # of what inputs.ref checks out.
+      - name: Stamp build version
+        id: stamp
+        run: |
+          BUILD="$(git rev-parse --short HEAD)"
+          VERSION="${BUILD} . $(date -u +%Y-%m-%d)"
+          sed -i "s/__BUILD__/${BUILD}/g; s/__VERSION__/${VERSION}/g" index.html version.json
+          echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
       - name: Stage site files
-        id: stage
-        uses: ./.github/actions/stage-site
+        run: |
+          mkdir -p _site
+          cp index.html game.js style.css manifest.json version.json _site/
+          cp -r icons sounds _site/
       - name: Install butler
         run: |
           curl -L -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
@@ -36,4 +54,4 @@ jobs:
       - name: Push to itch.io
         env:
           BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
-        run: ./butler/butler push _site draclif/lumina:html5 --userversion "${{ steps.stage.outputs.build }}"
+        run: ./butler/butler push _site draclif/lumina:html5 --userversion "${{ steps.stamp.outputs.build }}"

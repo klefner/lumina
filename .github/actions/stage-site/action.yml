@@ -11,7 +11,13 @@ runs:
       id: stamp
       shell: bash
       run: |
-        BUILD="${GITHUB_SHA::7}"
+        # GITHUB_SHA is the event's own revision, not necessarily what's
+        # actually checked out -- a workflow_dispatch with a custom `ref`
+        # input (see deploy-itch.yml) checks out that ref while GITHUB_SHA
+        # stays fixed to the triggering revision, which would stamp a build
+        # label that doesn't match the files actually being shipped (review
+        # catch, PR #78). git rev-parse reads the real checked-out HEAD.
+        BUILD="$(git rev-parse --short HEAD)"
         VERSION="${BUILD} . $(date -u +%Y-%m-%d)"
         sed -i "s/__BUILD__/${BUILD}/g; s/__VERSION__/${VERSION}/g" index.html version.json
         echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
