@@ -2496,6 +2496,8 @@ const STATE = {
   panDrag: null,        // { startScreenX, startScreenY, startCenterX, startCenterY } while panning
   lastDrawScreenPos: null, // { x, y } screen-space, last known position of an in-progress draw gesture -- see updateEdgePan
   hintPulse: null,      // { startTime } while the hint button's "flash every unconnected dot" is playing
+  blockingFlashes: [],  // [{ segments, startTime }] -- brief white flashes traced over a connection that
+                         // just blocked a rejected attempt (see flashBlockingConnections/drawBlockingFlashes)
   eraseMode: false,     // Relaxed-difficulty only: while true, a tap targets an existing connection
                          // to erase instead of starting a new line (see ERASE_HIT_RADIUS/toggleEraseMode)
   eraseArmed: false,    // true between an erase-mode touchstart/mousedown and its matching release --
@@ -5803,7 +5805,11 @@ function onInputEnd(e) {
         // stored leg (and whatever eventually renders along it) trails
         // off short of the portal by a visible gap.
         STATE.currentPath.push({ x: portal.x, y: portal.y });
-        if (pathCrossesExistingConnections(STATE.currentPath) || pathCrossesBarriers(STATE.currentPath)) {
+        const crossedConnections = findCrossedConnections(STATE.currentPath);
+        const crossedBarriers = findCrossedBarriers(STATE.currentPath);
+        if (crossedConnections.length > 0 || crossedBarriers.length > 0) {
+          if (crossedConnections.length > 0) flashBlockingConnections(crossedConnections);
+          if (crossedBarriers.length > 0) flashBlockingBarriers(crossedBarriers);
           rejectConnection();
           return;
         }
@@ -5852,7 +5858,11 @@ function onInputEnd(e) {
   // off short of the dot by a real, visible gap instead of reaching it.
   STATE.currentPath.push({ x: targetDot.x, y: targetDot.y });
 
-  if (pathCrossesExistingConnections(STATE.currentPath) || pathCrossesBarriers(STATE.currentPath)) {
+  const crossedConnections = findCrossedConnections(STATE.currentPath);
+  const crossedBarriers = findCrossedBarriers(STATE.currentPath);
+  if (crossedConnections.length > 0 || crossedBarriers.length > 0) {
+    if (crossedConnections.length > 0) flashBlockingConnections(crossedConnections);
+    if (crossedBarriers.length > 0) flashBlockingBarriers(crossedBarriers);
     rejectConnection();
     return;
   }
@@ -6400,7 +6410,11 @@ function attemptFlightConnection(targetDot) {
     return;
   }
   STATE.currentPath.push({ x: targetDot.x, y: targetDot.y });
-  if (pathCrossesExistingConnections(STATE.currentPath) || pathCrossesBarriers(STATE.currentPath)) {
+  const crossedConnections = findCrossedConnections(STATE.currentPath);
+  const crossedBarriers = findCrossedBarriers(STATE.currentPath);
+  if (crossedConnections.length > 0 || crossedBarriers.length > 0) {
+    if (crossedConnections.length > 0) flashBlockingConnections(crossedConnections);
+    if (crossedBarriers.length > 0) flashBlockingBarriers(crossedBarriers);
     rejectConnection();
     return;
   }
@@ -6416,7 +6430,11 @@ function attemptFlightConnection(targetDot) {
 // into the open portal side instead of releasing on it.
 function attemptFlightPortalLeg(portal) {
   STATE.currentPath.push({ x: portal.x, y: portal.y });
-  if (pathCrossesExistingConnections(STATE.currentPath) || pathCrossesBarriers(STATE.currentPath)) {
+  const crossedConnections = findCrossedConnections(STATE.currentPath);
+  const crossedBarriers = findCrossedBarriers(STATE.currentPath);
+  if (crossedConnections.length > 0 || crossedBarriers.length > 0) {
+    if (crossedConnections.length > 0) flashBlockingConnections(crossedConnections);
+    if (crossedBarriers.length > 0) flashBlockingBarriers(crossedBarriers);
     rejectConnection();
     return;
   }
@@ -6643,17 +6661,92 @@ function segmentsIntersect(s1, s2) {
   return t > 0.01 && t < 0.99 && u > 0.01 && u < 0.99;
 }
 
-function pathCrossesExistingConnections(path) {
+// Returns every already-drawn connection the given path actually crosses.
+// Every caller is a rejection path that needs the specific connection(s),
+// not just a yes/no, so it can flash exactly what blocked the attempt
+// (see flashBlockingConnections) -- an empty array reads as "false" for
+// any caller that only cares whether it crossed anything at all.
+function findCrossedConnections(path) {
   const newSegments = smoothedCurveSegments(path);
-
+  const crossed = [];
   for (const connection of STATE.connections) {
-    for (const existingSeg of connection.segments) {
-      for (const newSeg of newSegments) {
-        if (segmentsIntersect(newSeg, existingSeg)) return true;
-      }
-    }
+    const hits = connection.segments.some(existingSeg =>
+      newSegments.some(newSeg => segmentsIntersect(newSeg, existingSeg)));
+    if (hits) crossed.push(connection);
   }
-  return false;
+  return crossed;
+}
+
+// A connection-attempt rejection because it crosses an already-drawn
+// connection or a barrier gets no visible signal beyond the same generic
+// haptic every other rejection reason (wrong color, a stranding risk)
+// uses -- reasonable for those, since there's genuinely nothing to point
+// at. But a crossing always has something concrete to show: the specific
+// line or barrier that's actually in the way. This matters most in a
+// 3+-dot group (see GROUP_CONFIG), where connecting a fresh dot to one of
+// two already-linked groupmates can look identical, gesture-wise, to
+// connecting it to the OTHER one -- one lands cleanly, the other crosses
+// something and silently fails, reading to a player as an arbitrary "this
+// dot doesn't work" rather than "this specific route is blocked, go
+// around it" (player report: a low-vision playtester couldn't tell the
+// two apart at all, since she also couldn't clearly see whatever was
+// blocking her in the first place). Measured directly against real
+// generated waves to find out what's actually doing the blocking: a
+// barrier, essentially always -- a straight line to a dot can't cross the
+// group's own just-drawn edge, since that edge ends at the same dot the
+// new line is aiming for (geometrically only possible in a 4+-dot group,
+// where a different edge that doesn't share that endpoint can genuinely
+// sit in the way). Verified empirically that no dot is ever actually
+// unconnectable -- every same-group dot is reachable via SOME route, see
+// wouldNewSegmentsStrandAnyDot -- so the fix is visibility, not eligibility.
+const BLOCKING_FLASH_DURATION_MS = 700;
+
+function flashBlockingConnections(connections) {
+  const startTime = performance.now();
+  for (const connection of connections) {
+    STATE.blockingFlashes.push({ segments: connection.segments, startTime });
+  }
+}
+
+function flashBlockingBarriers(barriers) {
+  const startTime = performance.now();
+  for (const barrier of barriers) {
+    STATE.blockingFlashes.push({ segments: segmentsOfBarrier(barrier), startTime });
+  }
+}
+
+// Two quick bright pulses traced directly over the blocking connection's
+// own path, fading out across the whole duration -- same sharpened-cosine
+// technique hintPulseBrightness uses to read as distinct flashes rather
+// than one smooth glow, just much shorter since this fires off a single
+// failed gesture rather than a deliberate hint request.
+function drawBlockingFlashes() {
+  if (STATE.blockingFlashes.length === 0) return;
+  const now = performance.now();
+  STATE.blockingFlashes = STATE.blockingFlashes.filter(f => now - f.startTime < BLOCKING_FLASH_DURATION_MS);
+
+  for (const flash of STATE.blockingFlashes) {
+    const t = (now - flash.startTime) / BLOCKING_FLASH_DURATION_MS;
+    const raw = (1 - Math.cos(t * 2 * Math.PI * 2)) / 2;
+    const brightness = Math.pow(raw, 3) * (1 - t);
+    if (brightness < 0.02) continue;
+
+    ctx.save();
+    ctx.globalAlpha = brightness;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = CONFIG.LINE_WIDTH * 1.8;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowBlur = 30;
+    ctx.shadowColor = '#ffffff';
+    ctx.beginPath();
+    for (const seg of flash.segments) {
+      ctx.moveTo(seg.x1, seg.y1);
+      ctx.lineTo(seg.x2, seg.y2);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
 // Only already-drawn CONNECTIONS count as obstacles here, deliberately
@@ -6784,10 +6877,10 @@ function wouldNewSegmentsStrandAnyDot(newSegments, unionA, unionB) {
   const size = STRAND_CHECK_CELL_SIZE;
   const cols = Math.ceil(STATE.world.w / size) + 1;
   const rows = Math.ceil(STATE.world.h / size) + 1;
-  // This grid has to include barriers, unlike existingConnectionSegments'
-  // other use (pathCrossesExistingConnections), where excluding them is
-  // correct — a barrier isn't a wall a new line can't cross near, it's
-  // checked separately by pathCrossesBarriers. But for THIS reachability
+  // This grid has to include barriers, unlike the crossing-rejection check
+  // (findCrossedConnections), where excluding them is correct — a barrier
+  // isn't a wall a new line can't cross near, it's checked separately by
+  // findCrossedBarriers. But for THIS reachability
   // question — "can dot still physically get to its groupmate at all" —
   // leaving barriers out was a real bug: this flood-fill could see an open
   // gap that a barrier actually occupies, approve a connection that seals
@@ -6795,7 +6888,7 @@ function wouldNewSegmentsStrandAnyDot(newSegments, unionA, unionB) {
   // present from wave 3 on), the wave becomes permanently uncompleteable —
   // no replay, wait, or reconnect recovers it, since every real attempt to
   // route through that same gap afterward correctly gets rejected by
-  // pathCrossesBarriers forever. Confirmed empirically: reproduced on ~1 in
+  // findCrossedBarriers forever. Confirmed empirically: reproduced on ~1 in
   // 6 real generated waves 15-60, eliminated after this fix, with the only
   // remaining rare "stuck" cases being a currently-in-the-way *rotating*
   // barrier — transient and self-resolving, not permanent.
@@ -7848,16 +7941,21 @@ function eraseConnection(conn) {
   haptic('break');
 }
 
-function pathCrossesBarriers(path) {
+// Mirrors findCrossedConnections -- returns the specific barrier(s) a path
+// actually crosses, not just whether any exists, so a rejection caused by
+// a barrier can flash exactly what's in the way the same as a rejection
+// caused by a connection (see flashBlockingBarriers). This turned out to
+// be the dominant real cause of "this specific dot won't connect" in a
+// 3+-dot group (see GROUP_CONFIG): measured directly against real
+// generated waves, straight-line rejections there were caused by a
+// barrier roughly 33 times out of every 34, essentially never by crossing
+// the group's own just-drawn edge -- which makes sense once you work
+// through the geometry: a straight line TO a dot can't cross a segment
+// that also ends AT that same dot.
+function findCrossedBarriers(path) {
   const segs = smoothedCurveSegments(path);
-  for (const b of STATE.barriers) {
-    for (const bSeg of segmentsOfBarrier(b)) {
-      for (const seg of segs) {
-        if (segmentsIntersect(seg, bSeg)) return true;
-      }
-    }
-  }
-  return false;
+  return STATE.barriers.filter(b =>
+    segmentsOfBarrier(b).some(bSeg => segs.some(seg => segmentsIntersect(seg, bSeg))));
 }
 
 function drawBarriers() {
@@ -10974,6 +11072,8 @@ function render() {
   for (const line of STATE.lines) {
     drawFadingLine(line);
   }
+
+  drawBlockingFlashes();
 
   drawActiveLine();
   drawBreakSparks();

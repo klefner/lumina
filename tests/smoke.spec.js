@@ -483,7 +483,7 @@ test('a long, winding connection settles within a fixed time regardless of point
 // otherwise-enclosing loop of connections was invisible to this check, so
 // it could approve a connection that sealed another dot in behind that
 // barrier for good: every real attempt to route through the same gap
-// afterward is correctly rejected forever by pathCrossesBarriers, which
+// afterward is correctly rejected forever by findCrossedBarriers, which
 // *does* know about barriers -- the two checks disagreeing is what made
 // the trap permanent. Builds the exact minimal scenario (a boxed-in dot,
 // one gap, a static barrier plugging it) and asserts wouldStrandAnyDot
@@ -1143,7 +1143,7 @@ test('a fact-box barrier is a real solid obstacle and displays one of the curate
     // would test that quirk instead of the barrier check this is after.
     const pathThroughBox = [{ x: 30, y: 163 }, { x: 160, y: 163 }, { x: 271, y: 163 }];
     return {
-      crosses: pathCrossesBarriers(pathThroughBox),
+      crosses: findCrossedBarriers(pathThroughBox).length > 0,
       segCount: segmentsOfBarrier(box).length,
     };
   });
@@ -1168,6 +1168,58 @@ test('a fact-box barrier is a real solid obstacle and displays one of the curate
   expect(placementResult.found).toBe(true);
   expect(placementResult.isKnownFact).toBe(true); // the text is one of the curated pause-menu facts, not tips or arbitrary text
   expect(placementResult.clearOfDot).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('a connection attempt blocked by a barrier or another connection queues a blocking flash over exactly what blocked it, which expires on its own (player report: a rejected 3+-dot-group connection gave no visible signal about why)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // Barrier case: a straight path through a solid box.
+    const box = {
+      type: 'factBox',
+      segments: [
+        { x1: 100, y1: 100, x2: 200, y2: 100 },
+        { x1: 200, y1: 100, x2: 200, y2: 200 },
+        { x1: 200, y1: 200, x2: 100, y2: 200 },
+        { x1: 100, y1: 200, x2: 100, y2: 100 },
+      ],
+    };
+    STATE.barriers = [box];
+    STATE.connections = [];
+    STATE.blockingFlashes = [];
+    const barrierCrossed = findCrossedBarriers([{ x: 30, y: 163 }, { x: 271, y: 163 }]);
+    flashBlockingBarriers(barrierCrossed);
+    const barrierFlashCount = STATE.blockingFlashes.length;
+
+    // Connection case: a 4th dot's straight line crossing an unrelated
+    // already-drawn edge that doesn't share either endpoint with it (the
+    // one geometrically real way a same-group connection, not a barrier,
+    // blocks a straight attempt -- see findCrossedBarriers' own comment).
+    STATE.barriers = [];
+    STATE.blockingFlashes = [];
+    const D = { id: 2000, x: 300, y: 100 };
+    const E = { id: 2001, x: 300, y: 300 };
+    STATE.connections = [{ dotA: D.id, dotB: E.id, segments: [{ x1: D.x, y1: D.y, x2: E.x, y2: E.y }] }];
+    const connCrossed = findCrossedConnections([{ x: 200, y: 200 }, { x: 400, y: 200 }]);
+    flashBlockingConnections(connCrossed);
+    const connFlashCount = STATE.blockingFlashes.length;
+
+    drawBlockingFlashes(); // throws if the render path is broken
+    // Force every queued flash's own natural expiry rather than waiting out
+    // BLOCKING_FLASH_DURATION_MS in real time.
+    for (const f of STATE.blockingFlashes) f.startTime -= 10000;
+    drawBlockingFlashes();
+    const afterExpiry = STATE.blockingFlashes.length;
+
+    return { barrierFlashCount, connFlashCount, afterExpiry };
+  });
+
+  expect(result.barrierFlashCount).toBe(1);
+  expect(result.connFlashCount).toBe(1);
+  expect(result.afterExpiry).toBe(0);
   expect(errors).toEqual([]);
 });
 
