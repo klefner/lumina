@@ -6143,6 +6143,7 @@ test('the Beach at Night scene generates and draws without error, sharing the mo
     return {
       hasWaveLines: STATE.beachScene.waveLines.length > 0,
       hasGlitterDots: STATE.beachScene.glitterDots.length > 0,
+      hasBoat: !!STATE.beachScene.boat,
       phaseAdvanced: STATE.beachScene.phase === 1,
       moonHelperShared: typeof drawNightMoon === 'function',
     };
@@ -6150,8 +6151,33 @@ test('the Beach at Night scene generates and draws without error, sharing the mo
 
   expect(result.hasWaveLines).toBe(true);
   expect(result.hasGlitterDots).toBe(true);
+  expect(result.hasBoat).toBe(true);
   expect(result.phaseAdvanced).toBe(true);
   expect(result.moonHelperShared).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('the Beach boat wraps to the opposite edge instead of resetting mid-crossing, keeping its direction', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.scene = 'beach';
+    STATE.beachScene = generateBeachScene();
+    const boat = STATE.beachScene.boat;
+    boat.xFrac = 1.079;
+    boat.direction = 1;
+    boat.speed = 0.01;
+    const directionBefore = boat.direction;
+    updateBeachScene();
+    const wrapped = boat.xFrac < 0;
+    const directionAfter = boat.direction;
+    return { wrapped, directionBefore, directionAfter };
+  });
+
+  expect(result.wrapped).toBe(true);
+  expect(result.directionAfter).toBe(result.directionBefore);
   expect(errors).toEqual([]);
 });
 
