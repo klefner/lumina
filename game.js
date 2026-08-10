@@ -2752,6 +2752,18 @@ const STATE = {
 // SECTION 3: MUSIC ENGINE (procedural song generation & playback)
 // ============================================================
 function initAudio() {
+  // A context that's gone fully 'closed' (see recoverAudioAfterVisible)
+  // needs to be treated exactly like having no context at all -- checked
+  // via its state directly rather than relying on createBuffer/
+  // createBufferSource/connect/start throwing below, since the spec
+  // doesn't guarantee those throw on every browser once a context is
+  // closed (review catch: the try/catch further down is a real backstop
+  // for genuinely unexpected throws, but isn't guaranteed to ever run for
+  // this specific, entirely expected case, which would otherwise leave
+  // STATE.audioCtx pointing at a dead context forever).
+  if (STATE.audioCtx && STATE.audioCtx.state === 'closed') {
+    STATE.audioCtx = null;
+  }
   const hadNoContext = !STATE.audioCtx;
   if (!STATE.audioCtx) {
     // Wrapped in try/catch: if anything in graph setup ever throws (an
@@ -3504,22 +3516,39 @@ const AMBIENT_VARIATION = {
 // The value STATE.ambientGain (the one shared node every scene's whole
 // ambient bed routes through) is set to at graph-init time. Derived from
 // live constants rather than a hardcoded number so a future retune of
-// either side can't silently let this drift back out of sync with itself:
-// finds whichever single layer across every scene in SCENE_AMBIENT_CONFIG
-// has the highest configured gain, accounts for that layer landing at the
-// very top of AMBIENT_VARIATION.GAIN_RANGE's per-repeat jitter (its true
-// worst case), and scales the whole shared node down so even that worst
-// case can't exceed AMBIENT_VARIATION.VOLUME_CAP_RATIO of the loudest
-// thing the music itself ever produces -- a melody note at full peak and
-// velocity, KIND_PEAK.melody. Every other, quieter layer ends up
+// either side can't silently let this drift back out of sync with itself.
+//
+// Budgets the worst case as every layer *within a scene* summing
+// simultaneously, not just whichever single layer has the highest
+// configured gain (review catch: once a scene's ambient streak is fully
+// revealed, every one of its layers -- including its "rare" one-shot
+// events, which can still land on top of the continuous ones by chance --
+// is genuinely live at once, and Web Audio literally sums whatever's
+// connected to a shared node sample-by-sample; a single-layer budget left
+// real headroom for a fully-revealed scene's combined mix to blow well
+// past the cap even though each individual layer looked fine on its own).
+// Takes whichever scene's own layers sum to the highest total, accounts
+// for that landing at the very top of AMBIENT_VARIATION.GAIN_RANGE's
+// per-repeat jitter (its true worst case), and scales the whole shared
+// node down so even that worst case can't exceed
+// AMBIENT_VARIATION.VOLUME_CAP_RATIO of the loudest thing the music itself
+// ever produces -- a melody note at full peak and velocity,
+// KIND_PEAK.melody. Every other, quieter scene/moment ends up
 // proportionally further under the cap than that, which is fine: this is
-// a ceiling, not a target every layer needs to individually reach.
+// a ceiling, not a target every scene needs to individually reach. Doesn't
+// separately budget for a single layer's own loop crossfade
+// (AMBIENT_VARIATION.CROSSFADE_SEC) -- an equal-power crossfade is
+// specifically designed to keep that one layer's own perceived loudness
+// roughly constant through the transition, not spike it, unlike genuinely
+// independent layers stacking.
 function ambientMasterGainValue() {
-  const loudestConfiguredLayerGain = Math.max(
-    ...Object.values(SCENE_AMBIENT_CONFIG).flatMap(scene => Object.values(scene.sounds).map(s => s.gain))
+  const worstCaseSceneGainSum = Math.max(
+    ...Object.values(SCENE_AMBIENT_CONFIG).map(scene =>
+      Object.values(scene.sounds).reduce((sum, s) => sum + s.gain, 0)
+    )
   );
-  const loudestPossibleLayerGain = loudestConfiguredLayerGain * AMBIENT_VARIATION.GAIN_RANGE[1];
-  return (AMBIENT_VARIATION.VOLUME_CAP_RATIO * KIND_PEAK.melody) / loudestPossibleLayerGain;
+  const worstCasePossibleMix = worstCaseSceneGainSum * AMBIENT_VARIATION.GAIN_RANGE[1];
+  return (AMBIENT_VARIATION.VOLUME_CAP_RATIO * KIND_PEAK.melody) / worstCasePossibleMix;
 }
 
 function randRange([lo, hi]) {

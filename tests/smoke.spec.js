@@ -3955,14 +3955,18 @@ test('recoverAudioAfterVisible drops a fully closed audio context (not just susp
   expect(errors).toEqual([]);
 });
 
-// initAudio's own tap-triggered unlock code touches the context directly
-// (createBuffer/createBufferSource/start), which throws synchronously on a
-// closed context rather than merely failing to resume -- previously
-// uncaught, aborting whatever tap handler called initAudio(). Simulates
-// the case where the context went bad by some path recoverAudioAfterVisible
-// didn't catch (or hasn't run yet), confirming initAudio still self-heals
-// rather than throwing out to its caller.
-test('initAudio self-heals instead of throwing when the audio context is unusable at tap time', async ({ page }) => {
+// initAudio checks ctx.state === 'closed' directly, up front, independent
+// of whether anything throws -- the Web Audio spec doesn't guarantee
+// createBuffer/createBufferSource/connect/start throw merely because a
+// context is closed, so relying on a try/catch around those calls alone
+// (an earlier version of this fix) would never even run on a browser
+// where they stay silently callable (review catch). Uses a closed fake
+// context whose methods are all silently callable -- no throw anywhere --
+// to prove detection doesn't depend on an exception showing up. Because
+// the check happens before initAudioGraph(), a closed context is rebuilt
+// into a fresh, real, working one in this same call -- not merely dropped
+// for some later tap to rebuild.
+test('initAudio detects and replaces a closed context with a fresh one, even when none of its methods actually throw', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
@@ -3970,7 +3974,43 @@ test('initAudio self-heals instead of throwing when the audio context is unusabl
   const result = await page.evaluate(() => {
     const fakeCtx = {
       state: 'closed',
-      createBuffer() { throw new DOMException('context is closed', 'InvalidStateError'); },
+      // Every method a lenient/non-conformant browser might leave
+      // silently callable on a closed context -- none of them throw.
+      createBuffer() { return {}; },
+      createBufferSource() { return { connect() {}, start() {} }; },
+      resume() { return Promise.resolve(); },
+    };
+    STATE.audioCtx = fakeCtx;
+    initAudio();
+    return {
+      hasContext: !!STATE.audioCtx,
+      wasReplaced: STATE.audioCtx !== fakeCtx,
+      newContextNotClosed: STATE.audioCtx && STATE.audioCtx.state !== 'closed',
+    };
+  });
+
+  expect(result.hasContext).toBe(true);
+  expect(result.wasReplaced).toBe(true);
+  expect(result.newContextNotClosed).toBe(true);
+  expect(errors).toEqual([]); // no exception needed to detect or recover from this
+});
+
+// The try/catch around initAudio's tap-triggered unlock code is a
+// backstop for genuinely unexpected failures *other* than a closed
+// context (that specific case is now caught earlier, before this code
+// ever runs -- see the test above) -- e.g. some other transient browser
+// quirk touching the context. Simulates one directly so this backstop
+// itself stays covered, confirming initAudio still self-heals rather than
+// throwing out to its caller.
+test('initAudio self-heals instead of throwing on an unexpected failure from the unlock code itself', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const fakeCtx = {
+      state: 'running', // not 'closed' -- this exercises the try/catch backstop, not the closed-state check
+      createBuffer() { throw new Error('unexpected browser quirk'); },
     };
     STATE.audioCtx = fakeCtx;
     let threw = false;
@@ -6466,12 +6506,16 @@ test('the scene ambience gain node exists once audio initializes, feeding into t
 });
 
 // Player report: ambience could sometimes read louder than the music
-// itself. Confirms the structural guarantee added for it -- even the
-// single loudest configured ambient layer, across every scene, landing at
-// the very top of its per-repeat gain jitter, still can't exceed
-// AMBIENT_VARIATION.VOLUME_CAP_RATIO of the loudest thing the music itself
-// ever produces (a melody note at full peak/velocity).
-test("the ambient bed's shared gain node keeps even its single loudest possible layer under the music-relative volume cap", async ({ page }) => {
+// itself. Confirms the structural guarantee added for it -- and,
+// specifically, that the guarantee holds for a scene's *combined* mix
+// once its whole ambient streak is revealed (every layer live at once,
+// including "rare" one-shot events landing on top of the continuous ones
+// by chance), not just whichever single layer happens to have the highest
+// configured gain in isolation (review catch on the first version of this
+// fix: a single-layer budget left real headroom for a fully-revealed
+// scene's true combined mix to blow past the cap even with every
+// individual layer, and this exact test, passing).
+test("the ambient bed's shared gain node keeps even a scene's full combined mix (every layer live at once) under the music-relative volume cap", async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await page.goto('/index.html');
@@ -6479,15 +6523,14 @@ test("the ambient bed's shared gain node keeps even its single loudest possible 
   await page.waitForTimeout(500);
 
   const result = await page.evaluate(() => {
-    let loudestConfiguredLayerGain = 0;
-    for (const scene of Object.values(SCENE_AMBIENT_CONFIG)) {
-      for (const sound of Object.values(scene.sounds)) {
-        loudestConfiguredLayerGain = Math.max(loudestConfiguredLayerGain, sound.gain);
-      }
-    }
-    const worstCaseLayerAmplitude = loudestConfiguredLayerGain * AMBIENT_VARIATION.GAIN_RANGE[1] * STATE.ambientGain.gain.value;
+    const worstCaseSceneMixAmplitude = Math.max(
+      ...Object.values(SCENE_AMBIENT_CONFIG).map(scene => {
+        const sceneGainSum = Object.values(scene.sounds).reduce((sum, s) => sum + s.gain, 0);
+        return sceneGainSum * AMBIENT_VARIATION.GAIN_RANGE[1] * STATE.ambientGain.gain.value;
+      })
+    );
     return {
-      worstCaseLayerAmplitude,
+      worstCaseSceneMixAmplitude,
       musicPeak: KIND_PEAK.melody,
       capRatio: AMBIENT_VARIATION.VOLUME_CAP_RATIO,
       ambientGainValue: STATE.ambientGain.gain.value,
@@ -6495,9 +6538,9 @@ test("the ambient bed's shared gain node keeps even its single loudest possible 
   });
 
   // Not toBeCloseTo/exact equality -- this is a "never exceed" ceiling by
-  // design (quieter-than-cap is fine, e.g. any scene whose own loudest
-  // layer isn't the global loudest one), not a value every scene must hit.
-  expect(result.worstCaseLayerAmplitude).toBeLessThanOrEqual(result.musicPeak * result.capRatio + 1e-6);
+  // design (quieter-than-cap is fine, e.g. any scene whose own combined
+  // mix isn't the global worst case), not a value every scene must hit.
+  expect(result.worstCaseSceneMixAmplitude).toBeLessThanOrEqual(result.musicPeak * result.capRatio + 1e-6);
   expect(result.ambientGainValue).toBeLessThan(1.0); // confirms this is a real cap, not a vacuous no-op
   expect(errors).toEqual([]);
 });
