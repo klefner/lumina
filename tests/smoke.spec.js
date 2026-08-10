@@ -6467,21 +6467,24 @@ test('the Birthday Party scene generates and draws without error', async ({ page
     updateBirthdayScene();
     drawBirthdayScene(); // throws if anything in the draw path is broken
     return {
-      hasBalloons: STATE.birthdayScene.balloonBunches.length > 0,
+      celebrating: STATE.birthdayScene.celebrating,
       hasConfetti: STATE.birthdayScene.confetti.length > 0,
       hasLights: STATE.birthdayScene.lights.length > 0,
       phaseAdvanced: STATE.birthdayScene.phase === 1,
     };
   });
 
-  expect(result.hasBalloons).toBe(true);
+  // Balloons no longer appear during ordinary play at all (see
+  // generateCelebrationBalloons) -- a fresh scene starts with no
+  // celebration active.
+  expect(result.celebrating).toBe(false);
   expect(result.hasConfetti).toBe(true);
   expect(result.hasLights).toBe(true);
   expect(result.phaseAdvanced).toBe(true);
   expect(errors).toEqual([]);
 });
 
-test('birthday balloon bouquets stay tied to their table knot and sway together as one unit, rather than drifting freely like a lone dot (redesign, player report: a low-vision playtester mistook solo drifting balloons for connectable dots)', async ({ page }) => {
+test('birthday balloons only appear as a WAVE_COMPLETE celebration once the scene finishes revealing its ambient set, rise and recycle while it lasts, and never appear during ordinary play (player report: balloons present throughout play were mistaken for connectable dots)', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
@@ -6489,45 +6492,45 @@ test('birthday balloon bouquets stay tied to their table knot and sway together 
   const result = await page.evaluate(() => {
     canvas.width = 500; canvas.height = 900;
     STATE.scene = 'birthday';
+    STATE.sceneMode = 'birthday';
     STATE.birthdayScene = generateBirthdayScene();
-    for (let i = 0; i < 400; i++) updateBirthdayScene(); // land mid-sway
+    STATE.ambienceStreak = SCENE_AMBIENT_CONFIG.birthday.order.length - 1; // one wave short of fully revealed
 
-    const ellipseCalls = [];
-    const originalEllipse = CanvasRenderingContext2D.prototype.ellipse;
-    CanvasRenderingContext2D.prototype.ellipse = function (x, y, ...rest) {
-      ellipseCalls.push({ x, y });
-      return originalEllipse.call(this, x, y, ...rest);
-    };
-    try {
-      drawBirthdayScene();
-    } finally {
-      CanvasRenderingContext2D.prototype.ellipse = originalEllipse;
-    }
+    // Not yet the completing wave -- no celebration, no balloons drawn.
+    drawBirthdayScene(); // throws if the no-celebration draw path is broken
+    const notCelebratingYet = !STATE.birthdayScene.celebrating;
 
-    const w = canvas.width, h = canvas.height, t = STATE.birthdayScene.phase;
-    const bunches = STATE.birthdayScene.balloonBunches;
-    let totalBalloons = 0;
-    // Every balloon's drawn position should sit exactly at its bunch's
-    // swaying knot plus its own fixed offset -- confirms balloons move as
-    // one rigid tied bouquet (matching the knot's sway), not independently.
-    const allTiedToKnot = bunches.every(bunch => {
-      const sway = Math.sin(t * bunch.swaySpeed + bunch.swayPhase) * bunch.swayAmount;
-      const knotX = (bunch.anchorXFrac + sway) * w;
-      const knotY = bunch.knotYFrac * h;
-      return bunch.balloons.every(b => {
-        totalBalloons++;
-        const expectedX = knotX + b.dxFrac * w;
-        const expectedY = knotY + b.dyFrac * h;
-        return ellipseCalls.some(c => Math.abs(c.x - expectedX) < 0.5 && Math.abs(c.y - expectedY) < 0.5);
-      });
-    });
+    // The wave that finishes revealing the set triggers the celebration.
+    updateSceneAmbienceForWaveComplete();
+    const celebratingNow = STATE.birthdayScene.celebrating;
+    const balloonCount = STATE.birthdayScene.celebrationBalloons.length;
 
-    return { allTiedToKnot, totalBalloons, bunchCount: bunches.length };
+    // Balloons visibly rise over a short window (before any of them could
+    // plausibly have recycled yet).
+    const before = STATE.birthdayScene.celebrationBalloons.map(b => b.yFrac);
+    for (let i = 0; i < 10; i++) updateBirthdayScene();
+    const afterShort = STATE.birthdayScene.celebrationBalloons.map(b => b.yFrac);
+    const allRoseInitially = before.every((y, i) => afterShort[i] < y);
+
+    // Over a much longer window (many full cycles at this speed), every
+    // balloon should have recycled from the bottom repeatedly rather than
+    // rising forever or drifting out of bounds -- checked as a bounds
+    // invariant rather than a before/after comparison, since by this
+    // point each balloon could be anywhere in its own cycle.
+    for (let i = 0; i < 5000; i++) updateBirthdayScene();
+    const afterLong = STATE.birthdayScene.celebrationBalloons.map(b => b.yFrac);
+    const allWithinBounds = afterLong.every(y => y >= -0.09 && y <= 1.06);
+
+    drawBirthdayScene(); // throws if the celebration draw path is broken
+
+    return { notCelebratingYet, celebratingNow, balloonCount, allRoseInitially, allWithinBounds };
   });
 
-  expect(result.bunchCount).toBeGreaterThanOrEqual(2);
-  expect(result.totalBalloons).toBeGreaterThan(0);
-  expect(result.allTiedToKnot).toBe(true);
+  expect(result.notCelebratingYet).toBe(true);
+  expect(result.celebratingNow).toBe(true);
+  expect(result.balloonCount).toBeGreaterThan(0);
+  expect(result.allRoseInitially).toBe(true);
+  expect(result.allWithinBounds).toBe(true);
   expect(errors).toEqual([]);
 });
 
