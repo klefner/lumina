@@ -10197,6 +10197,11 @@ function showMessage(title, subtitle, opts) {
   // difficulty picker — both would just be repeated noise on every WAVE
   // COMPLETE otherwise.
   const isTitleScreen = !!(opts && opts.isTitleScreen);
+  // See #message-content.title-screen in style.css -- only the title
+  // screen's content column needs to actually receive clicks/touches
+  // (it's scrollable and holds real buttons); WAVE_COMPLETE's overlay
+  // stays pass-through so its own tap-to-advance still reaches the canvas.
+  document.getElementById('message-content').classList.toggle('title-screen', isTitleScreen);
   document.getElementById('sound-hint').classList.toggle('visible', isTitleScreen);
   document.getElementById('difficulty-selector').classList.toggle('visible', isTitleScreen);
   document.getElementById('scene-row').classList.toggle('visible', isTitleScreen);
@@ -10219,6 +10224,7 @@ function hideMessage() {
   // stay clickable (invisibly, opacity alone doesn't disable
   // pointer-events) over whatever dots happen to render underneath once
   // play starts.
+  document.getElementById('message-content').classList.remove('title-screen');
   document.getElementById('difficulty-selector').classList.remove('visible');
   document.getElementById('scene-row').classList.remove('visible');
   document.getElementById('flight-mode-row').classList.remove('visible');

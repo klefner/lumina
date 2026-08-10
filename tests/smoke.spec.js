@@ -4038,6 +4038,74 @@ test('a plain tap on the title screen does nothing; only the Start Game button s
   expect(errors).toEqual([]);
 });
 
+test('on a short viewport, the title screen scrolls internally instead of pushing Start Game off-screen (review catch, PR #75)', async ({ page }) => {
+  // Regression test for a real bug Codex caught on PR #75: removing the
+  // click-anywhere-to-start fallback made #start-game-button the ONLY way
+  // to start a game, but #message-content (the title screen's row stack)
+  // had no height cap or scrolling -- on a short landscape viewport the
+  // full row stack (title, subtitle, difficulty, scene, Flight/Cockpit
+  // Mode, Load Game, Share, Start Game) can be taller than the viewport,
+  // stranding the button above the visible area with no way back.
+  const errors = trackErrors(page);
+  await page.setViewportSize({ width: 640, height: 320 });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.waitForTimeout(300);
+
+  const layout = await page.evaluate(() => {
+    const content = document.getElementById('message-content');
+    return {
+      contentTallerThanViewport: content.scrollHeight > window.innerHeight,
+      contentOverflowY: getComputedStyle(content).overflowY,
+      contentPointerEvents: getComputedStyle(content).pointerEvents,
+    };
+  });
+  expect(layout.contentTallerThanViewport).toBe(true); // confirms this actually exercised the worst case
+  expect(layout.contentOverflowY).toBe('auto');
+  expect(layout.contentPointerEvents).toBe('auto'); // needed for touch/mouse-wheel scroll to actually reach it
+
+  // Scroll the button into view (exactly what a real player would need to
+  // do) and confirm it's clickable and still works.
+  await page.locator('#start-game-button').scrollIntoViewIfNeeded();
+  const rect = await page.locator('#start-game-button').boundingBox();
+  expect(rect.y).toBeGreaterThanOrEqual(0);
+  expect(rect.y + rect.height).toBeLessThanOrEqual(320);
+
+  await page.click('#start-game-button');
+  await page.waitForTimeout(800);
+  expect(await page.evaluate(() => STATE.phase)).toBe('PLAYING');
+  expect(errors).toEqual([]);
+});
+
+test('WAVE_COMPLETE\'s tap-to-advance still reaches the canvas after the title screen\'s #message-content became a scrollable, pointer-events:auto column (review catch, PR #75)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+  await page.click('#start-game-button');
+  await page.waitForTimeout(1000);
+
+  const before = await page.evaluate(() => {
+    // A WAVE_COMPLETE toast has no button rows -- pointer-events on
+    // #message-content must stay inherited (none) here so a click passes
+    // through to the canvas the same way it always has.
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete();
+    return {
+      phase: STATE.phase,
+      contentPointerEvents: getComputedStyle(document.getElementById('message-content')).pointerEvents,
+    };
+  });
+  expect(before.phase).toBe('WAVE_COMPLETE');
+  expect(before.contentPointerEvents).toBe('none');
+
+  await page.mouse.click(200, 700);
+  // Advancing fades out (~0.9s, see FADE_CONFIG) before STATE.phase
+  // actually changes -- wait for that instead of a fixed timeout.
+  await page.waitForFunction(() => STATE.phase !== 'WAVE_COMPLETE', { timeout: 3000 });
+  expect(errors).toEqual([]);
+});
+
 test('mid-game, the top button row holds only the single MENU button, and its panel lists Hint/Erase/Help right after Resume', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });

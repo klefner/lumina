@@ -126,56 +126,58 @@
   </div>
   <div id="connection-praise-layer" aria-hidden="true"></div>
   <div id="message-overlay">
-    <div id="message-title"></div>
-    <div id="message-subtitle"></div>
-    <div id="sound-hint">&#128266; best experienced with sound on</div>
-    <div id="difficulty-selector">
-      <button class="difficulty-btn" data-difficulty="relaxed">Relaxed</button>
-      <button class="difficulty-btn" data-difficulty="normal">Normal</button>
-      <button class="difficulty-btn" data-difficulty="intense">Intense</button>
-      <button class="difficulty-btn" data-difficulty="sleep">Sleep</button>
+    <div id="message-content">
+      <div id="message-title"></div>
+      <div id="message-subtitle"></div>
+      <div id="sound-hint">&#128266; best experienced with sound on</div>
+      <div id="difficulty-selector">
+        <button class="difficulty-btn" data-difficulty="relaxed">Relaxed</button>
+        <button class="difficulty-btn" data-difficulty="normal">Normal</button>
+        <button class="difficulty-btn" data-difficulty="intense">Intense</button>
+        <button class="difficulty-btn" data-difficulty="sleep">Sleep</button>
+      </div>
+      <div id="scene-row">
+        <label id="scene-label" for="scene-selector">Scene</label>
+        <select id="scene-selector">
+          <option value="rotate">Rotate every wave</option>
+          <option value="space">Space</option>
+          <option value="forest">Night Forest</option>
+          <option value="beach">Beach at Night</option>
+          <option value="birthday">Birthday Party</option>
+          <option value="halloween">Halloween</option>
+          <option value="christmas">Christmas</option>
+        </select>
+      </div>
+      <div id="flight-mode-row">
+        <label id="flight-mode-label">
+          <input type="checkbox" id="flight-mode-checkbox">
+          Flight Mode — pilot a ship to connect dots
+        </label>
+      </div>
+      <div id="cockpit-mode-row">
+        <label id="cockpit-mode-label">
+          <input type="checkbox" id="cockpit-mode-checkbox">
+          Cockpit Mode — first-person 3D flight
+        </label>
+      </div>
+      <div id="title-load-row">
+        <button id="title-load-button">Load Game</button>
+        <label id="autoload-label">
+          <input type="checkbox" id="autoload-checkbox">
+          Auto Load Last Save
+        </label>
+      </div>
+      <div id="share-row">
+        <button id="share-game-button">Share Lumina</button>
+      </div>
+      <div id="start-game-row">
+        <button id="start-game-button">Start Game</button>
+      </div>
+      <div id="postcard-row">
+        <button id="postcard-button">Share This Wave</button>
+      </div>
+      <div id="share-toast"></div>
     </div>
-    <div id="scene-row">
-      <label id="scene-label" for="scene-selector">Scene</label>
-      <select id="scene-selector">
-        <option value="rotate">Rotate every wave</option>
-        <option value="space">Space</option>
-        <option value="forest">Night Forest</option>
-        <option value="beach">Beach at Night</option>
-        <option value="birthday">Birthday Party</option>
-        <option value="halloween">Halloween</option>
-        <option value="christmas">Christmas</option>
-      </select>
-    </div>
-    <div id="flight-mode-row">
-      <label id="flight-mode-label">
-        <input type="checkbox" id="flight-mode-checkbox">
-        Flight Mode — pilot a ship to connect dots
-      </label>
-    </div>
-    <div id="cockpit-mode-row">
-      <label id="cockpit-mode-label">
-        <input type="checkbox" id="cockpit-mode-checkbox">
-        Cockpit Mode — first-person 3D flight
-      </label>
-    </div>
-    <div id="title-load-row">
-      <button id="title-load-button">Load Game</button>
-      <label id="autoload-label">
-        <input type="checkbox" id="autoload-checkbox">
-        Auto Load Last Save
-      </label>
-    </div>
-    <div id="share-row">
-      <button id="share-game-button">Share Lumina</button>
-    </div>
-    <div id="start-game-row">
-      <button id="start-game-button">Start Game</button>
-    </div>
-    <div id="postcard-row">
-      <button id="postcard-button">Share This Wave</button>
-    </div>
-    <div id="share-toast"></div>
   </div>
   <div id="version-display">__VERSION__</div>
   <script src="game.js?v=__BUILD__"></script>
