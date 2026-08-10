@@ -6401,7 +6401,7 @@ test('the Birthday Party scene generates and draws without error', async ({ page
     updateBirthdayScene();
     drawBirthdayScene(); // throws if anything in the draw path is broken
     return {
-      hasBalloons: STATE.birthdayScene.balloons.length > 0,
+      hasBalloons: STATE.birthdayScene.balloonBunches.length > 0,
       hasConfetti: STATE.birthdayScene.confetti.length > 0,
       hasLights: STATE.birthdayScene.lights.length > 0,
       phaseAdvanced: STATE.birthdayScene.phase === 1,
@@ -6415,7 +6415,7 @@ test('the Birthday Party scene generates and draws without error', async ({ page
   expect(errors).toEqual([]);
 });
 
-test('birthday balloons sway by their configured fraction of screen width, not amplified by dividing by their radius (review catch, PR #69)', async ({ page }) => {
+test('birthday balloon bouquets stay tied to their table knot and sway together as one unit, rather than drifting freely like a lone dot (redesign, player report: a low-vision playtester mistook solo drifting balloons for connectable dots)', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
@@ -6424,13 +6424,13 @@ test('birthday balloons sway by their configured fraction of screen width, not a
     canvas.width = 500; canvas.height = 900;
     STATE.scene = 'birthday';
     STATE.birthdayScene = generateBirthdayScene();
-    for (let i = 0; i < 400; i++) updateBirthdayScene(); // land mid-sway for several balloons
+    for (let i = 0; i < 400; i++) updateBirthdayScene(); // land mid-sway
 
     const ellipseCalls = [];
     const originalEllipse = CanvasRenderingContext2D.prototype.ellipse;
-    CanvasRenderingContext2D.prototype.ellipse = function (x, ...rest) {
-      ellipseCalls.push(x);
-      return originalEllipse.call(this, x, ...rest);
+    CanvasRenderingContext2D.prototype.ellipse = function (x, y, ...rest) {
+      ellipseCalls.push({ x, y });
+      return originalEllipse.call(this, x, y, ...rest);
     };
     try {
       drawBirthdayScene();
@@ -6438,23 +6438,30 @@ test('birthday balloons sway by their configured fraction of screen width, not a
       CanvasRenderingContext2D.prototype.ellipse = originalEllipse;
     }
 
-    const w = canvas.width;
-    const balloons = STATE.birthdayScene.balloons;
-    // Each balloon draws two ellipses (body + shine highlight) at the same
-    // x, in the same order as scene.balloons -- the candle flame's ellipse
-    // comes after all of them.
-    const withinBounds = balloons.every((b, i) => {
-      const bx = ellipseCalls[i * 2];
-      const maxOffset = b.swayAmount * w + 0.5; // +0.5px slack for float rounding
-      return Math.abs(bx - b.xFrac * w) <= maxOffset;
+    const w = canvas.width, h = canvas.height, t = STATE.birthdayScene.phase;
+    const bunches = STATE.birthdayScene.balloonBunches;
+    let totalBalloons = 0;
+    // Every balloon's drawn position should sit exactly at its bunch's
+    // swaying knot plus its own fixed offset -- confirms balloons move as
+    // one rigid tied bouquet (matching the knot's sway), not independently.
+    const allTiedToKnot = bunches.every(bunch => {
+      const sway = Math.sin(t * bunch.swaySpeed + bunch.swayPhase) * bunch.swayAmount;
+      const knotX = (bunch.anchorXFrac + sway) * w;
+      const knotY = bunch.knotYFrac * h;
+      return bunch.balloons.every(b => {
+        totalBalloons++;
+        const expectedX = knotX + b.dxFrac * w;
+        const expectedY = knotY + b.dyFrac * h;
+        return ellipseCalls.some(c => Math.abs(c.x - expectedX) < 0.5 && Math.abs(c.y - expectedY) < 0.5);
+      });
     });
 
-    return { withinBounds, balloonCount: balloons.length, ellipseCallCount: ellipseCalls.length };
+    return { allTiedToKnot, totalBalloons, bunchCount: bunches.length };
   });
 
-  expect(result.balloonCount).toBeGreaterThan(0);
-  expect(result.ellipseCallCount).toBe(result.balloonCount * 2 + 1); // +1 for the candle flame
-  expect(result.withinBounds).toBe(true);
+  expect(result.bunchCount).toBeGreaterThanOrEqual(2);
+  expect(result.totalBalloons).toBeGreaterThan(0);
+  expect(result.allTiedToKnot).toBe(true);
   expect(errors).toEqual([]);
 });
 

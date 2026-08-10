@@ -2563,7 +2563,7 @@ const STATE = {
                          // scene === 'forest' (see generateForestScene); null otherwise
   beachScene: null,      // { waveLines, glitterDots, moonXFrac, ... } for the current wave when
                           // scene === 'beach' (see generateBeachScene); null otherwise
-  birthdayScene: null,    // { balloons, confetti, lights, cakeXFrac, ... } for the current wave
+  birthdayScene: null,    // { balloonBunches, confetti, lights, cakeXFrac, ... } for the current wave
                            // when scene === 'birthday' (see generateBirthdayScene); null otherwise
   halloweenScene: null,   // { pumpkins, bats, trees, fogBands, ... } for the current wave when
                            // scene === 'halloween' (see generateHalloweenScene); null otherwise
@@ -3002,7 +3002,8 @@ async function decodeAllSamples() {
         const raw = await samplePromises[instrument][note];
         if (!raw) return;
         try {
-          const buffer = await STATE.audioCtx.decodeAudioData(raw.slice(0));
+          const decoded = await STATE.audioCtx.decodeAudioData(raw.slice(0));
+          const buffer = trimLeadingSilence(decoded, STATE.audioCtx);
           STATE.sampleBuffers[instrument][note] = buffer;
           registerSampleGain(instrument, note, buffer);
         } catch (e) { /* skip — playSample falls back gracefully */ }
@@ -3776,15 +3777,91 @@ const TARGET_SAMPLE_RMS = 0.15;
 // others hitting on nearby beats. Falls back to the whole buffer for
 // anything shorter (e.g. a drum one-shot).
 const ATTACK_WINDOW_SEC = 0.3;
+
+// Real recordings carry mic pre-roll before the string is actually struck
+// -- measured across this project's own piano set, onsets range from
+// ~0.24s up to ~0.48s of near-silence before the note begins. This bites
+// twice. First, measuring the attack window from literal sample 0 means
+// that lead-in silence dominates the RMS for any sample whose onset is a
+// meaningful fraction of ATTACK_WINDOW_SEC, understating true loudness and
+// producing a wildly inflated gain multiplier (400-600x seen on the
+// worst offenders here) that then clips the real attack once it finally
+// arrives. Second and more serious: every note is scheduled assuming
+// "starts playing at t" means "audible at t" -- with up to half a second
+// of silence baked into the front of the buffer, a note's real sound
+// doesn't arrive until t+onset, an offset that differs per sample. For
+// a fixed melody with notes under a second apart (see
+// generateBirthdaySong), that smears the actual rhythm into something
+// unrecognizable even when every pitch and gain is correct, and a short
+// holdSec can release/stop a note before its audible attack ever plays.
+// trimLeadingSilence (below) removes this at its source, once per sample
+// at decode time, so every downstream consumer -- gain calibration here
+// and playback scheduling everywhere else -- gets a buffer that actually
+// starts when it sounds.
+// Onset relative to the recording's own noise floor, not a fraction of
+// its eventual peak (review catch, PR #77: a fixed-fraction-of-peak
+// threshold can't distinguish a genuinely quiet, gradual attack -- a
+// bowed cello swell, a mallet roll -- from real silence, and would trim
+// straight into it). Every sample in this project's library opens with
+// at least a few ms of true room silence before any note, fast or slow
+// attack alike, physically begins -- measuring that as the floor and
+// looking for a sustained rise clearly above it (a short RMS window, not
+// a single-sample peak, so one stray click can't false-trigger) finds
+// the real onset for a percussive piano hit and a gradual swell alike,
+// and safely resolves to "no silence found" (onset 0, nothing trimmed)
+// for a sample whose attack is already audible in that opening window.
+function findSampleOnset(buffer) {
+  const floorWindow = Math.min(buffer.length, Math.round(0.01 * buffer.sampleRate));
+  let floorSumSq = 0, floorCount = 0;
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    const data = buffer.getChannelData(ch);
+    for (let i = 0; i < floorWindow; i++) { floorSumSq += data[i] * data[i]; floorCount++; }
+  }
+  const noiseFloorRms = floorCount > 0 ? Math.sqrt(floorSumSq / floorCount) : 0;
+  const threshold = Math.max(noiseFloorRms * 6, 0.001);
+
+  const winSamples = Math.max(1, Math.round(0.005 * buffer.sampleRate));
+  for (let i = 0; i < buffer.length; i += winSamples) {
+    let sumSq = 0, count = 0;
+    for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+      const data = buffer.getChannelData(ch);
+      for (let j = i; j < Math.min(i + winSamples, buffer.length); j++) { sumSq += data[j] * data[j]; count++; }
+    }
+    const rms = count > 0 ? Math.sqrt(sumSq / count) : 0;
+    if (rms >= threshold) return i;
+  }
+  return 0;
+}
+
 function computeAttackRms(buffer) {
-  const windowSamples = Math.min(buffer.length, Math.round(ATTACK_WINDOW_SEC * buffer.sampleRate));
+  const onset = findSampleOnset(buffer);
+  const windowSamples = Math.min(buffer.length - onset, Math.round(ATTACK_WINDOW_SEC * buffer.sampleRate));
   if (windowSamples <= 0) return 0;
   let sumSquares = 0, count = 0;
   for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
     const data = buffer.getChannelData(ch);
-    for (let i = 0; i < windowSamples; i++) { sumSquares += data[i] * data[i]; count++; }
+    for (let i = onset; i < onset + windowSamples; i++) { sumSquares += data[i] * data[i]; count++; }
   }
   return count > 0 ? Math.sqrt(sumSquares / count) : 0;
+}
+
+// Copies [onset - preroll, buffer.length) into a fresh buffer, so index 0
+// of the result is (almost) where the note actually starts sounding --
+// undoes the recording's own mic pre-roll once, at decode time, instead
+// of leaving every future playback to account for it. Keeps a small
+// pre-roll because the real attack ramps up through the onset threshold
+// rather than starting exactly at it; trimming flush to the threshold
+// would clip the leading edge of the transient.
+function trimLeadingSilence(buffer, ctx) {
+  const onset = findSampleOnset(buffer);
+  const prerollSamples = Math.round(0.015 * buffer.sampleRate);
+  const start = Math.max(0, onset - prerollSamples);
+  if (start <= 0) return buffer;
+  const trimmed = ctx.createBuffer(buffer.numberOfChannels, buffer.length - start, buffer.sampleRate);
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    trimmed.copyToChannel(buffer.getChannelData(ch).subarray(start), ch);
+  }
+  return trimmed;
 }
 
 // The multiplier that brings one specific decoded sample up (or down) to
@@ -3796,7 +3873,23 @@ function sampleGainFor(instrument, name) {
   return g != null ? g : 1; // not measured yet (shouldn't happen once decode finishes) -- unity gain
 }
 
-function playResolvedSample(instrument, nearestName, targetMidi, t, peak, dest) {
+// holdSec, when given, cuts the note off with a short release instead of
+// its full natural sample length (~1.8-2.2s per real recording, see
+// sounds/CREDITS.md). Every existing caller leaves it undefined and gets
+// the old unconditional-decay behavior unchanged -- pads/drones/ambient
+// roles WANT their notes ringing/overlapping into each other, that's the
+// whole point of a sustained texture. It exists for exactly one caller
+// so far (see generateBirthdaySong/playScheduledNote): a real, recognizable
+// tune needs its notes actually articulated, not smeared -- rendered and
+// pitch-verified evidence (a fixed melody firing notes as little as 0.14s
+// apart, each left to ring its own full ~2s sample with no note-off at
+// all, produces 3-10+ simultaneously decaying overlapping tones at any
+// given instant) is what a monophonic pitch detector run against the
+// game's own actual synthesized audio measured before this existed --
+// individually correct pitches, playing in the correct order, rendering
+// as a wash rather than a legible melody.
+const NOTE_RELEASE_SEC = 0.05;
+function playResolvedSample(instrument, nearestName, targetMidi, t, peak, dest, holdSec) {
   const buffers = STATE.sampleBuffers[instrument];
   if (!buffers || !nearestName) return;
   const buffer = buffers[nearestName];
@@ -3808,15 +3901,23 @@ function playResolvedSample(instrument, nearestName, targetMidi, t, peak, dest) 
   src.playbackRate.value = Math.pow(2, (targetMidi - noteNameToMidi(nearestName)) / 12);
 
   const gain = ctx.createGain();
-  gain.gain.value = peak * sampleGainFor(instrument, nearestName);
+  const peakGain = peak * sampleGainFor(instrument, nearestName);
+  gain.gain.value = peakGain;
 
   src.connect(gain);
   gain.connect(dest);
   trackSource(src).start(t);
+
+  if (holdSec != null) {
+    const releaseStart = t + holdSec;
+    gain.gain.setValueAtTime(peakGain, releaseStart);
+    gain.gain.linearRampToValueAtTime(0.0001, releaseStart + NOTE_RELEASE_SEC);
+    src.stop(releaseStart + NOTE_RELEASE_SEC + 0.02);
+  }
 }
 
-function playSample(instrument, targetMidi, t, peak, dest, resolvedName) {
-  playResolvedSample(instrument, resolvedName || nearestSampleNote(instrument, targetMidi), targetMidi, t, peak, dest);
+function playSample(instrument, targetMidi, t, peak, dest, resolvedName, holdSec) {
+  playResolvedSample(instrument, resolvedName || nearestSampleNote(instrument, targetMidi), targetMidi, t, peak, dest, holdSec);
 }
 
 function playSampleChord(instrument, midiList, t, peak, dest, resolvedNames) {
@@ -3857,13 +3958,13 @@ function playDrumHit(instrument, piece, t, peak, dest) {
   trackSource(src).start(t);
 }
 
-function playNoteAt(note, t, peak, dest) {
+function playNoteAt(note, t, peak, dest, holdSec) {
   if (note.role === 'pad') {
     playSampleChord(note.instrument, note.midiList, t, peak, dest, note.resolvedSamples);
   } else if (note.role === 'drum') {
     playDrumHit(note.instrument, note.drumPiece, t, peak, dest);
   } else {
-    playSample(note.instrument, note.midi, t, peak, dest, note.resolvedSample);
+    playSample(note.instrument, note.midi, t, peak, dest, note.resolvedSample, holdSec);
   }
 }
 
@@ -3871,7 +3972,11 @@ function playScheduledNote(note, startTime, beatDur, dest) {
   const t = startTime + note.beat * beatDur;
   const vel = note.vel || 1;
   const peak = (KIND_PEAK[note.role] || 0.4) * vel;
-  playNoteAt(note, t, peak, dest);
+  // See playResolvedSample's own comment -- durBeats only exists on notes
+  // that need to be articulated (currently just generateBirthdaySong's
+  // melody), so this is a no-op for every other note in the game.
+  const holdSec = note.durBeats != null ? note.durBeats * beatDur : null;
+  playNoteAt(note, t, peak, dest, holdSec);
 }
 
 // unmuteChunk deliberately waits for this chunk's next clean note onset
@@ -4146,6 +4251,17 @@ function generateBirthdaySong(pairCount) {
       beat: humanizeBeat(beat, 0.015),
       midi: foldToInstrumentRange(instrument, scaleMidi(genre, n.deg, 0)),
       role: 'melody', instrument, vel: humanizeVelocity(), chunkIndex,
+      // Real piano samples ring their full ~1.8-2.2s length with no
+      // note-off (see playResolvedSample) -- fine for a pad/drone role
+      // that's SUPPOSED to blend into the next one, wrong for a fixed,
+      // recognizable tune whose shortest notes are only ~0.14s apart:
+      // rendered and pitch-verified, that left 3-10+ notes ringing over
+      // each other at any instant, an unrecognizable wash rather than
+      // "Happy Birthday." durBeats gives playScheduledNote something to
+      // release against; the *0.85 leaves a small gap before the next
+      // note's onset so consecutive notes read as separately articulated,
+      // not legato-tied into one continuous tone.
+      durBeats: n.dur * 0.85,
     });
     beat += n.dur;
   });
@@ -8696,8 +8812,8 @@ function drawBeachScene() {
 // and its odd one out: an indoor party instead of a night sky, deliberately
 // warm and bright rather than moonlit/calm (see SLEEP_SAFE_SCENES -- this
 // is the one scene Sleep mode never offers). A string-light garland, a
-// scatter of drifting balloons, a small table cake with one flickering
-// candle, and continuous falling confetti.
+// party table (cake, punch bowl, plate stack, and tied balloon bouquets),
+// and continuous falling confetti.
 //
 // Balloons/confetti/lights are stored as fractions of canvas.width/height,
 // not absolute pixels, same reasoning as the forest's trees.
@@ -8708,23 +8824,62 @@ const BIRTHDAY_CONFIG = {
   TABLE_COLOR: '#241221',
   BALLOON_COLORS: ['#ff5d8f', '#ffd23f', '#3fd0c9', '#a06cff', '#ff9a3f'],
   CONFETTI_COLORS: ['#ff5d8f', '#ffd23f', '#3fd0c9', '#a06cff', '#ff9a3f', '#ffffff'],
+  PUNCH_COLOR: '#c22a5e',
+  TABLEWARE_COLOR: '#fdeef7',
+  // Shared by the table's own draw code and the balloon bouquets' knot
+  // placement (see generateBalloonBunches) -- the whole point of tying
+  // balloons to the table is that they visibly sit ON it, so both need
+  // the exact same fraction, not two independently-tuned numbers that can
+  // drift apart (review catch, PR #79: the knot used to float 6.5-8.5%
+  // of screen height above the table with nothing tethering it down).
+  TABLE_TOP_FRAC: 0.95,
 };
 
-function generateBirthdayScene() {
-  const balloonCount = 8 + Math.floor(Math.random() * 5);
-  const balloons = [];
-  for (let i = 0; i < balloonCount; i++) {
-    balloons.push({
-      xFrac: Math.random(),
-      yFrac: Math.random(),
-      colorIndex: Math.floor(Math.random() * BIRTHDAY_CONFIG.BALLOON_COLORS.length),
-      radiusFrac: 0.028 + Math.random() * 0.02,
-      riseSpeed: 0.00012 + Math.random() * 0.00014, // fraction of height per frame -- slow, steady drift upward
+// Balloons used to be independent solo shapes drifting freely across the
+// whole board -- a bright round glossy circle, slowly rising, was reported
+// by a low-vision playtester (severe macular degeneration) as
+// indistinguishable from an actual dot: the slow drift that would
+// normally read as "this is background, not a target" at a glance simply
+// wasn't perceptible to her, so she kept trying to connect them and
+// nothing happened. Tying 3-4 balloons into one bouquet per knot, anchoring
+// each bouquet to the party table alongside the cake/punch bowl/plates
+// (rather than floating through the middle of the play area), and dropping
+// the old per-balloon glossy highlight (the one trait they shared with
+// drawDot's white core) all push the same direction: read as one piece of
+// scenery grouped with other obvious scenery, not several loose things
+// that might be interactive.
+function generateBalloonBunches() {
+  const bunchCount = 2 + Math.floor(Math.random() * 2); // 2-3 bouquets
+  const anchorSlots = [0.08, 0.2, 0.8, 0.92].sort(() => Math.random() - 0.5);
+  const bunches = [];
+  for (let i = 0; i < bunchCount; i++) {
+    const balloonCount = 3 + Math.floor(Math.random() * 2); // 3-4 per bouquet
+    const balloons = [];
+    for (let j = 0; j < balloonCount; j++) {
+      balloons.push({
+        dxFrac: (Math.random() - 0.5) * 0.045,
+        dyFrac: -0.02 - Math.random() * 0.09, // stacked upward from the knot
+        colorIndex: Math.floor(Math.random() * BIRTHDAY_CONFIG.BALLOON_COLORS.length),
+        radiusFrac: 0.022 + Math.random() * 0.01,
+      });
+    }
+    bunches.push({
+      anchorXFrac: anchorSlots[i],
+      knotYFrac: BIRTHDAY_CONFIG.TABLE_TOP_FRAC, // tied off exactly at the table edge, not floating above it
       swayPhase: Math.random() * Math.PI * 2,
-      swaySpeed: 0.0006 + Math.random() * 0.0006,
-      swayAmount: 0.02 + Math.random() * 0.025, // fraction of width
+      swaySpeed: 0.0004 + Math.random() * 0.0003,
+      // A small tied-down nudge, not a free drift -- the whole bouquet
+      // sways together as one rigid unit around its knot, the opposite
+      // motion of a dot (which never moves as a group with anything).
+      swayAmount: 0.006 + Math.random() * 0.005,
+      balloons,
     });
   }
+  return bunches;
+}
+
+function generateBirthdayScene() {
+  const balloonBunches = generateBalloonBunches();
 
   const confettiCount = 26 + Math.floor(Math.random() * 14);
   const confetti = [];
@@ -8757,11 +8912,11 @@ function generateBirthdayScene() {
   }
 
   return {
-    balloons,
+    balloonBunches,
     confetti,
     lights,
     cakeXFrac: 0.5 + (Math.random() - 0.5) * 0.1,
-    phase: 0, // frame accumulator driving balloon rise/sway/confetti fall/light twinkle/candle flicker below
+    phase: 0, // frame accumulator driving balloon-bouquet sway/confetti fall/light twinkle/candle flicker below
   };
 }
 
@@ -8769,13 +8924,9 @@ function updateBirthdayScene() {
   if (STATE.scene !== 'birthday' || !STATE.birthdayScene) return;
   const scene = STATE.birthdayScene;
   scene.phase += 1;
-  for (const b of scene.balloons) {
-    b.yFrac -= b.riseSpeed;
-    if (b.yFrac < -0.08) { // drifted off the top -- recycle from below, same trick the confetti loop uses
-      b.yFrac = 1.05;
-      b.xFrac = Math.random();
-    }
-  }
+  // Balloon bouquets have no per-frame state of their own -- each one's
+  // sway is computed straight from scene.phase at draw time (see
+  // drawBirthdayScene), same as the light garland's twinkle below.
   for (const c of scene.confetti) {
     c.yFrac += c.fallSpeed;
     c.rotation += c.rotSpeed;
@@ -8838,39 +8989,12 @@ function drawBirthdayScene() {
     ctx.restore();
   }
 
-  // Balloons -- a filled circle, a small triangular knot, and a thin
-  // string down to wherever it happens to be drifting.
-  for (const b of scene.balloons) {
-    const drift = t * b.swaySpeed + b.swayPhase;
-    const bx = (b.xFrac + Math.sin(drift) * b.swayAmount) * w;
-    const by = b.yFrac * h;
-    const r = b.radiusFrac * Math.min(w, h);
-    const color = BIRTHDAY_CONFIG.BALLOON_COLORS[b.colorIndex];
-
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(bx, by + r);
-    ctx.lineTo(bx + Math.sin(drift * 1.3) * r * 0.4, by + r * 3.2);
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.ellipse(bx, by, r * 0.82, r, 0, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-    // A soft highlight so the balloon reads as glossy/round rather than a flat disc.
-    const shine = ctx.createRadialGradient(bx - r * 0.3, by - r * 0.35, 0, bx - r * 0.3, by - r * 0.35, r * 0.6);
-    shine.addColorStop(0, 'rgba(255,255,255,0.45)');
-    shine.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = shine;
-    ctx.beginPath();
-    ctx.ellipse(bx, by, r * 0.82, r, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Table + cake + candle -- anchored near the bottom, always in frame
-  // regardless of how the balloons/confetti above happen to be scattered.
-  const tableY = h - 0.05 * h;
+  // Table + cake + candle + punch bowl + plate stack -- one obviously-styled
+  // tablescape anchored near the bottom, always in frame regardless of how
+  // the confetti above happens to be scattered. The balloon bouquets (drawn
+  // after, see below) are tied to this same table rather than floating
+  // free, so the whole bottom strip reads as one piece of party decor.
+  const tableY = BIRTHDAY_CONFIG.TABLE_TOP_FRAC * h;
   ctx.fillStyle = BIRTHDAY_CONFIG.TABLE_COLOR;
   ctx.fillRect(0, tableY, w, h - tableY);
 
@@ -8882,6 +9006,81 @@ function drawBirthdayScene() {
   ctx.fillRect(cakeX - cakeW / 2, cakeY, cakeW, cakeH);
   ctx.fillStyle = '#ff8fb8';
   ctx.fillRect(cakeX - cakeW / 2, cakeY, cakeW, cakeH * 0.28);
+
+  // Punch bowl -- a squat wide ellipse (bowl body) with a lighter rim
+  // ellipse suggesting the concave inside, plus two small cups beside it.
+  // Flat fills only, same as the cake -- deliberately styled like static
+  // tableware, not like a dot (no glow, no pulse, no glossy highlight).
+  const bowlX = cakeX - cakeW * 1.6;
+  const bowlW = 0.075 * w;
+  const bowlH = 0.022 * h;
+  const bowlY = tableY - bowlH * 0.6;
+  ctx.fillStyle = BIRTHDAY_CONFIG.TABLEWARE_COLOR;
+  ctx.beginPath();
+  ctx.ellipse(bowlX, bowlY, bowlW / 2, bowlH, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = BIRTHDAY_CONFIG.PUNCH_COLOR;
+  ctx.beginPath();
+  ctx.ellipse(bowlX, bowlY - bowlH * 0.28, bowlW / 2 * 0.8, bowlH * 0.6, 0, 0, Math.PI * 2);
+  ctx.fill();
+  for (const cupSign of [-1, 1]) {
+    const cupX = bowlX + cupSign * bowlW * 0.85;
+    const cupW = bowlW * 0.28;
+    const cupH = bowlH * 1.8;
+    ctx.fillStyle = BIRTHDAY_CONFIG.TABLEWARE_COLOR;
+    ctx.fillRect(cupX - cupW / 2, tableY - cupH, cupW, cupH);
+    ctx.fillStyle = BIRTHDAY_CONFIG.PUNCH_COLOR;
+    ctx.beginPath();
+    ctx.ellipse(cupX, tableY - cupH, cupW / 2, cupW / 2 * 0.4, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Plate stack -- a few overlapping thin ellipses, on the cake's other side.
+  const plateX = cakeX + cakeW * 1.6;
+  const plateW = 0.06 * w;
+  const plateH = 0.012 * h;
+  for (let p = 0; p < 3; p++) {
+    ctx.fillStyle = BIRTHDAY_CONFIG.TABLEWARE_COLOR;
+    ctx.globalAlpha = 0.55 + p * 0.15;
+    ctx.beginPath();
+    ctx.ellipse(plateX, tableY - plateH * 0.5 - p * plateH * 0.7, plateW / 2, plateH, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // Balloon bouquets -- 3-4 balloons tied to one knot at the table edge,
+  // swaying together as a single rigid shape (not independently), so the
+  // silhouette reads as "one tied decoration" rather than several loose
+  // round things. No glossy highlight (see generateBalloonBunches).
+  for (const bunch of scene.balloonBunches) {
+    const sway = Math.sin(t * bunch.swaySpeed + bunch.swayPhase) * bunch.swayAmount;
+    const knotX = (bunch.anchorXFrac + sway) * w;
+    const knotY = bunch.knotYFrac * h;
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.lineWidth = 1;
+    for (const b of bunch.balloons) {
+      const bx = knotX + b.dxFrac * w;
+      const by = knotY + b.dyFrac * h;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineTo(knotX, knotY);
+      ctx.stroke();
+    }
+    for (const b of bunch.balloons) {
+      const bx = knotX + b.dxFrac * w;
+      const by = knotY + b.dyFrac * h;
+      const r = b.radiusFrac * Math.min(w, h);
+      ctx.beginPath();
+      ctx.ellipse(bx, by, r * 0.82, r, 0, 0, Math.PI * 2);
+      ctx.fillStyle = BIRTHDAY_CONFIG.BALLOON_COLORS[b.colorIndex];
+      ctx.fill();
+    }
+    ctx.beginPath();
+    ctx.arc(knotX, knotY, 2, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.fill();
+  }
 
   const candleX = cakeX;
   const candleTopY = cakeY - 0.035 * h;
