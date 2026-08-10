@@ -319,7 +319,7 @@ function saveCockpitModeSetting(enabled) {
 // mid-session. Defaults to 'rotate' (unlike flight/cockpit mode's
 // off-by-default) since picking a scene doesn't change how you play -- an
 // unconfigured player should just see everything.
-const SCENE_LIST = ['space', 'forest', 'beach', 'birthday'];
+const SCENE_LIST = ['space', 'forest', 'beach', 'birthday', 'halloween'];
 const SCENE_KEY = 'lumina_scene_v1';
 function loadSceneSetting() {
   try {
@@ -2553,6 +2553,8 @@ const STATE = {
                           // scene === 'beach' (see generateBeachScene); null otherwise
   birthdayScene: null,    // { balloons, confetti, lights, cakeXFrac, ... } for the current wave
                            // when scene === 'birthday' (see generateBirthdayScene); null otherwise
+  halloweenScene: null,   // { pumpkins, bats, trees, fogBands, ... } for the current wave when
+                           // scene === 'halloween' (see generateHalloweenScene); null otherwise
 
   ambientGain: null,     // GainNode every scene ambience layer routes through (see initAudioGraph)
   ambientBuffers: {},     // { forest: { wind: AudioBuffer, ... }, beach: { waves: AudioBuffer, ... } }
@@ -3303,6 +3305,19 @@ const SCENE_AMBIENT_CONFIG = {
       cork: { file: 'birthday-cork.mp3', gain: 0.75, isEvent: true, minGapSec: 20, maxGapSec: 45 },
     },
   },
+  // Cozy-spooky rather than horror -- a gentle autumn wind floor with three
+  // occasional atmospheric events (creak/howl/caw). Not in SLEEP_SAFE_SCENES:
+  // even kept gentle, "spooky" trades on a little tension that cuts against
+  // Sleep mode's calm/low-arousal goal in a way Forest's owl doesn't.
+  halloween: {
+    order: ['wind', 'creak', 'howl', 'raven'],
+    sounds: {
+      wind: { file: 'halloween-wind.mp3', gain: 0.5, isEvent: false },
+      creak: { file: 'halloween-creak.mp3', gain: 0.6, isEvent: true, minGapSec: 14, maxGapSec: 34 },
+      howl: { file: 'halloween-wolfhowl.mp3', gain: 0.5, isEvent: true, minGapSec: 28, maxGapSec: 60 },
+      raven: { file: 'halloween-raven.mp3', gain: 0.65, isEvent: true, minGapSec: 10, maxGapSec: 26 },
+    },
+  },
 };
 
 // Applied fresh on every repeat (a loop's next crossfaded pass, or an
@@ -3539,8 +3554,9 @@ const SCENE_COMPLETE_CELEBRATIONS = {
   forest: { glyph: '🌲', bg: 'radial-gradient(circle at 35% 30%, #bfe3b0, #3f7d4a)', glow: 'rgba(80,170,90,0.6)' },
   beach: { glyph: '🌊', bg: 'radial-gradient(circle at 35% 30%, #bfe9f2, #2f7fa0)', glow: 'rgba(60,170,210,0.6)' },
   birthday: { glyph: '🎂', bg: 'radial-gradient(circle at 35% 30%, #ffd3e6, #c93f7a)', glow: 'rgba(255,93,143,0.6)' },
+  halloween: { glyph: '🎃', bg: 'radial-gradient(circle at 35% 30%, #ffcf8a, #9a4a12)', glow: 'rgba(255,140,20,0.6)' },
 };
-const SCENE_DISPLAY_NAMES = { space: 'Space', forest: 'Forest', beach: 'Beach', birthday: 'Birthday' };
+const SCENE_DISPLAY_NAMES = { space: 'Space', forest: 'Forest', beach: 'Beach', birthday: 'Birthday', halloween: 'Halloween' };
 
 function queueSceneCompleteToast(scene) {
   const celebration = SCENE_COMPLETE_CELEBRATIONS[scene];
@@ -6933,6 +6949,7 @@ function startWave(waveNumber) {
   STATE.forestScene = STATE.scene === 'forest' ? generateForestScene() : null;
   STATE.beachScene = STATE.scene === 'beach' ? generateBeachScene() : null;
   STATE.birthdayScene = STATE.scene === 'birthday' ? generateBirthdayScene() : null;
+  STATE.halloweenScene = STATE.scene === 'halloween' ? generateHalloweenScene() : null;
   // Stop any leftover ambience from whatever scene the previous wave was
   // on the instant this wave's scene turns out to be different -- see
   // syncAmbienceToScene's own comment for why this can't just wait for
@@ -8606,6 +8623,247 @@ function drawBirthdayScene() {
   ctx.fill();
 }
 
+// ============================================================
+// SECTION 7H: HALLOWEEN BACKGROUND
+// ============================================================
+// Space's fifth scene: a cozy-spooky autumn evening rather than horror --
+// bare silhouette trees, drifting ground fog, a couple of flickering
+// jack-o'-lanterns, and bats swooping across the sky on looping paths (the
+// signature per-scene animation this scene needed, same spirit as "beach
+// gets a sailing boat"). Mirrors the Forest/Beach/Birthday
+// generate/update/draw architecture and reuses drawNightMoon/drawStars.
+const HALLOWEEN_CONFIG = {
+  SKY_TOP: '#160c22',
+  SKY_MID: '#3a1a2e',
+  SKY_HORIZON: '#7a3a1e',
+  TREE_COLOR: '#0a0710',
+  GROUND_COLOR: '#0c0710',
+  PUMPKIN_COLOR: '#e8720c',
+};
+
+function generateHalloweenScene() {
+  const treeCount = 6 + Math.floor(Math.random() * 4);
+  const trees = [];
+  for (let i = 0; i < treeCount; i++) {
+    trees.push({
+      xFrac: Math.random(),
+      heightFrac: 0.24 + Math.random() * 0.2,
+      widthFrac: 0.05 + Math.random() * 0.03,
+      swayPhase: Math.random() * Math.PI * 2,
+      swaySpeed: 0.0004 + Math.random() * 0.0005,
+      swayAmount: 2 + Math.random() * 3,
+      branchSeed: Math.random(), // drives branch count/length below -- see drawHalloweenScene
+    });
+  }
+
+  const pumpkinCount = 2 + Math.floor(Math.random() * 2);
+  const pumpkins = [];
+  for (let i = 0; i < pumpkinCount; i++) {
+    pumpkins.push({
+      xFrac: (i + 0.5) / pumpkinCount + (Math.random() - 0.5) * 0.08,
+      sizeFrac: 0.03 + Math.random() * 0.015,
+      flickerPhase: Math.random() * Math.PI * 2,
+    });
+  }
+
+  const batCount = 5 + Math.floor(Math.random() * 4);
+  const bats = [];
+  for (let i = 0; i < batCount; i++) {
+    bats.push({
+      xFrac: Math.random(),
+      baseYFrac: 0.1 + Math.random() * 0.35,
+      swoopAmount: 0.02 + Math.random() * 0.03,
+      swoopSpeed: 0.002 + Math.random() * 0.002,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.00035 + Math.random() * 0.00035, // fraction of width per frame -- see updateHalloweenScene
+      direction: Math.random() < 0.5 ? 1 : -1,
+      wingPhase: Math.random() * Math.PI * 2,
+      sizeFrac: 0.012 + Math.random() * 0.008,
+    });
+  }
+
+  const fogBands = [];
+  for (let i = 0; i < 3; i++) {
+    fogBands.push({
+      yFrac: 0.72 + i * 0.08 + Math.random() * 0.03,
+      xFrac: Math.random(),
+      speed: 0.00006 + Math.random() * 0.00008,
+      opacity: 0.1 + Math.random() * 0.08,
+    });
+  }
+
+  return {
+    trees,
+    pumpkins,
+    bats,
+    fogBands,
+    moonXFrac: 0.15 + Math.random() * 0.7,
+    moonYFrac: 0.08 + Math.random() * 0.14,
+    moonRadiusFrac: 0.05 + Math.random() * 0.02,
+    phase: 0, // frame accumulator driving sway/swoop/flap/drift/flicker below
+  };
+}
+
+function updateHalloweenScene() {
+  if (STATE.scene !== 'halloween' || !STATE.halloweenScene) return;
+  const scene = STATE.halloweenScene;
+  scene.phase += 1;
+  for (const b of scene.bats) {
+    b.xFrac += b.speed * b.direction;
+    // Wrapped rather than recycled from a random edge -- a bat keeps
+    // flying the same direction it was already going, just reappears on
+    // the opposite side, so the motion never visibly resets mid-flight.
+    if (b.xFrac > 1.08) { b.xFrac = -0.08; b.baseYFrac = 0.1 + Math.random() * 0.35; }
+    else if (b.xFrac < -0.08) { b.xFrac = 1.08; b.baseYFrac = 0.1 + Math.random() * 0.35; }
+  }
+  for (const f of scene.fogBands) {
+    f.xFrac += f.speed;
+    if (f.xFrac > 1) f.xFrac -= 1;
+  }
+}
+
+function drawHalloweenScene() {
+  const scene = STATE.halloweenScene;
+  if (!scene) return;
+  const w = canvas.width, h = canvas.height, t = scene.phase;
+
+  const sky = ctx.createLinearGradient(0, 0, 0, h);
+  sky.addColorStop(0, HALLOWEEN_CONFIG.SKY_TOP);
+  sky.addColorStop(0.55, HALLOWEEN_CONFIG.SKY_MID);
+  sky.addColorStop(1, HALLOWEEN_CONFIG.SKY_HORIZON);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+
+  drawNightMoon(scene.moonXFrac, scene.moonYFrac, scene.moonRadiusFrac);
+  drawStars(); // same twinkling starfield Space/Forest use -- see Forest's own comment
+
+  // Bats -- a simple double-arc silhouette on a looping swoop path, wings
+  // flapping via a fast sine. The signature per-scene animation this
+  // scene needed (see this section's header comment).
+  for (const b of scene.bats) {
+    const bx = b.xFrac * w;
+    const by = (b.baseYFrac + Math.sin(t * b.swoopSpeed + b.phase) * b.swoopAmount) * h;
+    const wingFlap = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * 0.35 + b.wingPhase));
+    const r = b.sizeFrac * Math.min(w, h);
+    ctx.strokeStyle = 'rgba(10, 6, 14, 0.85)';
+    ctx.lineWidth = Math.max(1, r * 0.35);
+    ctx.beginPath();
+    ctx.moveTo(bx - r * 1.6, by - r * wingFlap * 0.9);
+    ctx.quadraticCurveTo(bx - r * 0.6, by + r * 0.3, bx, by);
+    ctx.quadraticCurveTo(bx + r * 0.6, by + r * 0.3, bx + r * 1.6, by - r * wingFlap * 0.9);
+    ctx.stroke();
+  }
+
+  // Ground fog -- soft translucent horizontal bands drifting sideways,
+  // wrapping around once xFrac cycles past 1 (see updateHalloweenScene).
+  // A single gradient copy goes fully off-screen for a stretch near the
+  // wrap point no matter how wide it is (review catch, PR #70) -- drawing
+  // a second copy one canvas-width to the left keeps one of the two
+  // always at least partially in view, so the band reads as continuously
+  // drifting rather than periodically vanishing.
+  const FOG_BAND_WIDTH = 1.6; // multiple of canvas width -- wide enough that each copy's own fade is soft
+  for (const f of scene.fogBands) {
+    const fy = f.yFrac * h;
+    for (const fx of [f.xFrac * w, f.xFrac * w - w]) {
+      const grad = ctx.createLinearGradient(fx - w * FOG_BAND_WIDTH / 2, 0, fx + w * FOG_BAND_WIDTH / 2, 0);
+      grad.addColorStop(0, 'rgba(200,200,210,0)');
+      grad.addColorStop(0.5, `rgba(200,200,210,${f.opacity.toFixed(3)})`);
+      grad.addColorStop(1, 'rgba(200,200,210,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, fy - h * 0.03, w, h * 0.06);
+    }
+  }
+
+  // Bare trees -- forking branches rather than Forest's solid canopy, so
+  // the two scenes read as visually distinct silhouettes.
+  for (const tr of scene.trees) {
+    const baseX = tr.xFrac * w;
+    const treeH = tr.heightFrac * h;
+    const baseY = h;
+    const topY = baseY - treeH;
+    const sway = Math.sin(t * tr.swaySpeed + tr.swayPhase) * tr.swayAmount;
+    ctx.strokeStyle = HALLOWEEN_CONFIG.TREE_COLOR;
+    ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(2, tr.widthFrac * w);
+    ctx.beginPath();
+    ctx.moveTo(baseX, baseY);
+    ctx.lineTo(baseX + sway, topY);
+    ctx.stroke();
+    const branchCount = 3 + Math.floor(tr.branchSeed * 3);
+    for (let i = 0; i < branchCount; i++) {
+      const along = 0.35 + (i / branchCount) * 0.6;
+      const fromX = baseX + sway * along;
+      const fromY = baseY - treeH * along;
+      const side = i % 2 === 0 ? 1 : -1;
+      const branchLen = treeH * (0.16 + 0.1 * ((tr.branchSeed * (i + 1) * 37) % 1));
+      const toX = fromX + side * branchLen * 0.7 + sway * 0.3;
+      const toY = fromY - branchLen * 0.7;
+      ctx.lineWidth = Math.max(1, tr.widthFrac * w * 0.4);
+      ctx.beginPath();
+      ctx.moveTo(fromX, fromY);
+      ctx.lineTo(toX, toY);
+      ctx.stroke();
+    }
+  }
+
+  ctx.fillStyle = HALLOWEEN_CONFIG.GROUND_COLOR;
+  ctx.fillRect(0, h - 6, w, 6);
+
+  // Jack-o'-lanterns -- same flicker technique as the birthday candle and
+  // forest fireflies (layered sine noise), sitting on the ground line.
+  for (const p of scene.pumpkins) {
+    const px = p.xFrac * w;
+    const r = p.sizeFrac * Math.min(w, h);
+    // Anchored from the ellipse's own rendered vertical radius (r * 0.82,
+    // matching the ellipse call below) rather than a separate h-based
+    // offset -- those disagreed on portrait canvases (min(w,h) = w there),
+    // leaving every pumpkin visibly floating above the ground line
+    // (review catch, PR #70).
+    const py = h - 6 - r * 0.82;
+    const flicker = 0.75 + 0.25 * Math.sin(t * 0.15 + p.flickerPhase) * Math.sin(t * 0.047 + p.flickerPhase * 1.3);
+
+    const glow = ctx.createRadialGradient(px, py, 0, px, py, r * 3);
+    glow.addColorStop(0, `rgba(255, 170, 60, ${(0.4 * flicker).toFixed(3)})`);
+    glow.addColorStop(1, 'rgba(255, 170, 60, 0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(px, py, r * 3, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.ellipse(px, py, r, r * 0.82, 0, 0, Math.PI * 2);
+    ctx.fillStyle = HALLOWEEN_CONFIG.PUMPKIN_COLOR;
+    ctx.fill();
+
+    ctx.fillStyle = `rgba(255, 210, 120, ${(0.55 + 0.45 * flicker).toFixed(3)})`;
+    const eyeW = r * 0.28, eyeH = r * 0.32;
+    ctx.beginPath();
+    ctx.moveTo(px - r * 0.42, py - r * 0.1);
+    ctx.lineTo(px - r * 0.42 + eyeW, py - r * 0.1);
+    ctx.lineTo(px - r * 0.42 + eyeW * 0.5, py - r * 0.1 - eyeH);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(px + r * 0.42, py - r * 0.1);
+    ctx.lineTo(px + r * 0.42 - eyeW, py - r * 0.1);
+    ctx.lineTo(px + r * 0.42 - eyeW * 0.5, py - r * 0.1 - eyeH);
+    ctx.closePath();
+    ctx.fill();
+    // A jagged zigzag mouth, same fill as the eyes.
+    ctx.beginPath();
+    ctx.moveTo(px - r * 0.45, py + r * 0.35);
+    ctx.lineTo(px - r * 0.28, py + r * 0.2);
+    ctx.lineTo(px - r * 0.12, py + r * 0.35);
+    ctx.lineTo(px + r * 0.05, py + r * 0.2);
+    ctx.lineTo(px + r * 0.22, py + r * 0.35);
+    ctx.lineTo(px + r * 0.4, py + r * 0.22);
+    ctx.lineTo(px + r * 0.4, py + r * 0.38);
+    ctx.lineTo(px - r * 0.45, py + r * 0.38);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
 // startX lets the wave-complete instant fill drop objects already on-screen;
 // the normal trickle-spawn omits it so objects drift in from off-screen.
 function spawnSpaceObject(startX) {
@@ -10201,6 +10459,7 @@ function update() {
   updateForestScene();
   updateBeachScene();
   updateBirthdayScene();
+  updateHalloweenScene();
   // Asteroids/satellites/comets only drift through once the whole wave's
   // line-galaxy is complete — they'd be a distraction while still connecting.
   if (STATE.phase === 'WAVE_COMPLETE') { updateSpaceObjects(); updateCelestialBodies(); }
@@ -10265,6 +10524,8 @@ function render() {
     drawBeachScene();
   } else if (STATE.scene === 'birthday') {
     drawBirthdayScene();
+  } else if (STATE.scene === 'halloween') {
+    drawHalloweenScene();
   } else {
     drawStars();
     if (STATE.phase === 'WAVE_COMPLETE') { drawCelestialBodies(); drawSpaceObjects(); }

@@ -6224,6 +6224,140 @@ test('birthday balloons sway by their configured fraction of screen width, not a
   expect(errors).toEqual([]);
 });
 
+test('the Halloween scene generates and draws without error, sharing the moon/starfield with Forest', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'halloween';
+    STATE.halloweenScene = generateHalloweenScene();
+    for (let i = 0; i < 60; i++) updateHalloweenScene(); // give the bats/fog somewhere to have moved to
+    drawHalloweenScene(); // throws if anything in the draw path is broken
+    return {
+      hasTrees: STATE.halloweenScene.trees.length > 0,
+      hasPumpkins: STATE.halloweenScene.pumpkins.length > 0,
+      hasBats: STATE.halloweenScene.bats.length > 0,
+      hasFogBands: STATE.halloweenScene.fogBands.length > 0,
+      phaseAdvanced: STATE.halloweenScene.phase === 60,
+      moonHelperShared: typeof drawNightMoon === 'function',
+    };
+  });
+
+  expect(result.hasTrees).toBe(true);
+  expect(result.hasPumpkins).toBe(true);
+  expect(result.hasBats).toBe(true);
+  expect(result.hasFogBands).toBe(true);
+  expect(result.phaseAdvanced).toBe(true);
+  expect(result.moonHelperShared).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('Halloween bats wrap to the opposite edge instead of resetting mid-flight, keeping their direction', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.scene = 'halloween';
+    STATE.halloweenScene = generateHalloweenScene();
+    // Force one bat right at the edge of wrapping, moving rightward.
+    const bat = STATE.halloweenScene.bats[0];
+    bat.xFrac = 1.079;
+    bat.direction = 1;
+    bat.speed = 0.01;
+    const directionBefore = bat.direction;
+    updateHalloweenScene();
+    const wrapped = bat.xFrac < 0;
+    const directionAfter = bat.direction;
+    return { wrapped, directionBefore, directionAfter };
+  });
+
+  expect(result.wrapped).toBe(true);
+  expect(result.directionAfter).toBe(result.directionBefore);
+  expect(errors).toEqual([]);
+});
+
+test('Halloween pumpkins sit on the ground line instead of floating above it on portrait canvases (review catch, PR #70)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 400; canvas.height = 800; // portrait -- min(w,h) = w, the case that exposed the bug
+    STATE.scene = 'halloween';
+    STATE.halloweenScene = generateHalloweenScene();
+
+    const ellipseCalls = [];
+    const originalEllipse = CanvasRenderingContext2D.prototype.ellipse;
+    CanvasRenderingContext2D.prototype.ellipse = function (x, y, rx, ry, ...rest) {
+      ellipseCalls.push({ y, ry });
+      return originalEllipse.call(this, x, y, rx, ry, ...rest);
+    };
+    try {
+      drawHalloweenScene();
+    } finally {
+      CanvasRenderingContext2D.prototype.ellipse = originalEllipse;
+    }
+
+    const groundY = canvas.height - 6;
+    // Each pumpkin draws exactly one ellipse (the body) -- its bottom
+    // (y + ry) should land right on the ground line, not float above it.
+    const gaps = ellipseCalls.map(c => Math.abs((c.y + c.ry) - groundY));
+    return { pumpkinCount: STATE.halloweenScene.pumpkins.length, ellipseCallCount: ellipseCalls.length, maxGap: Math.max(...gaps) };
+  });
+
+  expect(result.pumpkinCount).toBeGreaterThan(0);
+  expect(result.ellipseCallCount).toBe(result.pumpkinCount);
+  expect(result.maxGap).toBeLessThan(0.5); // sub-pixel float rounding only
+  expect(errors).toEqual([]);
+});
+
+test('Halloween ground fog stays at least partially visible through its whole drift cycle, not just part of it (review catch, PR #70)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'halloween';
+    STATE.halloweenScene = generateHalloweenScene();
+    const fogY = Math.round(0.8 * canvas.height);
+
+    // Everything else in the scene (sky, moon, stars, trees) is fully
+    // opaque already, so a raw alpha check can't tell fog-present from
+    // fog-absent -- diff each fogged frame against a no-fog baseline of
+    // the exact same scene instead, isolating just the fog's own
+    // contribution to that row's pixels.
+    STATE.halloweenScene.fogBands = [];
+    drawHalloweenScene();
+    const baseline = Array.from(ctx.getImageData(0, fogY, canvas.width, 1).data);
+
+    const maxDiffAtEachXFrac = [];
+    for (let i = 0; i <= 20; i++) {
+      STATE.halloweenScene.fogBands = [{ yFrac: fogY / canvas.height, xFrac: i / 20, speed: 0, opacity: 1 }];
+      drawHalloweenScene();
+      const row = ctx.getImageData(0, fogY, canvas.width, 1).data;
+      let maxDiff = 0;
+      for (let px = 0; px < canvas.width; px++) {
+        const diff = Math.abs(row[px * 4] - baseline[px * 4])
+          + Math.abs(row[px * 4 + 1] - baseline[px * 4 + 1])
+          + Math.abs(row[px * 4 + 2] - baseline[px * 4 + 2]);
+        maxDiff = Math.max(maxDiff, diff);
+      }
+      maxDiffAtEachXFrac.push(maxDiff);
+    }
+    return { worstCaseDiff: Math.min(...maxDiffAtEachXFrac) };
+  });
+
+  // If the band ever fully disappears at some xFrac, that frame's row is
+  // pixel-identical to the no-fog baseline (diff 0) -- exactly the bug
+  // the duplicate-copy fix (drawHalloweenScene's fog loop) prevents.
+  expect(result.worstCaseDiff).toBeGreaterThan(5);
+  expect(errors).toEqual([]);
+});
+
 // ------------------------------------------------------------
 // Rotate mode's per-scene block schedule (see resolveSceneForWave/
 // sceneWaveCount) -- each scene holds for as many consecutive waves as it
@@ -6239,19 +6373,20 @@ test('Rotate mode holds each scene for as many waves as it has ambient sounds, t
   const scenes = await page.evaluate(() => {
     STATE.sceneMode = 'rotate';
     const result = [];
-    for (let wave = 1; wave <= 17; wave++) result.push(resolveSceneForWave(wave));
+    for (let wave = 1; wave <= 22; wave++) result.push(resolveSceneForWave(wave));
     return result;
   });
 
-  // space:1, forest:5, beach:5, birthday:5 (each scene's
+  // space:1, forest:5, beach:5, birthday:5, halloween:5 (each scene's
   // SCENE_AMBIENT_CONFIG.<scene>.order.length + one bonus wave -- see
-  // sceneWaveCount), then the cycle (length 16) wraps back to space at
-  // wave 17.
+  // sceneWaveCount), then the cycle (length 21) wraps back to space at
+  // wave 22.
   expect(scenes).toEqual([
     'space',
     'forest', 'forest', 'forest', 'forest', 'forest',
     'beach', 'beach', 'beach', 'beach', 'beach',
     'birthday', 'birthday', 'birthday', 'birthday', 'birthday',
+    'halloween', 'halloween', 'halloween', 'halloween', 'halloween',
     'space',
   ]);
   expect(errors).toEqual([]);
@@ -6500,11 +6635,13 @@ test('activeSceneList only narrows things down under Sleep mode -- every other d
   expect(result.perDifficulty.relaxed).toEqual(result.fullList);
   expect(result.perDifficulty.normal).toEqual(result.fullList);
   expect(result.perDifficulty.intense).toEqual(result.fullList);
-  // Birthday (party horns, upbeat crowd noise) is the first non-sleep-safe
-  // scene shipped -- Sleep mode should narrow it out while every other
-  // difficulty still offers it.
-  expect(result.perDifficulty.sleep).toEqual(result.fullList.filter(s => s !== 'birthday'));
-  expect(result.perDifficulty.sleep).not.toContain('birthday');
+  // Birthday (party horns, upbeat crowd noise) and Halloween (wolf howls,
+  // raven caws -- gentle, but "spooky" still trades on a little tension)
+  // are the non-sleep-safe scenes shipped so far -- Sleep mode should
+  // narrow both out while every other difficulty still offers them.
+  const nonSleepSafe = ['birthday', 'halloween'];
+  expect(result.perDifficulty.sleep).toEqual(result.fullList.filter(s => !nonSleepSafe.includes(s)));
+  for (const scene of nonSleepSafe) expect(result.perDifficulty.sleep).not.toContain(scene);
   expect(errors).toEqual([]);
 });
 

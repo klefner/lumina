@@ -136,6 +136,34 @@ path for "sometimes synthesized."
 Crowd and balloon loop continuously; horn and cork are rarer one-shot
 retriggers.
 
+## Halloween ambience (sounds/ambient/halloween-*.mp3)
+
+Four real recordings again, cozy-spooky rather than horror (see
+`SLEEP_SAFE_SCENES`/`HALLOWEEN_CONFIG` in game.js for why that mood
+still keeps the scene out of Sleep mode):
+
+- `halloween-wind.mp3` — "windy day recording from under a heap of dry
+  leaves," a field recording from
+  [Berlin, Germany](https://archive.org/details/aporee_72432_84581),
+  Creative Commons Attribution 3.0 (credited here; every recording in
+  this directory is credited regardless of what its license requires).
+  Trimmed from a ~3-minute original.
+- `halloween-creak.mp3` — "Creaky Wood," from
+  [Red Library: Creaks](https://archive.org/details/Red_Library_Creaks)
+  (USC Cinema / Sunset Editorial Collection), CC0.
+- `halloween-wolfhowl.mp3` — a distant wolf-pack howl, trimmed from
+  ["Wolves Howl,"](https://archive.org/details/WolvesHowl_571) U.S. Fish
+  and Wildlife Service, public domain (US government work) — same
+  category of source as the beach whale call above.
+- `halloween-raven.mp3` — a single crow/raven caw, from
+  [Various Bird Sounds](https://archive.org/details/various-bird-sounds)
+  (cl0udn0te), CC0.
+
+Wind loops continuously; creak, howl, and raven are rarer one-shot
+retriggers, all easing in over the same short fade
+(`AMBIENT_VARIATION.EVENT_FADE_IN_SEC`) every event sound in the game
+uses now.
+
 ## The lofi genre family's instruments (rhodes, lofibass, lofikit)
 
 Not recordings — synthesized entirely in-browser (game.js,
