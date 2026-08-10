@@ -109,6 +109,91 @@ test('the score display reads "Score: <n>" once points are on the board', async 
   expect(errors).toEqual([]);
 });
 
+test('#scene-progress-display names the current background and counts its waves, hidden on the title screen and under Sleep mode (player request)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  // Hidden before a game starts.
+  await expect(page.locator('#scene-progress-display')).toHaveText('');
+
+  const result = await page.evaluate(() => {
+    STATE.sceneMode = 'beach';
+    STATE.difficulty = 'normal';
+    startWave(1);
+    const total = sceneWaveCount(STATE.scene);
+    const first = document.getElementById('scene-progress-display').textContent;
+
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete();
+    startWave(2);
+    const second = document.getElementById('scene-progress-display').textContent;
+
+    STATE.difficulty = 'sleep';
+    updateWaveDisplay();
+    const underSleep = document.getElementById('scene-progress-display').textContent;
+
+    return { total, first, second, underSleep };
+  });
+
+  expect(result.first).toBe(`Beach at Night 1 of ${result.total} waves`);
+  expect(result.second).toBe(`Beach at Night 2 of ${result.total} waves`);
+  expect(result.underSleep).toBe('');
+  expect(errors).toEqual([]);
+});
+
+test('#scene-progress-display stays hidden in Cockpit Mode, which never resolves STATE.scene (review catch, PR #76)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.sceneMode = 'forest';
+    STATE.difficulty = 'normal';
+    STATE.cockpitMode = true;
+    startWave(1);
+    return document.getElementById('scene-progress-display').textContent;
+  });
+
+  expect(result).toBe('');
+  expect(errors).toEqual([]);
+});
+
+test('Restart Current Level under Rotate mode does not inflate the scene wave counter (review catch, PR #76)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.sceneMode = 'rotate';
+    STATE.difficulty = 'normal';
+    startWave(1); // wave 1 is always the first Rotate-mode scene (space), 1 of 1
+
+    STATE.sceneMode = 'rotate';
+    startWave(2); // first wave of the next scene's block
+    const total = sceneWaveCount(STATE.scene);
+    const beforeComplete = document.getElementById('scene-progress-display').textContent;
+
+    // Finishing the wave (see checkWaveComplete) advances STATE.ambienceStreak
+    // immediately, before the player picks what to do next.
+    for (const dot of STATE.dots) dot.connected = true;
+    checkWaveComplete();
+
+    // Restart Current Level (see handleRestartCurrentLevel) deliberately
+    // keeps the streak as-is and replays the exact same wave number --
+    // the displayed position must come back unchanged, not advanced.
+    startWave(2);
+    const afterRestart = document.getElementById('scene-progress-display').textContent;
+
+    return { total, beforeComplete, afterRestart };
+  });
+
+  expect(result.beforeComplete).not.toBe('');
+  expect(result.afterRestart).toBe(result.beforeComplete);
+  expect(errors).toEqual([]);
+});
+
 // Regression guard for a defect where a completed connection's stored
 // line/segments could trail off short of the dot it was actually drawn
 // to. Root cause: the recorded path only ever gained points from move

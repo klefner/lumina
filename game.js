@@ -3588,6 +3588,15 @@ const SCENE_COMPLETE_CELEBRATIONS = {
 };
 const SCENE_DISPLAY_NAMES = { space: 'Space', forest: 'Forest', beach: 'Beach', birthday: 'Birthday', halloween: 'Halloween', christmas: 'Christmas' };
 
+// Full names matching the title screen's own scene-selector option text
+// (see index.html) -- used by #scene-progress-display below, which names
+// the actual scene being played, not the shorter toast-label wording
+// SCENE_DISPLAY_NAMES uses ("Beach at Night", not just "Beach").
+const SCENE_HUD_NAMES = {
+  space: 'Space', forest: 'Night Forest', beach: 'Beach at Night',
+  birthday: 'Birthday Party', halloween: 'Halloween', christmas: 'Christmas',
+};
+
 function queueSceneCompleteToast(scene) {
   const celebration = SCENE_COMPLETE_CELEBRATIONS[scene];
   if (!celebration) return;
@@ -10758,6 +10767,38 @@ function updateWaveDisplay() {
   // competitive thinking, which works against that (player request).
   document.getElementById('score-display').textContent =
     (STATE.difficulty !== 'sleep' && STATE.score > 0) ? `Score: ${STATE.score}` : '';
+  // Which wave of the current background's set this is (player request) --
+  // same visibility rule as the score above (hidden pre-game and under
+  // Sleep, which wants minimal UI), and hidden in Cockpit Mode too (review
+  // catch, PR #76): Cockpit's own startWave path never resolves STATE.scene
+  // at all -- it renders its own separate Three.js scene, none of the
+  // selectable backgrounds -- so this would just show stale leftover state
+  // from whatever classic-mode scene played last, or the STATE.scene
+  // default before any classic wave has ever run.
+  //
+  // The numerator can't just be STATE.ambienceStreak, either: it advances
+  // the instant all dots connect (see checkWaveComplete), before the player
+  // chooses what to do next, and Restart Current Level deliberately leaves
+  // it untouched afterward (a genuine retry shouldn't silence a sound
+  // layer that already unlocked -- see resetSceneAmbience's own comment).
+  // That means a completed-then-restarted wave shows a streak one ahead of
+  // the wave actually being replayed (review catch, PR #76) -- repeat it
+  // enough times under Rotate mode and the counter reaches "N of N" without
+  // the scene ever actually advancing. resolveSceneBlock(STATE.wave)'s own
+  // blockPosition has no such drift: it's pure arithmetic on the absolute
+  // wave number, recomputed fresh every call, so a restart that keeps
+  // STATE.wave unchanged always gets the same correct position back. Only
+  // meaningful under Rotate, though -- a fixed scene pick has no "block" to
+  // be positioned within (resolveSceneBlock always returns 0 there), so it
+  // keeps using the streak, same as before.
+  const sceneTotal = sceneWaveCount(STATE.scene);
+  const sceneOrdinal = STATE.sceneMode === 'rotate'
+    ? resolveSceneBlock(STATE.wave).blockPosition + 1
+    : STATE.ambienceStreak + 1;
+  document.getElementById('scene-progress-display').textContent =
+    (STATE.difficulty !== 'sleep' && STATE.phase !== 'TITLE' && !STATE.cockpitMode)
+      ? `${SCENE_HUD_NAMES[STATE.scene]} ${Math.min(sceneOrdinal, sceneTotal)} of ${sceneTotal} waves`
+      : '';
   // Playtest feedback aid, not a permanent gameplay element -- lets a
   // player name which specific generated song (family + seed) they're
   // hearing, so "this one didn't come together" is reportable instead of

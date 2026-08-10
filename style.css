@@ -239,9 +239,12 @@ html, body {
 /* The song's family + seed name (e.g. "lofi — late study") for this wave --
    a debugging/feedback aid so a playtester can name which specific
    generated songs land and which don't, not a permanent gameplay HUD
-   element. Inherits #ui-overlay's own small/dim/uppercase styling (no
-   override here) rather than #wave-display's bold white treatment, so it
-   reads as secondary information under the wave number. */
+   element. Used to inherit #ui-overlay's dim/small styling to read as
+   secondary under the wave number; now shares the same bright treatment
+   as the rest of #left-col (see #wave-display, #scene-progress-display,
+   #song-name-display, #score-display below) -- player request: everything
+   in this column should sit at one consistent brightness, not have one
+   dim outlier. */
 #song-name-display {
   min-height: 14px;
 }
@@ -398,11 +401,14 @@ html, body {
   outline-offset: 2px;
 }
 
-/* Wave/score readout -- solid white and bold rather than the dim, small
-   uppercase label styling #ui-overlay uses for everything else, since these
-   two are the player's primary at-a-glance stats and were hard to read
-   against a busy starfield. */
-#wave-display, #score-display {
+/* The whole left column -- wave number, current background + its own
+   wave-of-total counter, song name, score -- solid white and bold rather
+   than the dim, small uppercase label styling #ui-overlay uses for
+   everything else, since this whole column is the player's primary
+   at-a-glance status and was hard to read against a busy starfield.
+   Deliberately one shared brightness for all four rather than some
+   dimmer/secondary than others (player request). */
+#wave-display, #scene-progress-display, #song-name-display, #score-display {
   color: #ffffff;
   font-weight: 700;
   font-size: 16px;
