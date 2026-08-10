@@ -6544,20 +6544,29 @@ test('the Halloween scene generates and draws without error, sharing the moon/st
     drawHalloweenScene(); // throws if anything in the draw path is broken
     return {
       hasTrees: STATE.halloweenScene.trees.length > 0,
-      hasPumpkins: STATE.halloweenScene.pumpkins.length > 0,
       hasBats: STATE.halloweenScene.bats.length > 0,
+      hasGhosts: STATE.halloweenScene.ghosts.length > 0,
+      hasWitches: STATE.halloweenScene.witches.length > 0,
       hasFogBands: STATE.halloweenScene.fogBands.length > 0,
       phaseAdvanced: STATE.halloweenScene.phase === 60,
       moonHelperShared: typeof drawNightMoon === 'function',
+      // Pumpkins are celebration-only now (player report: present during
+      // ordinary play, read as connectable dots) -- confirm none exist
+      // in ordinary scene state.
+      celebrating: STATE.halloweenScene.celebrating,
+      celebrationPumpkins: STATE.halloweenScene.celebrationPumpkins,
     };
   });
 
   expect(result.hasTrees).toBe(true);
-  expect(result.hasPumpkins).toBe(true);
   expect(result.hasBats).toBe(true);
+  expect(result.hasGhosts).toBe(true);
+  expect(result.hasWitches).toBe(true);
   expect(result.hasFogBands).toBe(true);
   expect(result.phaseAdvanced).toBe(true);
   expect(result.moonHelperShared).toBe(true);
+  expect(result.celebrating).toBe(false);
+  expect(result.celebrationPumpkins).toBe(null);
   expect(errors).toEqual([]);
 });
 
@@ -6586,7 +6595,46 @@ test('Halloween bats wrap to the opposite edge instead of resetting mid-flight, 
   expect(errors).toEqual([]);
 });
 
-test('Halloween pumpkins sit clustered together on their haybale, which itself sits flush on the ground line, on portrait canvases (redesign of PR #70s own regression test: pumpkins now cluster on a haybale instead of sitting solo on the ground line -- player report, individually glowing pumpkins read as connectable dots)', async ({ page }) => {
+test('Halloween ghosts drift and wrap, witches on brooms wrap keeping their direction (new ambient decorations, player request)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.scene = 'halloween';
+    STATE.halloweenScene = generateHalloweenScene();
+
+    const ghost = STATE.halloweenScene.ghosts[0];
+    ghost.xFrac = 1.099;
+    ghost.driftSpeed = 0.05;
+    updateHalloweenScene();
+    const ghostWrapped = ghost.xFrac < 0;
+
+    const witch = STATE.halloweenScene.witches[0];
+    witch.xFrac = 1.099;
+    witch.direction = 1;
+    witch.speed = 0.05;
+    const witchDirectionBefore = witch.direction;
+    updateHalloweenScene();
+    const witchWrapped = witch.xFrac < 0;
+
+    drawHalloweenScene(); // throws if the new draw paths are broken
+
+    return {
+      ghostWrapped,
+      witchWrapped,
+      witchDirectionAfter: witch.direction,
+      witchDirectionBefore,
+    };
+  });
+
+  expect(result.ghostWrapped).toBe(true);
+  expect(result.witchWrapped).toBe(true);
+  expect(result.witchDirectionAfter).toBe(result.witchDirectionBefore);
+  expect(errors).toEqual([]);
+});
+
+test('Halloween pumpkins only appear as a WAVE_COMPLETE celebration once the scene finishes revealing its ambient set, clustered together on a haybale that sits flush on the ground line, and never appear during ordinary play (player report: pumpkins present throughout play were mistaken for connectable dots -- same fix as the Birthday balloon celebration)', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
@@ -6594,12 +6642,24 @@ test('Halloween pumpkins sit clustered together on their haybale, which itself s
   const result = await page.evaluate(() => {
     canvas.width = 400; canvas.height = 800; // portrait -- min(w,h) = w, the case PR #70 exposed
     STATE.scene = 'halloween';
+    STATE.sceneMode = 'fixed';
     STATE.halloweenScene = generateHalloweenScene();
+
+    const notCelebratingYet = STATE.halloweenScene.celebrating === false
+      && STATE.halloweenScene.celebrationPumpkins === null;
+
+    // Drive the ambient reveal streak to one short of complete, then
+    // complete it -- the same trigger the celebration balloons use.
+    STATE.ambienceStreak = SCENE_AMBIENT_CONFIG.halloween.order.length - 1;
+    updateSceneAmbienceForWaveComplete();
+    // Let the entrance pop-in animation finish so the geometry below
+    // reflects the pumpkins' full, settled size.
+    for (let i = 0; i < 60; i++) updateHalloweenScene();
 
     const ellipseCalls = [];
     const originalEllipse = CanvasRenderingContext2D.prototype.ellipse;
     CanvasRenderingContext2D.prototype.ellipse = function (x, y, rx, ry, ...rest) {
-      ellipseCalls.push({ y, ry });
+      ellipseCalls.push({ x, y, rx, ry });
       return originalEllipse.call(this, x, y, rx, ry, ...rest);
     };
     try {
@@ -6609,8 +6669,6 @@ test('Halloween pumpkins sit clustered together on their haybale, which itself s
     }
 
     const groundY = canvas.height - 6;
-    const haleH = 0.02 * canvas.height;
-    const haleTopY = groundY - 2 * haleH;
 
     // The haybale draws first, before any pumpkin -- its bottom (y + ry)
     // should land right on the ground line.
@@ -6618,17 +6676,33 @@ test('Halloween pumpkins sit clustered together on their haybale, which itself s
     const haybaleGap = Math.abs((haybaleCall.y + haybaleCall.ry) - groundY);
 
     // Every pumpkin lobe after it (4 per pumpkin, see drawHalloweenScene)
-    // should have its own bottom land right on the haybale's top surface.
+    // should have its own bottom land on the haybale's LOCAL curved surface
+    // at that lobe group's x-position -- not just the ellipse's global
+    // bounding-box top, which only matches at the exact center (review
+    // catch: outer pumpkins in a 3-4 pumpkin cluster were floating above
+    // the curve since the flat top was used everywhere).
     const lobeCalls = ellipseCalls.slice(1);
-    const maxPumpkinGap = Math.max(...lobeCalls.map(c => Math.abs((c.y + c.ry) - haleTopY)));
+    const gaps = [];
+    for (let i = 0; i < lobeCalls.length; i += 4) {
+      const group = lobeCalls.slice(i, i + 4);
+      const px = group.reduce((sum, c) => sum + c.x, 0) / group.length;
+      const ratio = Math.max(-1, Math.min(1, (px - haybaleCall.x) / haybaleCall.rx));
+      const supportY = haybaleCall.y - haybaleCall.ry * Math.sqrt(Math.max(0, 1 - ratio * ratio));
+      for (const c of group) gaps.push(Math.abs((c.y + c.ry) - supportY));
+    }
 
     return {
-      pumpkinCount: STATE.halloweenScene.pumpkins.length,
+      notCelebratingYet,
+      celebrating: STATE.halloweenScene.celebrating,
+      pumpkinCount: STATE.halloweenScene.celebrationPumpkins.pumpkins.length,
       lobeCallCount: lobeCalls.length,
       haybaleGap,
-      maxPumpkinGap,
+      maxPumpkinGap: Math.max(...gaps),
     };
   });
+
+  expect(result.notCelebratingYet).toBe(true);
+  expect(result.celebrating).toBe(true);
 
   expect(result.pumpkinCount).toBeGreaterThan(0);
   expect(result.lobeCallCount).toBe(result.pumpkinCount * 4); // 4 lobes per pumpkin body
@@ -6852,20 +6926,21 @@ test('Rotate mode holds each scene for as many waves as it has ambient sounds, t
   const scenes = await page.evaluate(() => {
     STATE.sceneMode = 'rotate';
     const result = [];
-    for (let wave = 1; wave <= 27; wave++) result.push(resolveSceneForWave(wave));
+    for (let wave = 1; wave <= 28; wave++) result.push(resolveSceneForWave(wave));
     return result;
   });
 
-  // space:1, forest:5, beach:5, birthday:5, halloween:5, christmas:5 (each
+  // space:1, forest:5, beach:5, birthday:5, halloween:6, christmas:5 (each
   // scene's SCENE_AMBIENT_CONFIG.<scene>.order.length + one bonus wave --
-  // see sceneWaveCount), then the cycle (length 26) wraps back to space at
-  // wave 27.
+  // see sceneWaveCount; halloween grew to 5 ambient layers with the
+  // ghost/witch-cackle/trick-or-treat redesign), then the cycle (length 27)
+  // wraps back to space at wave 28.
   expect(scenes).toEqual([
     'space',
     'forest', 'forest', 'forest', 'forest', 'forest',
     'beach', 'beach', 'beach', 'beach', 'beach',
     'birthday', 'birthday', 'birthday', 'birthday', 'birthday',
-    'halloween', 'halloween', 'halloween', 'halloween', 'halloween',
+    'halloween', 'halloween', 'halloween', 'halloween', 'halloween', 'halloween',
     'christmas', 'christmas', 'christmas', 'christmas', 'christmas',
     'space',
   ]);

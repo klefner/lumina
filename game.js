@@ -3391,17 +3391,24 @@ const SCENE_AMBIENT_CONFIG = {
       cork: { file: 'birthday-cork.mp3', gain: 0.5, isEvent: true, minGapSec: 20, maxGapSec: 45 },
     },
   },
-  // Cozy-spooky rather than horror -- a gentle autumn wind floor with three
-  // occasional atmospheric events (creak/howl/caw). Not in SLEEP_SAFE_SCENES:
-  // even kept gentle, "spooky" trades on a little tension that cuts against
-  // Sleep mode's calm/low-arousal goal in a way Forest's owl doesn't.
+  // Cozy-spooky rather than horror -- a gentle autumn wind + trick-or-treat
+  // floor with three occasional atmospheric events (creak/ghost moan/witch
+  // cackle). Not in SLEEP_SAFE_SCENES: even kept gentle, "spooky" trades on
+  // a little tension that cuts against Sleep mode's calm/low-arousal goal
+  // in a way Forest's owl doesn't. Player-requested swap (wolf howl/raven
+  // out, ghost/witch/kids in) for a set that actually sounds like Halloween
+  // rather than generic nighttime woods -- see sounds/CREDITS.md.
   halloween: {
-    order: ['wind', 'creak', 'howl', 'raven'],
+    order: ['wind', 'trickortreat', 'creak', 'ghost', 'witchcackle'],
     sounds: {
       wind: { file: 'halloween-wind.mp3', gain: 0.5, isEvent: false },
+      trickortreat: { file: 'halloween-trickortreat.mp3', gain: 0.4, isEvent: false },
       creak: { file: 'halloween-creak.mp3', gain: 0.6, isEvent: true, minGapSec: 14, maxGapSec: 34 },
-      howl: { file: 'halloween-wolfhowl.mp3', gain: 0.5, isEvent: true, minGapSec: 28, maxGapSec: 60 },
-      raven: { file: 'halloween-raven.mp3', gain: 0.65, isEvent: true, minGapSec: 10, maxGapSec: 26 },
+      ghost: { file: 'halloween-ghost.mp3', gain: 0.5, isEvent: true, minGapSec: 26, maxGapSec: 58 },
+      // Already mixed to read as "in the distance" in the file itself
+      // (low-pass + soft echo tail baked in during sourcing, not just
+      // gain here) -- see sounds/CREDITS.md.
+      witchcackle: { file: 'halloween-witchcackle.mp3', gain: 0.55, isEvent: true, minGapSec: 34, maxGapSec: 70 },
     },
   },
   // Genuinely calm -- already in SLEEP_SAFE_SCENES -- unlike Birthday/
@@ -3698,8 +3705,17 @@ function updateSceneAmbienceForWaveComplete() {
   if (STATE.ambienceStreak < config.order.length) {
     STATE.ambienceStreak++;
     startSceneAmbienceLayer(STATE.scene, config.order[STATE.ambienceStreak - 1]);
-    if (STATE.ambienceStreak === config.order.length && STATE.sceneMode === 'rotate') {
-      queueSceneCompleteToast(STATE.scene);
+    if (STATE.ambienceStreak === config.order.length) {
+      if (STATE.sceneMode === 'rotate') queueSceneCompleteToast(STATE.scene);
+      // Halloween's jack-o'-lanterns only ever exist as this one-time
+      // celebration burst (see generateCelebrationPumpkins()) -- same
+      // pattern, and same player report, as Birthday's celebration
+      // balloons: nothing round/glowing should be on screen during
+      // ordinary play, where it could read as a connectable dot.
+      if (STATE.scene === 'halloween' && STATE.halloweenScene) {
+        STATE.halloweenScene.celebrating = true;
+        STATE.halloweenScene.celebrationPumpkins = generateCelebrationPumpkins();
+      }
     }
   }
 }
@@ -9218,21 +9234,48 @@ function generateHalloweenScene() {
     });
   }
 
-  // Pumpkins sit together in one cluster on a haybale, not spread
-  // independently across the ground -- a cluster silhouette reads as "one
-  // porch/yard display," the same principle the Birthday scene's balloon
-  // bouquets use, rather than several separate glowing round things that
-  // could be mistaken for connectable dots (player report).
-  const pumpkinCount = 2 + Math.floor(Math.random() * 3); // 2-4
-  const pumpkins = [];
-  for (let i = 0; i < pumpkinCount; i++) {
-    pumpkins.push({
-      dxFrac: (i - (pumpkinCount - 1) / 2) * 0.045 + (Math.random() - 0.5) * 0.012,
-      sizeFrac: 0.026 + Math.random() * 0.012,
-      flickerPhase: Math.random() * Math.PI * 2,
+  // Pumpkins no longer sit out on the ground during ordinary play at all --
+  // even clustered on a haybale, a glowing carved shape near the dot field
+  // still read as "maybe connectable" to a low-vision player (report: same
+  // complaint that already got the Birthday balloons moved to a
+  // wave-complete-only celebration). They're generated fresh, on demand,
+  // by generateCelebrationPumpkins() only when that celebration triggers --
+  // see updateSceneAmbienceForWaveComplete().
+
+  const ghostCount = 2 + Math.floor(Math.random() * 2); // 2-3
+  const ghosts = [];
+  for (let i = 0; i < ghostCount; i++) {
+    ghosts.push({
+      xFrac: Math.random(),
+      baseYFrac: 0.15 + Math.random() * 0.4,
+      driftSpeed: (Math.random() < 0.5 ? -1 : 1) * (0.00015 + Math.random() * 0.00015),
+      bobPhase: Math.random() * Math.PI * 2,
+      bobSpeed: 0.0015 + Math.random() * 0.001,
+      bobAmount: 0.015 + Math.random() * 0.015,
+      sizeFrac: 0.028 + Math.random() * 0.014,
+      wavePhase: Math.random() * Math.PI * 2,
     });
   }
-  const clusterXFrac = 0.15 + Math.random() * 0.7;
+
+  // A witch on a broom -- usually one, occasionally two -- staying high in
+  // the moon band rather than drifting down into the dot field. Its
+  // silhouette (broom + cloak + hat, see drawHalloweenScene) is
+  // deliberately multi-part and non-circular for the same dots-vs-decor
+  // reason the ghosts and ex-pumpkins needed to change shape.
+  const witchCount = 1 + (Math.random() < 0.4 ? 1 : 0);
+  const witches = [];
+  for (let i = 0; i < witchCount; i++) {
+    witches.push({
+      xFrac: Math.random(),
+      baseYFrac: 0.08 + Math.random() * 0.18,
+      swoopAmount: 0.015 + Math.random() * 0.015,
+      swoopSpeed: 0.0012 + Math.random() * 0.001,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.00018 + Math.random() * 0.00015,
+      direction: Math.random() < 0.5 ? 1 : -1,
+      sizeFrac: 0.05 + Math.random() * 0.02,
+    });
+  }
 
   const batCount = 5 + Math.floor(Math.random() * 4);
   const bats = [];
@@ -9262,14 +9305,38 @@ function generateHalloweenScene() {
 
   return {
     trees,
-    pumpkins,
-    clusterXFrac,
+    ghosts,
+    witches,
     bats,
     fogBands,
     moonXFrac: 0.15 + Math.random() * 0.7,
     moonYFrac: 0.08 + Math.random() * 0.14,
     moonRadiusFrac: 0.05 + Math.random() * 0.02,
     phase: 0, // frame accumulator driving sway/swoop/flap/drift/flicker below
+    celebrating: false,
+    celebrationPumpkins: null,
+  };
+}
+
+// Only ever generated once, when the wave-complete celebration fires (see
+// updateSceneAmbienceForWaveComplete()) -- mirrors the Birthday scene's
+// generateCelebrationBalloons() both in when it runs and in why: these
+// objects should not exist in memory (let alone on screen) during
+// ordinary play.
+function generateCelebrationPumpkins() {
+  const pumpkinCount = 2 + Math.floor(Math.random() * 3); // 2-4
+  const pumpkins = [];
+  for (let i = 0; i < pumpkinCount; i++) {
+    pumpkins.push({
+      dxFrac: (i - (pumpkinCount - 1) / 2) * 0.045 + (Math.random() - 0.5) * 0.012,
+      sizeFrac: 0.026 + Math.random() * 0.012,
+      flickerPhase: Math.random() * Math.PI * 2,
+    });
+  }
+  return {
+    clusterXFrac: 0.15 + Math.random() * 0.7,
+    pumpkins,
+    entrance: 0, // 0-1 pop-in progress, see updateHalloweenScene
   };
 }
 
@@ -9285,9 +9352,22 @@ function updateHalloweenScene() {
     if (b.xFrac > 1.08) { b.xFrac = -0.08; b.baseYFrac = 0.1 + Math.random() * 0.35; }
     else if (b.xFrac < -0.08) { b.xFrac = 1.08; b.baseYFrac = 0.1 + Math.random() * 0.35; }
   }
+  for (const g of scene.ghosts) {
+    g.xFrac += g.driftSpeed;
+    if (g.xFrac > 1.1) g.xFrac = -0.1;
+    else if (g.xFrac < -0.1) g.xFrac = 1.1;
+  }
+  for (const wch of scene.witches) {
+    wch.xFrac += wch.speed * wch.direction;
+    if (wch.xFrac > 1.1) { wch.xFrac = -0.1; wch.baseYFrac = 0.08 + Math.random() * 0.18; }
+    else if (wch.xFrac < -0.1) { wch.xFrac = 1.1; wch.baseYFrac = 0.08 + Math.random() * 0.18; }
+  }
   for (const f of scene.fogBands) {
     f.xFrac += f.speed;
     if (f.xFrac > 1) f.xFrac -= 1;
+  }
+  if (scene.celebrating && scene.celebrationPumpkins && scene.celebrationPumpkins.entrance < 1) {
+    scene.celebrationPumpkins.entrance = Math.min(1, scene.celebrationPumpkins.entrance + 0.025);
   }
 }
 
@@ -9321,6 +9401,73 @@ function drawHalloweenScene() {
     ctx.quadraticCurveTo(bx - r * 0.6, by + r * 0.3, bx, by);
     ctx.quadraticCurveTo(bx + r * 0.6, by + r * 0.3, bx + r * 1.6, by - r * wingFlap * 0.9);
     ctx.stroke();
+  }
+
+  // Ghosts -- rounded top, scalloped wavy bottom hem (not a plain oval),
+  // low opacity with no glow halo so it reads as a translucent floating
+  // sheet rather than a bright connectable shape.
+  for (const g of scene.ghosts) {
+    const gx = g.xFrac * w;
+    const gy = (g.baseYFrac + Math.sin(t * g.bobSpeed + g.bobPhase) * g.bobAmount) * h;
+    const r = g.sizeFrac * Math.min(w, h);
+    const segments = 12;
+    ctx.fillStyle = 'rgba(232, 238, 245, 0.4)';
+    ctx.beginPath();
+    ctx.moveTo(gx - r, gy);
+    ctx.arc(gx, gy, r, Math.PI, 0);
+    for (let i = 0; i <= segments; i++) {
+      const frac = i / segments;
+      const x = gx + r - frac * 2 * r;
+      const waveY = gy + r * 0.85 + Math.sin(frac * Math.PI * 6 + t * 0.05 + g.wavePhase) * r * 0.12;
+      ctx.lineTo(x, waveY);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = 'rgba(35, 30, 45, 0.55)';
+    ctx.beginPath();
+    ctx.arc(gx - r * 0.32, gy - r * 0.05, r * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(gx + r * 0.32, gy - r * 0.05, r * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Witches on brooms -- a multi-part silhouette (broom, cloak, head, hat)
+  // rather than any single round shape, oriented to face its flight
+  // direction.
+  for (const wch of scene.witches) {
+    const wx = wch.xFrac * w;
+    const wy = (wch.baseYFrac + Math.sin(t * wch.swoopSpeed + wch.phase) * wch.swoopAmount) * h;
+    const r = wch.sizeFrac * Math.min(w, h);
+    const dir = wch.direction;
+    ctx.fillStyle = 'rgba(15, 10, 20, 0.82)';
+    ctx.strokeStyle = 'rgba(15, 10, 20, 0.82)';
+    ctx.lineWidth = Math.max(1, r * 0.12);
+    ctx.beginPath();
+    ctx.moveTo(wx - dir * r * 1.3, wy + r * 0.35);
+    ctx.lineTo(wx + dir * r * 0.5, wy + r * 0.35);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(wx - dir * r * 1.3, wy + r * 0.15);
+    ctx.lineTo(wx - dir * r * 1.7, wy + r * 0.5);
+    ctx.lineTo(wx - dir * r * 1.3, wy + r * 0.55);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(wx - dir * r * 0.4, wy + r * 0.35);
+    ctx.lineTo(wx + dir * r * 0.5, wy + r * 0.1);
+    ctx.lineTo(wx + dir * r * 0.15, wy - r * 0.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(wx + dir * r * 0.25, wy - r * 0.55, r * 0.22, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(wx + dir * r * 0.05, wy - r * 0.68);
+    ctx.lineTo(wx + dir * r * 0.55, wy - r * 0.7);
+    ctx.lineTo(wx + dir * r * 0.15, wy - r * 1.35);
+    ctx.closePath();
+    ctx.fill();
   }
 
   // Ground fog -- soft translucent horizontal bands drifting sideways,
@@ -9378,93 +9525,107 @@ function drawHalloweenScene() {
   ctx.fillStyle = HALLOWEEN_CONFIG.GROUND_COLOR;
   ctx.fillRect(0, h - 6, w, 6);
 
-  // A haybale under the pumpkin cluster -- grounds the whole group as one
-  // obviously-styled porch/yard display (same principle as Birthday's
-  // cake/punch bowl/plate table), and gives the pumpkins something to
-  // visibly sit ON rather than floating at the ground line on their own.
-  // Ellipse center is offset up by its own vertical radius so the bottom
-  // edge lands exactly on the ground line rather than straddling it.
-  const clusterX = scene.clusterXFrac * w;
-  const groundY = h - 6;
-  const haleW = 0.22 * w;
-  const haleH = 0.02 * h;
-  const haleTopY = groundY - 2 * haleH;
-  ctx.fillStyle = HALLOWEEN_CONFIG.HAYBALE_COLOR;
-  ctx.beginPath();
-  ctx.ellipse(clusterX, groundY - haleH, haleW / 2, haleH, 0, 0, Math.PI * 2);
-  ctx.fill();
+  // Pumpkins only exist as a one-time wave-complete celebration burst, not
+  // during ordinary play -- see generateCelebrationPumpkins() and
+  // updateSceneAmbienceForWaveComplete() (same pattern, and same player
+  // report, as the Birthday scene's celebration balloons).
+  if (scene.celebrating && scene.celebrationPumpkins) {
+    const cel = scene.celebrationPumpkins;
+    // Ease-out-cubic pop-in over the first ~40 frames so the cluster
+    // arrives with a little celebratory bounce rather than snapping in.
+    const entranceScale = 1 - Math.pow(1 - cel.entrance, 3);
 
-  // Jack-o'-lanterns -- clustered together on the haybale above rather
-  // than spread solo across the ground (player report: individually
-  // glowing round shapes read as connectable dots). Each one's body is a
-  // few overlapping vertical lobes instead of a plain circle/oval, so the
-  // silhouette itself reads as "pumpkin," not "dot" -- same flicker
-  // technique as the birthday candle and forest fireflies (layered sine
-  // noise) for the carved-face glow, now much smaller and tighter to the
-  // face instead of a large ambient halo.
-  for (const p of scene.pumpkins) {
-    const px = clusterX + p.dxFrac * w;
-    const r = p.sizeFrac * Math.min(w, h);
-    const py = haleTopY - r * 0.82;
-    const flicker = 0.75 + 0.25 * Math.sin(t * 0.15 + p.flickerPhase) * Math.sin(t * 0.047 + p.flickerPhase * 1.3);
+    // A haybale under the pumpkin cluster -- grounds the whole group as one
+    // obviously-styled porch/yard display (same principle as Birthday's
+    // cake/punch bowl/plate table), and gives the pumpkins something to
+    // visibly sit ON rather than floating at the ground line on their own.
+    // Ellipse center is offset up by its own vertical radius so the bottom
+    // edge lands exactly on the ground line rather than straddling it.
+    const clusterX = cel.clusterXFrac * w;
+    const groundY = h - 6;
+    const haleW = 0.22 * w;
+    const haleH = 0.02 * h;
+    const haleRX = haleW / 2;
+    const haleCenterY = groundY - haleH;
+    ctx.fillStyle = HALLOWEEN_CONFIG.HAYBALE_COLOR;
+    ctx.beginPath();
+    ctx.ellipse(clusterX, haleCenterY, haleRX, haleH, 0, 0, Math.PI * 2);
+    ctx.fill();
 
-    // Ridged body: 4 overlapping vertical lobes plus a short stem, rather
-    // than one plain ellipse.
-    const lobeCount = 4;
-    ctx.fillStyle = HALLOWEEN_CONFIG.PUMPKIN_COLOR;
-    for (let i = 0; i < lobeCount; i++) {
-      const lobeX = px + (i - (lobeCount - 1) / 2) * (r * 0.42);
+    // Jack-o'-lanterns -- clustered together on the haybale above rather
+    // than spread solo across the ground (player report: individually
+    // glowing round shapes read as connectable dots). Each one's body is a
+    // few overlapping vertical lobes instead of a plain circle/oval, so the
+    // silhouette itself reads as "pumpkin," not "dot" -- same flicker
+    // technique as the birthday candle and forest fireflies (layered sine
+    // noise) for the carved-face glow, now much smaller and tighter to the
+    // face instead of a large ambient halo.
+    for (const p of cel.pumpkins) {
+      const px = clusterX + p.dxFrac * w;
+      const r = p.sizeFrac * Math.min(w, h) * entranceScale;
+      const localRatio = Math.max(-1, Math.min(1, (px - clusterX) / haleRX));
+      const supportY = haleCenterY - haleH * Math.sqrt(Math.max(0, 1 - localRatio * localRatio));
+      const py = supportY - r * 0.82;
+      const flicker = 0.75 + 0.25 * Math.sin(t * 0.15 + p.flickerPhase) * Math.sin(t * 0.047 + p.flickerPhase * 1.3);
+
+      // Ridged body: 4 overlapping vertical lobes plus a short stem, rather
+      // than one plain ellipse.
+      const lobeCount = 4;
+      ctx.fillStyle = HALLOWEEN_CONFIG.PUMPKIN_COLOR;
+      for (let i = 0; i < lobeCount; i++) {
+        const lobeX = px + (i - (lobeCount - 1) / 2) * (r * 0.42);
+        ctx.beginPath();
+        ctx.ellipse(lobeX, py, r * 0.34, r * 0.82, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.strokeStyle = 'rgba(0,0,0,0.18)';
+      ctx.lineWidth = Math.max(1, r * 0.05);
+      for (let i = 1; i < lobeCount; i++) {
+        const lineX = px + (i - (lobeCount - 1) / 2) * (r * 0.42) - r * 0.21;
+        ctx.beginPath();
+        ctx.moveTo(lineX, py - r * 0.75);
+        ctx.quadraticCurveTo(lineX + r * 0.02, py, lineX, py + r * 0.75);
+        ctx.stroke();
+      }
+      ctx.fillStyle = HALLOWEEN_CONFIG.STEM_COLOR;
+      ctx.fillRect(px - r * 0.08, py - r * 0.92, r * 0.16, r * 0.22);
+
+      // Carved-face glow -- tight to the cutouts, not a broad ambient halo.
+      const glow = ctx.createRadialGradient(px, py, 0, px, py, r * 1.2);
+      glow.addColorStop(0, `rgba(255, 170, 60, ${(0.35 * flicker).toFixed(3)})`);
+      glow.addColorStop(1, 'rgba(255, 170, 60, 0)');
+      ctx.fillStyle = glow;
       ctx.beginPath();
-      ctx.ellipse(lobeX, py, r * 0.34, r * 0.82, 0, 0, Math.PI * 2);
+      ctx.arc(px, py, r * 1.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = `rgba(255, 210, 120, ${(0.55 + 0.45 * flicker).toFixed(3)})`;
+      const eyeW = r * 0.28, eyeH = r * 0.32;
+      ctx.beginPath();
+      ctx.moveTo(px - r * 0.42, py - r * 0.1);
+      ctx.lineTo(px - r * 0.42 + eyeW, py - r * 0.1);
+      ctx.lineTo(px - r * 0.42 + eyeW * 0.5, py - r * 0.1 - eyeH);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(px + r * 0.42, py - r * 0.1);
+      ctx.lineTo(px + r * 0.42 - eyeW, py - r * 0.1);
+      ctx.lineTo(px + r * 0.42 - eyeW * 0.5, py - r * 0.1 - eyeH);
+      ctx.closePath();
+      ctx.fill();
+      // A jagged zigzag mouth, same fill as the eyes.
+      ctx.beginPath();
+      ctx.moveTo(px - r * 0.45, py + r * 0.35);
+      ctx.lineTo(px - r * 0.28, py + r * 0.2);
+      ctx.lineTo(px - r * 0.12, py + r * 0.35);
+      ctx.lineTo(px + r * 0.05, py + r * 0.2);
+      ctx.lineTo(px + r * 0.22, py + r * 0.35);
+      ctx.lineTo(px + r * 0.4, py + r * 0.22);
+      ctx.lineTo(px + r * 0.4, py + r * 0.38);
+      ctx.lineTo(px - r * 0.45, py + r * 0.38);
+      ctx.closePath();
       ctx.fill();
     }
-    ctx.strokeStyle = 'rgba(0,0,0,0.18)';
-    ctx.lineWidth = Math.max(1, r * 0.05);
-    for (let i = 1; i < lobeCount; i++) {
-      const lineX = px + (i - (lobeCount - 1) / 2) * (r * 0.42) - r * 0.21;
-      ctx.beginPath();
-      ctx.moveTo(lineX, py - r * 0.75);
-      ctx.quadraticCurveTo(lineX + r * 0.02, py, lineX, py + r * 0.75);
-      ctx.stroke();
-    }
-    ctx.fillStyle = HALLOWEEN_CONFIG.STEM_COLOR;
-    ctx.fillRect(px - r * 0.08, py - r * 0.92, r * 0.16, r * 0.22);
-
-    // Carved-face glow -- tight to the cutouts, not a broad ambient halo.
-    const glow = ctx.createRadialGradient(px, py, 0, px, py, r * 1.2);
-    glow.addColorStop(0, `rgba(255, 170, 60, ${(0.35 * flicker).toFixed(3)})`);
-    glow.addColorStop(1, 'rgba(255, 170, 60, 0)');
-    ctx.fillStyle = glow;
-    ctx.beginPath();
-    ctx.arc(px, py, r * 1.2, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = `rgba(255, 210, 120, ${(0.55 + 0.45 * flicker).toFixed(3)})`;
-    const eyeW = r * 0.28, eyeH = r * 0.32;
-    ctx.beginPath();
-    ctx.moveTo(px - r * 0.42, py - r * 0.1);
-    ctx.lineTo(px - r * 0.42 + eyeW, py - r * 0.1);
-    ctx.lineTo(px - r * 0.42 + eyeW * 0.5, py - r * 0.1 - eyeH);
-    ctx.closePath();
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(px + r * 0.42, py - r * 0.1);
-    ctx.lineTo(px + r * 0.42 - eyeW, py - r * 0.1);
-    ctx.lineTo(px + r * 0.42 - eyeW * 0.5, py - r * 0.1 - eyeH);
-    ctx.closePath();
-    ctx.fill();
-    // A jagged zigzag mouth, same fill as the eyes.
-    ctx.beginPath();
-    ctx.moveTo(px - r * 0.45, py + r * 0.35);
-    ctx.lineTo(px - r * 0.28, py + r * 0.2);
-    ctx.lineTo(px - r * 0.12, py + r * 0.35);
-    ctx.lineTo(px + r * 0.05, py + r * 0.2);
-    ctx.lineTo(px + r * 0.22, py + r * 0.35);
-    ctx.lineTo(px + r * 0.4, py + r * 0.22);
-    ctx.lineTo(px + r * 0.4, py + r * 0.38);
-    ctx.lineTo(px - r * 0.45, py + r * 0.38);
-    ctx.closePath();
-    ctx.fill();
   }
 }
 

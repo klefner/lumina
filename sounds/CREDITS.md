@@ -157,9 +157,13 @@ synthesis under a spotlight regardless of how the timbre itself sounded.
 
 ## Halloween ambience (sounds/ambient/halloween-*.mp3)
 
-Four real recordings again, cozy-spooky rather than horror (see
+Five real recordings, cozy-spooky rather than horror (see
 `SLEEP_SAFE_SCENES`/`HALLOWEEN_CONFIG` in game.js for why that mood
-still keeps the scene out of Sleep mode):
+still keeps the scene out of Sleep mode). The wolf howl and raven caw
+that used to round this set out were swapped for a ghost moan, a
+distant witch cackle, and trick-or-treating kids on player feedback
+that the old pair read as generic nighttime-woods sounds rather than
+anything specifically Halloween:
 
 - `halloween-wind.mp3` — "windy day recording from under a heap of dry
   leaves," a field recording from
@@ -167,21 +171,33 @@ still keeps the scene out of Sleep mode):
   Creative Commons Attribution 3.0 (credited here; every recording in
   this directory is credited regardless of what its license requires).
   Trimmed from a ~3-minute original.
+- `halloween-trickortreat.mp3` — kids' voices, laughing and playing
+  outside, from "trick or treat.wav" by
+  [cognito perceptu](https://freesound.org/people/cognito%20perceptu/sounds/31151/)
+  ("Kids trick-or-treating in a field as adults howl and laugh and act
+  scary," per the uploader), CC0. A ~20s window trimmed from the
+  ~82.5s original, matching the wind loop's length.
 - `halloween-creak.mp3` — "Creaky Wood," from
   [Red Library: Creaks](https://archive.org/details/Red_Library_Creaks)
   (USC Cinema / Sunset Editorial Collection), CC0.
-- `halloween-wolfhowl.mp3` — a distant wolf-pack howl, trimmed from
-  ["Wolves Howl,"](https://archive.org/details/WolvesHowl_571) U.S. Fish
-  and Wildlife Service, public domain (US government work) — same
-  category of source as the beach whale call above.
-- `halloween-raven.mp3` — a single crow/raven caw, from
-  [Various Bird Sounds](https://archive.org/details/various-bird-sounds)
-  (cl0udn0te), CC0.
+- `halloween-ghost.mp3` — a low, sustained moan, from "R15-58-Zombies
+  Moaning" in
+  [Red Library: Voices Mixed](https://archive.org/details/Red_Library_Voices_Mixed)
+  (same collection family as the creak above), CC0. Trimmed from ~11.9s
+  to ~11.1s (a trailing half-second of silence cut).
+- `halloween-witchcackle.mp3` — "Witch laugh.wav" by
+  [Sulainar](https://freesound.org/people/Sulainar/sounds/471613/),
+  CC0. The source recording is close and theatrical, not distant, so
+  getting "in the distance" (the actual ask) took more than a trim: the
+  first two laugh bursts (~8.5s of the 26s original) were low-passed,
+  given a soft echo tail, and brought down in level -- baked into the
+  file itself rather than left to in-game gain alone, so it reads as
+  distant on any playback path.
 
-Wind loops continuously; creak, howl, and raven are rarer one-shot
-retriggers, all easing in over the same short fade
-(`AMBIENT_VARIATION.EVENT_FADE_IN_SEC`) every event sound in the game
-uses now.
+Wind and trick-or-treat loop continuously; creak, ghost, and witch
+cackle are rarer one-shot retriggers, all easing in over the same short
+fade (`AMBIENT_VARIATION.EVENT_FADE_IN_SEC`) every event sound in the
+game uses now.
 
 ## Christmas ambience (sounds/ambient/christmas-*.mp3)
 
