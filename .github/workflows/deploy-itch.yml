@@ -1,0 +1,57 @@
+name: Deploy to itch.io
+
+# Deliberately manual-only. Established workflow: a push to main
+# auto-deploys GitHub Pages + Cloudflare Pages (see deploy-pages.yml) for
+# testing; itch.io is the storefront and only receives a build once
+# that's been played and approved there, by running this workflow by
+# hand (Actions tab -> Deploy to itch.io -> Run workflow, or triggered on
+# request).
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag, or commit to deploy'
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      # Deliberately inlined rather than `uses: ./.github/actions/stage-site`
+      # -- a local composite action only exists if the checked-out ref
+      # happens to contain it. `inputs.ref` is meant to support deploying
+      # (or rolling back to) an older approved commit, which could predate
+      # this action entirely; a local `uses:` step would fail before
+      # anything deployed (review catch, PR #78). These steps live in the
+      # workflow file itself, which GitHub always reads from the ref that
+      # registered the workflow_dispatch trigger, so they run regardless
+      # of what inputs.ref checks out.
+      - name: Stamp build version
+        id: stamp
+        run: |
+          BUILD="$(git rev-parse --short HEAD)"
+          VERSION="${BUILD} . $(date -u +%Y-%m-%d)"
+          sed -i "s/__BUILD__/${BUILD}/g; s/__VERSION__/${VERSION}/g" index.html version.json
+          echo "build=${BUILD}" >> "$GITHUB_OUTPUT"
+      - name: Stage site files
+        run: |
+          mkdir -p _site
+          cp index.html game.js style.css manifest.json version.json _site/
+          cp -r icons sounds _site/
+      - name: Install butler
+        run: |
+          curl -L -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip -d butler
+          chmod +x butler/butler
+      - name: Push to itch.io
+        env:
+          BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+        run: ./butler/butler push _site draclif/lumina:html5 --userversion "${{ steps.stamp.outputs.build }}"
