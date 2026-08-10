@@ -8302,11 +8302,15 @@ function drawForestScene() {
 // built the same way the Night Forest above is: a moonlit sky (sharing
 // drawNightMoon and drawStars with the forest scene), a dark ocean with a
 // glittering moon-reflection path and a few gently undulating surf lines
-// standing in for waves, and a sand strip at the very bottom -- the
-// forest's tree line and ground, reimagined.
+// standing in for waves, a single distant sailboat drifting across the
+// horizon (the signature per-scene animation -- same spirit as Forest's
+// fireflies/Birthday's balloons/Halloween's bats/Christmas's chimney
+// smoke), and a sand strip at the very bottom -- the forest's tree line
+// and ground, reimagined.
 //
-// Wave lines/glitter dots/moon are stored as fractions of canvas.width/
-// height, not absolute pixels, same reasoning as the forest's trees.
+// Wave lines/glitter dots/boat/moon are stored as fractions of
+// canvas.width/height, not absolute pixels, same reasoning as the
+// forest's trees.
 const BEACH_CONFIG = {
   SKY_TOP: '#050b17',
   SKY_MID: '#12253d',
@@ -8314,6 +8318,7 @@ const BEACH_CONFIG = {
   WATER_HORIZON: '#1c3a44',
   WATER_COLOR: '#0a1a22',
   SAND_COLOR: '#241d13',
+  BOAT_COLOR: '#050a14',
 };
 
 function generateBeachScene() {
@@ -8347,21 +8352,42 @@ function generateBeachScene() {
     });
   }
 
+  // A single distant sailboat, crossing the horizon rather than sitting
+  // still -- see this section's header comment.
+  const boat = {
+    xFrac: Math.random(),
+    direction: Math.random() < 0.5 ? 1 : -1,
+    speed: 0.00006 + Math.random() * 0.00005, // fraction of width per frame -- slow, distant drift, calmer than Halloween's bats
+    bobPhase: Math.random() * Math.PI * 2,
+    bobSpeed: 0.02 + Math.random() * 0.015,
+    sizeFrac: 0.03 + Math.random() * 0.015,
+  };
+
   return {
     waveLines,
     glitterDots,
+    boat,
     horizonYFrac: 0.4 + Math.random() * 0.06,
     sandHeightFrac: 0.08 + Math.random() * 0.03,
     moonXFrac,
     moonYFrac: 0.08 + Math.random() * 0.12,
     moonRadiusFrac: 0.045 + Math.random() * 0.02,
-    phase: 0, // frame accumulator driving the surf/glitter animation below -- see updateBeachScene
+    phase: 0, // frame accumulator driving the surf/glitter/boat animation below -- see updateBeachScene
   };
 }
 
 function updateBeachScene() {
   if (STATE.scene !== 'beach' || !STATE.beachScene) return;
-  STATE.beachScene.phase += 1;
+  const scene = STATE.beachScene;
+  scene.phase += 1;
+  const boat = scene.boat;
+  boat.xFrac += boat.speed * boat.direction;
+  // Wrapped rather than recycled from a random edge -- same technique as
+  // Halloween's bats -- the boat keeps sailing the same direction, just
+  // reappears on the opposite side, so its crossing never visibly resets
+  // mid-frame.
+  if (boat.xFrac > 1.08) { boat.xFrac = -0.08; }
+  else if (boat.xFrac < -0.08) { boat.xFrac = 1.08; }
 }
 
 function drawBeachScene() {
@@ -8416,6 +8442,37 @@ function drawBeachScene() {
     ctx.lineWidth = 1.5;
     ctx.stroke();
   }
+
+  // Boat -- a simple hull-and-sail silhouette riding right at the horizon
+  // line, bobbing gently (see updateBeachScene for its slow horizontal
+  // drift). The one point of warm color in an otherwise cool, dark scene
+  // is its masthead light -- what actually makes a real distant boat
+  // readable against a night horizon.
+  const boat = scene.boat;
+  const boatX = boat.xFrac * w;
+  const bob = Math.sin(t * boat.bobSpeed + boat.bobPhase) * 1.5;
+  const boatY = horizonY + (sandY - horizonY) * 0.04 + bob;
+  const br = boat.sizeFrac * w;
+  ctx.fillStyle = BEACH_CONFIG.BOAT_COLOR;
+  ctx.beginPath();
+  ctx.moveTo(boatX - br * 0.55, boatY);
+  ctx.quadraticCurveTo(boatX, boatY + br * 0.28, boatX + br * 0.55, boatY);
+  ctx.lineTo(boatX + br * 0.4, boatY - br * 0.08);
+  ctx.lineTo(boatX - br * 0.4, boatY - br * 0.08);
+  ctx.closePath();
+  ctx.fill();
+  // Mast + single sail, leaning toward the direction of travel.
+  const mastLean = boat.direction * br * 0.12;
+  ctx.beginPath();
+  ctx.moveTo(boatX, boatY - br * 0.08);
+  ctx.lineTo(boatX + mastLean, boatY - br * 0.85);
+  ctx.lineTo(boatX - br * 0.35 * boat.direction, boatY - br * 0.08);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(boatX + mastLean, boatY - br * 0.85, Math.max(1, br * 0.06), 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255, 210, 140, 0.9)';
+  ctx.fill();
 
   ctx.fillStyle = BEACH_CONFIG.SAND_COLOR;
   ctx.fillRect(0, sandY, w, h - sandY);
