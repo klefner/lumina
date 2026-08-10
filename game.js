@@ -10769,16 +10769,35 @@ function updateWaveDisplay() {
     (STATE.difficulty !== 'sleep' && STATE.score > 0) ? `Score: ${STATE.score}` : '';
   // Which wave of the current background's set this is (player request) --
   // same visibility rule as the score above (hidden pre-game and under
-  // Sleep, which wants minimal UI). STATE.ambienceStreak already tracks
-  // exactly this -- consecutive completed waves on the current scene,
-  // capped at its sound-layer count -- for both Rotate and a fixed scene
-  // pick alike (see catchUpAmbienceStreakForWave), so "current position"
-  // is just one more than however many of this scene's waves are already
-  // behind us, capped at the scene's own total (sceneWaveCount).
+  // Sleep, which wants minimal UI), and hidden in Cockpit Mode too (review
+  // catch, PR #76): Cockpit's own startWave path never resolves STATE.scene
+  // at all -- it renders its own separate Three.js scene, none of the
+  // selectable backgrounds -- so this would just show stale leftover state
+  // from whatever classic-mode scene played last, or the STATE.scene
+  // default before any classic wave has ever run.
+  //
+  // The numerator can't just be STATE.ambienceStreak, either: it advances
+  // the instant all dots connect (see checkWaveComplete), before the player
+  // chooses what to do next, and Restart Current Level deliberately leaves
+  // it untouched afterward (a genuine retry shouldn't silence a sound
+  // layer that already unlocked -- see resetSceneAmbience's own comment).
+  // That means a completed-then-restarted wave shows a streak one ahead of
+  // the wave actually being replayed (review catch, PR #76) -- repeat it
+  // enough times under Rotate mode and the counter reaches "N of N" without
+  // the scene ever actually advancing. resolveSceneBlock(STATE.wave)'s own
+  // blockPosition has no such drift: it's pure arithmetic on the absolute
+  // wave number, recomputed fresh every call, so a restart that keeps
+  // STATE.wave unchanged always gets the same correct position back. Only
+  // meaningful under Rotate, though -- a fixed scene pick has no "block" to
+  // be positioned within (resolveSceneBlock always returns 0 there), so it
+  // keeps using the streak, same as before.
   const sceneTotal = sceneWaveCount(STATE.scene);
+  const sceneOrdinal = STATE.sceneMode === 'rotate'
+    ? resolveSceneBlock(STATE.wave).blockPosition + 1
+    : STATE.ambienceStreak + 1;
   document.getElementById('scene-progress-display').textContent =
-    (STATE.difficulty !== 'sleep' && STATE.phase !== 'TITLE')
-      ? `${SCENE_HUD_NAMES[STATE.scene]} ${Math.min(STATE.ambienceStreak + 1, sceneTotal)} of ${sceneTotal} waves`
+    (STATE.difficulty !== 'sleep' && STATE.phase !== 'TITLE' && !STATE.cockpitMode)
+      ? `${SCENE_HUD_NAMES[STATE.scene]} ${Math.min(sceneOrdinal, sceneTotal)} of ${sceneTotal} waves`
       : '';
   // Playtest feedback aid, not a permanent gameplay element -- lets a
   // player name which specific generated song (family + seed) they're
