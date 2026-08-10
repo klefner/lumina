@@ -2405,6 +2405,25 @@ function setupDifficultySelectorListeners() {
 
 function refreshSceneSelector() {
   const select = document.getElementById('scene-selector');
+
+  // A non-sleep-safe scene (e.g. Birthday) has no business being pickable
+  // at all under Sleep mode (see SLEEP_SAFE_SCENES) -- 'rotate' stays
+  // enabled regardless, since it already skips unsafe scenes on its own
+  // (see activeSceneList) rather than needing to be disabled outright.
+  const sleepModeActive = STATE.difficulty === 'sleep';
+
+  // Disabling that option below doesn't clear a <select>'s existing
+  // selection -- left alone, the dropdown would keep showing e.g.
+  // "Birthday Party" while Sleep is active even though resolveSceneBlock
+  // is silently falling back to Space underneath it (review catch, PR
+  // #69). Reset the stored selection itself, to the same fallback
+  // resolveSceneBlock already uses, so the displayed value and the
+  // actual played scene never disagree.
+  if (sleepModeActive && STATE.sceneMode !== 'rotate' && !isSceneSleepSafe(STATE.sceneMode)) {
+    STATE.sceneMode = 'space';
+    saveSceneSetting(STATE.sceneMode);
+  }
+
   select.value = STATE.sceneMode;
   // Cockpit Mode renders its own Three.js scene (see render()'s cockpitMode
   // branch and startWave's early return for it) and never reads
@@ -2414,11 +2433,6 @@ function refreshSceneSelector() {
   select.disabled = STATE.cockpitMode;
   select.title = STATE.cockpitMode ? "Not available in Cockpit Mode — its 3D view doesn't use this" : '';
 
-  // A non-sleep-safe scene (e.g. Birthday) has no business being pickable
-  // at all under Sleep mode (see SLEEP_SAFE_SCENES) -- 'rotate' stays
-  // enabled regardless, since it already skips unsafe scenes on its own
-  // (see activeSceneList) rather than needing to be disabled outright.
-  const sleepModeActive = STATE.difficulty === 'sleep';
   for (const option of select.options) {
     if (option.value === 'rotate') continue;
     const disable = sleepModeActive && !isSceneSleepSafe(option.value);
@@ -8507,7 +8521,7 @@ function drawBirthdayScene() {
   // string down to wherever it happens to be drifting.
   for (const b of scene.balloons) {
     const drift = t * b.swaySpeed + b.swayPhase;
-    const bx = (b.xFrac + Math.sin(drift) * (b.swayAmount / (0.02 + b.radiusFrac))) * w;
+    const bx = (b.xFrac + Math.sin(drift) * b.swayAmount) * w;
     const by = b.yFrac * h;
     const r = b.radiusFrac * Math.min(w, h);
     const color = BIRTHDAY_CONFIG.BALLOON_COLORS[b.colorIndex];

@@ -6181,6 +6181,49 @@ test('the Birthday Party scene generates and draws without error', async ({ page
   expect(errors).toEqual([]);
 });
 
+test('birthday balloons sway by their configured fraction of screen width, not amplified by dividing by their radius (review catch, PR #69)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'birthday';
+    STATE.birthdayScene = generateBirthdayScene();
+    for (let i = 0; i < 400; i++) updateBirthdayScene(); // land mid-sway for several balloons
+
+    const ellipseCalls = [];
+    const originalEllipse = CanvasRenderingContext2D.prototype.ellipse;
+    CanvasRenderingContext2D.prototype.ellipse = function (x, ...rest) {
+      ellipseCalls.push(x);
+      return originalEllipse.call(this, x, ...rest);
+    };
+    try {
+      drawBirthdayScene();
+    } finally {
+      CanvasRenderingContext2D.prototype.ellipse = originalEllipse;
+    }
+
+    const w = canvas.width;
+    const balloons = STATE.birthdayScene.balloons;
+    // Each balloon draws two ellipses (body + shine highlight) at the same
+    // x, in the same order as scene.balloons -- the candle flame's ellipse
+    // comes after all of them.
+    const withinBounds = balloons.every((b, i) => {
+      const bx = ellipseCalls[i * 2];
+      const maxOffset = b.swayAmount * w + 0.5; // +0.5px slack for float rounding
+      return Math.abs(bx - b.xFrac * w) <= maxOffset;
+    });
+
+    return { withinBounds, balloonCount: balloons.length, ellipseCallCount: ellipseCalls.length };
+  });
+
+  expect(result.balloonCount).toBeGreaterThan(0);
+  expect(result.ellipseCallCount).toBe(result.balloonCount * 2 + 1); // +1 for the candle flame
+  expect(result.withinBounds).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 // ------------------------------------------------------------
 // Rotate mode's per-scene block schedule (see resolveSceneForWave/
 // sceneWaveCount) -- each scene holds for as many consecutive waves as it
@@ -6525,6 +6568,36 @@ test('the scene selector disables non-rotate options under Sleep mode that aren\
   expect(result.birthdayDisabledUnderSleep).toBe(true);
   expect(result.rotateEnabledUnderSleep).toBe(true);
   expect(result.birthdayEnabledUnderNormal).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('picking Birthday under Normal then switching to Sleep resets the stored selection, not just the disabled option (review catch, PR #69)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.difficulty = 'normal';
+    STATE.sceneMode = 'birthday';
+    refreshSceneSelector();
+    const selectedBeforeSleep = document.getElementById('scene-selector').value;
+
+    STATE.difficulty = 'sleep';
+    refreshSceneSelector();
+
+    return {
+      selectedBeforeSleep,
+      sceneModeAfterSleep: STATE.sceneMode,
+      selectedAfterSleep: document.getElementById('scene-selector').value,
+    };
+  });
+
+  expect(result.selectedBeforeSleep).toBe('birthday');
+  // Falls back to the same safe default resolveSceneBlock itself uses --
+  // the dropdown's displayed value must never disagree with what
+  // actually gets played.
+  expect(result.sceneModeAfterSleep).toBe('space');
+  expect(result.selectedAfterSleep).toBe('space');
   expect(errors).toEqual([]);
 });
 
