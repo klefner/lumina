@@ -106,6 +106,36 @@ forest's owl gets — and, like the owl, now ease in over a short fade
 straight to full volume, on the same "sudden sounds aren't relaxing"
 feedback.
 
+## Birthday party ambience (sounds/ambient/birthday-*.mp3)
+
+One real field recording plus three synthesized sounds this time, not
+four real ones — unlike the forest/beach animal and weather sounds, a
+balloon squeak, a party horn honk, and a cork pop are simple mechanical
+transients archive.org has essentially no clean standalone recordings
+of (it's a documents/field-recording archive, not a curated
+sound-effects library), and they're exactly the kind of short, tonal
+one-shot the game's own lofi drum kit (`synthesizeInstrumentSample`)
+already synthesizes from oscillators and filtered noise for the same
+reason. Same technique, same in-repo generation script, just baked to
+a static file up front instead of rendered at runtime, so the ambient
+playback engine (`SCENE_AMBIENT_CONFIG`) doesn't need a second code
+path for "sometimes synthesized."
+
+- `birthday-crowd.mp3` — real field recording, "party crowd" ambience
+  from [Hasenheide, Berlin](https://archive.org/details/aporee_49872_56880),
+  Public Domain Mark 1.0.
+- `birthday-balloon.mp3` — synthesized: irregular resonant-filtered
+  noise bursts standing in for a balloon being rubbed/squeaked.
+- `birthday-horn.mp3` — synthesized: an additive buzzy tone (summed
+  harmonics, a quick pitch sweep, reed-flutter modulation) standing in
+  for a paper party horn.
+- `birthday-cork.mp3` — synthesized: a fast noise transient, a low
+  body-resonance thud, and a fizzy noise tail standing in for a cork
+  pop.
+
+Crowd and balloon loop continuously; horn and cork are rarer one-shot
+retriggers.
+
 ## The lofi genre family's instruments (rhodes, lofibass, lofikit)
 
 Not recordings — synthesized entirely in-browser (game.js,

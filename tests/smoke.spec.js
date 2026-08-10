@@ -6155,6 +6155,75 @@ test('the Beach at Night scene generates and draws without error, sharing the mo
   expect(errors).toEqual([]);
 });
 
+test('the Birthday Party scene generates and draws without error', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'birthday';
+    STATE.birthdayScene = generateBirthdayScene();
+    updateBirthdayScene();
+    drawBirthdayScene(); // throws if anything in the draw path is broken
+    return {
+      hasBalloons: STATE.birthdayScene.balloons.length > 0,
+      hasConfetti: STATE.birthdayScene.confetti.length > 0,
+      hasLights: STATE.birthdayScene.lights.length > 0,
+      phaseAdvanced: STATE.birthdayScene.phase === 1,
+    };
+  });
+
+  expect(result.hasBalloons).toBe(true);
+  expect(result.hasConfetti).toBe(true);
+  expect(result.hasLights).toBe(true);
+  expect(result.phaseAdvanced).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('birthday balloons sway by their configured fraction of screen width, not amplified by dividing by their radius (review catch, PR #69)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'birthday';
+    STATE.birthdayScene = generateBirthdayScene();
+    for (let i = 0; i < 400; i++) updateBirthdayScene(); // land mid-sway for several balloons
+
+    const ellipseCalls = [];
+    const originalEllipse = CanvasRenderingContext2D.prototype.ellipse;
+    CanvasRenderingContext2D.prototype.ellipse = function (x, ...rest) {
+      ellipseCalls.push(x);
+      return originalEllipse.call(this, x, ...rest);
+    };
+    try {
+      drawBirthdayScene();
+    } finally {
+      CanvasRenderingContext2D.prototype.ellipse = originalEllipse;
+    }
+
+    const w = canvas.width;
+    const balloons = STATE.birthdayScene.balloons;
+    // Each balloon draws two ellipses (body + shine highlight) at the same
+    // x, in the same order as scene.balloons -- the candle flame's ellipse
+    // comes after all of them.
+    const withinBounds = balloons.every((b, i) => {
+      const bx = ellipseCalls[i * 2];
+      const maxOffset = b.swayAmount * w + 0.5; // +0.5px slack for float rounding
+      return Math.abs(bx - b.xFrac * w) <= maxOffset;
+    });
+
+    return { withinBounds, balloonCount: balloons.length, ellipseCallCount: ellipseCalls.length };
+  });
+
+  expect(result.balloonCount).toBeGreaterThan(0);
+  expect(result.ellipseCallCount).toBe(result.balloonCount * 2 + 1); // +1 for the candle flame
+  expect(result.withinBounds).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 // ------------------------------------------------------------
 // Rotate mode's per-scene block schedule (see resolveSceneForWave/
 // sceneWaveCount) -- each scene holds for as many consecutive waves as it
@@ -6170,17 +6239,19 @@ test('Rotate mode holds each scene for as many waves as it has ambient sounds, t
   const scenes = await page.evaluate(() => {
     STATE.sceneMode = 'rotate';
     const result = [];
-    for (let wave = 1; wave <= 12; wave++) result.push(resolveSceneForWave(wave));
+    for (let wave = 1; wave <= 17; wave++) result.push(resolveSceneForWave(wave));
     return result;
   });
 
-  // space:1, forest:5 (SCENE_AMBIENT_CONFIG.forest.order.length + one
-  // bonus wave -- see sceneWaveCount), beach:5, then the cycle (length
-  // 11) wraps back to space at wave 12.
+  // space:1, forest:5, beach:5, birthday:5 (each scene's
+  // SCENE_AMBIENT_CONFIG.<scene>.order.length + one bonus wave -- see
+  // sceneWaveCount), then the cycle (length 16) wraps back to space at
+  // wave 17.
   expect(scenes).toEqual([
     'space',
     'forest', 'forest', 'forest', 'forest', 'forest',
     'beach', 'beach', 'beach', 'beach', 'beach',
+    'birthday', 'birthday', 'birthday', 'birthday', 'birthday',
     'space',
   ]);
   expect(errors).toEqual([]);
@@ -6429,13 +6500,11 @@ test('activeSceneList only narrows things down under Sleep mode -- every other d
   expect(result.perDifficulty.relaxed).toEqual(result.fullList);
   expect(result.perDifficulty.normal).toEqual(result.fullList);
   expect(result.perDifficulty.intense).toEqual(result.fullList);
-  // Every scene shipped so far (space/forest/beach) happens to be
-  // sleep-safe, so this is currently the same list -- the real narrowing
-  // only shows up once a non-sleep-safe scene (Birthday) exists. This
-  // test exists to catch a regression in the *mechanism* (activeSceneList
-  // actually branching on STATE.difficulty) ahead of that, not to prove
-  // the exclusion itself yet.
-  expect(result.perDifficulty.sleep).toEqual(result.fullList);
+  // Birthday (party horns, upbeat crowd noise) is the first non-sleep-safe
+  // scene shipped -- Sleep mode should narrow it out while every other
+  // difficulty still offers it.
+  expect(result.perDifficulty.sleep).toEqual(result.fullList.filter(s => s !== 'birthday'));
+  expect(result.perDifficulty.sleep).not.toContain('birthday');
   expect(errors).toEqual([]);
 });
 
@@ -6484,31 +6553,51 @@ test('the scene selector disables non-rotate options under Sleep mode that aren\
   await page.waitForFunction(() => window.__lumina);
 
   const result = await page.evaluate(() => {
-    // No shipped scene is unsafe yet (see the activeSceneList test above),
-    // so temporarily mark 'space' unsafe just for this test -- purely
-    // in-memory, never persisted -- to exercise the disabling branch
-    // itself ahead of Birthday existing for real.
-    const original = new Set(SLEEP_SAFE_SCENES);
-    SLEEP_SAFE_SCENES.delete('space');
-
     STATE.difficulty = 'sleep';
     refreshSceneSelector();
-    const spaceDisabledUnderSleep = document.querySelector('#scene-selector option[value="space"]').disabled;
+    const birthdayDisabledUnderSleep = document.querySelector('#scene-selector option[value="birthday"]').disabled;
     const rotateEnabledUnderSleep = !document.querySelector('#scene-selector option[value="rotate"]').disabled;
 
     STATE.difficulty = 'normal';
     refreshSceneSelector();
-    const spaceEnabledUnderNormal = !document.querySelector('#scene-selector option[value="space"]').disabled;
+    const birthdayEnabledUnderNormal = !document.querySelector('#scene-selector option[value="birthday"]').disabled;
 
-    SLEEP_SAFE_SCENES.clear();
-    for (const s of original) SLEEP_SAFE_SCENES.add(s);
-
-    return { spaceDisabledUnderSleep, rotateEnabledUnderSleep, spaceEnabledUnderNormal };
+    return { birthdayDisabledUnderSleep, rotateEnabledUnderSleep, birthdayEnabledUnderNormal };
   });
 
-  expect(result.spaceDisabledUnderSleep).toBe(true);
+  expect(result.birthdayDisabledUnderSleep).toBe(true);
   expect(result.rotateEnabledUnderSleep).toBe(true);
-  expect(result.spaceEnabledUnderNormal).toBe(true);
+  expect(result.birthdayEnabledUnderNormal).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('picking Birthday under Normal then switching to Sleep resets the stored selection, not just the disabled option (review catch, PR #69)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.difficulty = 'normal';
+    STATE.sceneMode = 'birthday';
+    refreshSceneSelector();
+    const selectedBeforeSleep = document.getElementById('scene-selector').value;
+
+    STATE.difficulty = 'sleep';
+    refreshSceneSelector();
+
+    return {
+      selectedBeforeSleep,
+      sceneModeAfterSleep: STATE.sceneMode,
+      selectedAfterSleep: document.getElementById('scene-selector').value,
+    };
+  });
+
+  expect(result.selectedBeforeSleep).toBe('birthday');
+  // Falls back to the same safe default resolveSceneBlock itself uses --
+  // the dropdown's displayed value must never disagree with what
+  // actually gets played.
+  expect(result.sceneModeAfterSleep).toBe('space');
+  expect(result.selectedAfterSleep).toBe('space');
   expect(errors).toEqual([]);
 });
 
