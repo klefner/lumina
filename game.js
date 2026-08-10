@@ -2563,7 +2563,7 @@ const STATE = {
                          // scene === 'forest' (see generateForestScene); null otherwise
   beachScene: null,      // { waveLines, glitterDots, moonXFrac, ... } for the current wave when
                           // scene === 'beach' (see generateBeachScene); null otherwise
-  birthdayScene: null,    // { balloonBunches, confetti, lights, cakeXFrac, ... } for the current wave
+  birthdayScene: null,    // { confetti, lights, cakeXFrac, celebrating, celebrationBalloons, ... } for the current wave
                            // when scene === 'birthday' (see generateBirthdayScene); null otherwise
   halloweenScene: null,   // { pumpkins, bats, trees, fogBands, ... } for the current wave when
                            // scene === 'halloween' (see generateHalloweenScene); null otherwise
@@ -3633,8 +3633,21 @@ function updateSceneAmbienceForWaveComplete() {
   if (STATE.ambienceStreak < config.order.length) {
     STATE.ambienceStreak++;
     startSceneAmbienceLayer(STATE.scene, config.order[STATE.ambienceStreak - 1]);
-    if (STATE.ambienceStreak === config.order.length && STATE.sceneMode === 'rotate') {
-      queueSceneCompleteToast(STATE.scene);
+    if (STATE.ambienceStreak === config.order.length) {
+      if (STATE.sceneMode === 'rotate') queueSceneCompleteToast(STATE.scene);
+      // Birthday's balloon release -- see generateCelebrationBalloons' own
+      // comment. Fires the wave this scene's whole ambient set finishes
+      // revealing, in both Rotate and fixed scene mode (unlike the toast
+      // above, which is Rotate-only since it announces a scene change
+      // that only happens under Rotate) -- STATE.birthdayScene is always
+      // the current wave's scene object by this point (checkWaveComplete
+      // calls this after STATE.phase is already 'WAVE_COMPLETE', and a
+      // fresh one is built at the start of every birthday wave), so
+      // there's nothing else to reset here.
+      if (STATE.scene === 'birthday' && STATE.birthdayScene) {
+        STATE.birthdayScene.celebrating = true;
+        STATE.birthdayScene.celebrationBalloons = generateCelebrationBalloons();
+      }
     }
   }
 }
@@ -8826,61 +8839,43 @@ const BIRTHDAY_CONFIG = {
   CONFETTI_COLORS: ['#ff5d8f', '#ffd23f', '#3fd0c9', '#a06cff', '#ff9a3f', '#ffffff'],
   PUNCH_COLOR: '#c22a5e',
   TABLEWARE_COLOR: '#fdeef7',
-  // Shared by the table's own draw code and the balloon bouquets' knot
-  // placement (see generateBalloonBunches) -- the whole point of tying
-  // balloons to the table is that they visibly sit ON it, so both need
-  // the exact same fraction, not two independently-tuned numbers that can
-  // drift apart (review catch, PR #79: the knot used to float 6.5-8.5%
-  // of screen height above the table with nothing tethering it down).
-  TABLE_TOP_FRAC: 0.95,
+  TABLE_TOP_FRAC: 0.95, // fraction of canvas height where the table's top edge sits
 };
 
-// Balloons used to be independent solo shapes drifting freely across the
-// whole board -- a bright round glossy circle, slowly rising, was reported
-// by a low-vision playtester (severe macular degeneration) as
-// indistinguishable from an actual dot: the slow drift that would
-// normally read as "this is background, not a target" at a glance simply
-// wasn't perceptible to her, so she kept trying to connect them and
-// nothing happened. Tying 3-4 balloons into one bouquet per knot, anchoring
-// each bouquet to the party table alongside the cake/punch bowl/plates
-// (rather than floating through the middle of the play area), and dropping
-// the old per-balloon glossy highlight (the one trait they shared with
-// drawDot's white core) all push the same direction: read as one piece of
-// scenery grouped with other obvious scenery, not several loose things
-// that might be interactive.
-function generateBalloonBunches() {
-  const bunchCount = 2 + Math.floor(Math.random() * 2); // 2-3 bouquets
-  const anchorSlots = [0.08, 0.2, 0.8, 0.92].sort(() => Math.random() - 0.5);
-  const bunches = [];
-  for (let i = 0; i < bunchCount; i++) {
-    const balloonCount = 3 + Math.floor(Math.random() * 2); // 3-4 per bouquet
-    const balloons = [];
-    for (let j = 0; j < balloonCount; j++) {
-      balloons.push({
-        dxFrac: (Math.random() - 0.5) * 0.045,
-        dyFrac: -0.02 - Math.random() * 0.09, // stacked upward from the knot
-        colorIndex: Math.floor(Math.random() * BIRTHDAY_CONFIG.BALLOON_COLORS.length),
-        radiusFrac: 0.022 + Math.random() * 0.01,
-      });
-    }
-    bunches.push({
-      anchorXFrac: anchorSlots[i],
-      knotYFrac: BIRTHDAY_CONFIG.TABLE_TOP_FRAC, // tied off exactly at the table edge, not floating above it
+// Balloons no longer appear during ordinary play at all -- a low-vision
+// playtester (severe macular degeneration) mistook free-floating solo
+// balloons for connectable dots, and even a redesign that tied them into
+// bouquets anchored to the table (see git history, PR #79) still put a
+// bright round shape in the same scene as the real dots the whole time
+// the player is actually trying to connect something. Cleanest fix:
+// balloons only exist for a specific, non-interactive moment -- the
+// WAVE_COMPLETE celebration screen the wave that finishes revealing this
+// scene's whole ambient set (see updateSceneAmbienceForWaveComplete's
+// STATE.birthdayScene.celebrating hookup) -- where there's nothing to
+// connect and nothing to confuse them with. Free to float and rise there,
+// same joyful "balloon release" motion the original design used, since
+// the one thing that made that motion a problem (looking like an
+// unresponsive dot while the player is actively drawing lines) can't
+// happen on a screen where drawing lines isn't a thing you do.
+function generateCelebrationBalloons() {
+  const balloonCount = 10 + Math.floor(Math.random() * 6);
+  const balloons = [];
+  for (let i = 0; i < balloonCount; i++) {
+    balloons.push({
+      xFrac: Math.random(),
+      yFrac: 1 + Math.random() * 0.3, // start below the bottom edge, staggered
+      colorIndex: Math.floor(Math.random() * BIRTHDAY_CONFIG.BALLOON_COLORS.length),
+      radiusFrac: 0.026 + Math.random() * 0.018,
+      riseSpeed: 0.00035 + Math.random() * 0.00035, // faster than the old ambient drift -- this is a release, not a background detail
       swayPhase: Math.random() * Math.PI * 2,
-      swaySpeed: 0.0004 + Math.random() * 0.0003,
-      // A small tied-down nudge, not a free drift -- the whole bouquet
-      // sways together as one rigid unit around its knot, the opposite
-      // motion of a dot (which never moves as a group with anything).
-      swayAmount: 0.006 + Math.random() * 0.005,
-      balloons,
+      swaySpeed: 0.0006 + Math.random() * 0.0006,
+      swayAmount: 0.02 + Math.random() * 0.025,
     });
   }
-  return bunches;
+  return balloons;
 }
 
 function generateBirthdayScene() {
-  const balloonBunches = generateBalloonBunches();
-
   const confettiCount = 26 + Math.floor(Math.random() * 14);
   const confetti = [];
   for (let i = 0; i < confettiCount; i++) {
@@ -8912,11 +8907,16 @@ function generateBirthdayScene() {
   }
 
   return {
-    balloonBunches,
     confetti,
     lights,
     cakeXFrac: 0.5 + (Math.random() - 0.5) * 0.1,
-    phase: 0, // frame accumulator driving balloon-bouquet sway/confetti fall/light twinkle/candle flicker below
+    phase: 0, // frame accumulator driving confetti fall/light twinkle/candle flicker/celebration balloons below
+    // Set true by updateSceneAmbienceForWaveComplete on the wave that
+    // finishes revealing this scene's ambient set -- see
+    // generateCelebrationBalloons' own comment for why balloons only
+    // exist here, not during ordinary play.
+    celebrating: false,
+    celebrationBalloons: null,
   };
 }
 
@@ -8924,15 +8924,21 @@ function updateBirthdayScene() {
   if (STATE.scene !== 'birthday' || !STATE.birthdayScene) return;
   const scene = STATE.birthdayScene;
   scene.phase += 1;
-  // Balloon bouquets have no per-frame state of their own -- each one's
-  // sway is computed straight from scene.phase at draw time (see
-  // drawBirthdayScene), same as the light garland's twinkle below.
   for (const c of scene.confetti) {
     c.yFrac += c.fallSpeed;
     c.rotation += c.rotSpeed;
     if (c.yFrac > 1.05) {
       c.yFrac = -0.05;
       c.xFrac = Math.random();
+    }
+  }
+  if (scene.celebrating && scene.celebrationBalloons) {
+    for (const b of scene.celebrationBalloons) {
+      b.yFrac -= b.riseSpeed;
+      if (b.yFrac < -0.08) { // drifted off the top -- recycle from below, same trick confetti uses, so the release keeps going for as long as the player lingers on WAVE_COMPLETE
+        b.yFrac = 1.05;
+        b.xFrac = Math.random();
+      }
     }
   }
 }
@@ -9048,40 +9054,6 @@ function drawBirthdayScene() {
   }
   ctx.globalAlpha = 1;
 
-  // Balloon bouquets -- 3-4 balloons tied to one knot at the table edge,
-  // swaying together as a single rigid shape (not independently), so the
-  // silhouette reads as "one tied decoration" rather than several loose
-  // round things. No glossy highlight (see generateBalloonBunches).
-  for (const bunch of scene.balloonBunches) {
-    const sway = Math.sin(t * bunch.swaySpeed + bunch.swayPhase) * bunch.swayAmount;
-    const knotX = (bunch.anchorXFrac + sway) * w;
-    const knotY = bunch.knotYFrac * h;
-
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-    ctx.lineWidth = 1;
-    for (const b of bunch.balloons) {
-      const bx = knotX + b.dxFrac * w;
-      const by = knotY + b.dyFrac * h;
-      ctx.beginPath();
-      ctx.moveTo(bx, by);
-      ctx.lineTo(knotX, knotY);
-      ctx.stroke();
-    }
-    for (const b of bunch.balloons) {
-      const bx = knotX + b.dxFrac * w;
-      const by = knotY + b.dyFrac * h;
-      const r = b.radiusFrac * Math.min(w, h);
-      ctx.beginPath();
-      ctx.ellipse(bx, by, r * 0.82, r, 0, 0, Math.PI * 2);
-      ctx.fillStyle = BIRTHDAY_CONFIG.BALLOON_COLORS[b.colorIndex];
-      ctx.fill();
-    }
-    ctx.beginPath();
-    ctx.arc(knotX, knotY, 2, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255,255,255,0.4)';
-    ctx.fill();
-  }
-
   const candleX = cakeX;
   const candleTopY = cakeY - 0.035 * h;
   ctx.fillStyle = '#ffe9a8';
@@ -9103,6 +9075,32 @@ function drawBirthdayScene() {
   ctx.ellipse(candleX, flameY, flameR * 0.5, flameR, 0, 0, Math.PI * 2);
   ctx.fillStyle = '#fff3c4';
   ctx.fill();
+
+  // Celebration balloon release -- WAVE_COMPLETE only, see
+  // generateCelebrationBalloons' own comment for why balloons are
+  // confined to this one non-interactive screen. Drawn last/on top so the
+  // release genuinely reads as filling the screen, the payoff its rarity
+  // is meant to earn.
+  if (scene.celebrating && scene.celebrationBalloons) {
+    for (const b of scene.celebrationBalloons) {
+      const drift = t * b.swaySpeed + b.swayPhase;
+      const bx = (b.xFrac + Math.sin(drift) * b.swayAmount) * w;
+      const by = b.yFrac * h;
+      const r = b.radiusFrac * Math.min(w, h);
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(bx, by + r);
+      ctx.lineTo(bx + Math.sin(drift * 1.3) * r * 0.4, by + r * 3.2);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.ellipse(bx, by, r * 0.82, r, 0, 0, Math.PI * 2);
+      ctx.fillStyle = BIRTHDAY_CONFIG.BALLOON_COLORS[b.colorIndex];
+      ctx.fill();
+    }
+  }
 }
 
 // ============================================================
