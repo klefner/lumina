@@ -6439,21 +6439,32 @@ test('birthday balloons only appear as a WAVE_COMPLETE celebration once the scen
     const celebratingNow = STATE.birthdayScene.celebrating;
     const balloonCount = STATE.birthdayScene.celebrationBalloons.length;
 
-    // Balloons rise and recycle from the bottom while the celebration lasts.
+    // Balloons visibly rise over a short window (before any of them could
+    // plausibly have recycled yet).
     const before = STATE.birthdayScene.celebrationBalloons.map(b => b.yFrac);
+    for (let i = 0; i < 10; i++) updateBirthdayScene();
+    const afterShort = STATE.birthdayScene.celebrationBalloons.map(b => b.yFrac);
+    const allRoseInitially = before.every((y, i) => afterShort[i] < y);
+
+    // Over a much longer window (many full cycles at this speed), every
+    // balloon should have recycled from the bottom repeatedly rather than
+    // rising forever or drifting out of bounds -- checked as a bounds
+    // invariant rather than a before/after comparison, since by this
+    // point each balloon could be anywhere in its own cycle.
     for (let i = 0; i < 5000; i++) updateBirthdayScene();
-    const after = STATE.birthdayScene.celebrationBalloons.map(b => b.yFrac);
-    const allRoseOrRecycled = before.every((y, i) => after[i] < y || after[i] > 1);
+    const afterLong = STATE.birthdayScene.celebrationBalloons.map(b => b.yFrac);
+    const allWithinBounds = afterLong.every(y => y >= -0.09 && y <= 1.06);
 
     drawBirthdayScene(); // throws if the celebration draw path is broken
 
-    return { notCelebratingYet, celebratingNow, balloonCount, allRoseOrRecycled };
+    return { notCelebratingYet, celebratingNow, balloonCount, allRoseInitially, allWithinBounds };
   });
 
   expect(result.notCelebratingYet).toBe(true);
   expect(result.celebratingNow).toBe(true);
   expect(result.balloonCount).toBeGreaterThan(0);
-  expect(result.allRoseOrRecycled).toBe(true);
+  expect(result.allRoseInitially).toBe(true);
+  expect(result.allWithinBounds).toBe(true);
   expect(errors).toEqual([]);
 });
 

@@ -8863,10 +8863,19 @@ function generateCelebrationBalloons() {
   for (let i = 0; i < balloonCount; i++) {
     balloons.push({
       xFrac: Math.random(),
-      yFrac: 1 + Math.random() * 0.3, // start below the bottom edge, staggered
+      // Seeded across the whole visible height (plus a little below, for
+      // staggered entry), not all starting off-screen below the bottom
+      // edge -- WAVE_COMPLETE advances on the very next tap/click, so a
+      // release that only started arriving after several seconds (review
+      // catch, PR #81) would show most players a mostly-empty screen
+      // instead of the advertised burst.
+      yFrac: Math.random() * 1.2,
       colorIndex: Math.floor(Math.random() * BIRTHDAY_CONFIG.BALLOON_COLORS.length),
       radiusFrac: 0.026 + Math.random() * 0.018,
-      riseSpeed: 0.00035 + Math.random() * 0.00035, // faster than the old ambient drift -- this is a release, not a background detail
+      // Fast enough to visibly cross the screen in a few seconds -- a
+      // release, not an ambient drift a player might never stay long
+      // enough to see (same review).
+      riseSpeed: 0.0035 + Math.random() * 0.0025,
       swayPhase: Math.random() * Math.PI * 2,
       swaySpeed: 0.0006 + Math.random() * 0.0006,
       swayAmount: 0.02 + Math.random() * 0.025,
