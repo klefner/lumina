@@ -5892,7 +5892,7 @@ test('a beach-scene wave streak reveals one more ambient layer per completion, i
   });
 
   expect(result.streaks).toEqual([1, 2, 3, 4, 4, 4]);
-  expect(result.order).toEqual(['waves', 'wind', 'shorebirds', 'foghorn']);
+  expect(result.order).toEqual(['waves', 'wind', 'shorebirds', 'whale']);
   expect(errors).toEqual([]);
 });
 
@@ -6042,7 +6042,7 @@ test('beach ambient layers actually start playing (real decoded audio) as the st
   expect(snapshots[0]).toEqual(['waves']);
   expect(snapshots[1]).toEqual(['waves', 'wind']);
   expect(snapshots[2]).toEqual(['waves', 'wind', 'shorebirds']);
-  expect(snapshots[3]).toEqual(['waves', 'wind', 'shorebirds', 'foghorn']);
+  expect(snapshots[3]).toEqual(['waves', 'wind', 'shorebirds', 'whale']);
   expect(errors).toEqual([]);
 });
 
