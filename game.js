@@ -8755,17 +8755,23 @@ function drawHalloweenScene() {
   }
 
   // Ground fog -- soft translucent horizontal bands drifting sideways,
-  // each one wrapping around once it drifts off either edge (see
-  // updateHalloweenScene) rather than snapping back visibly.
+  // wrapping around once xFrac cycles past 1 (see updateHalloweenScene).
+  // A single gradient copy goes fully off-screen for a stretch near the
+  // wrap point no matter how wide it is (review catch, PR #70) -- drawing
+  // a second copy one canvas-width to the left keeps one of the two
+  // always at least partially in view, so the band reads as continuously
+  // drifting rather than periodically vanishing.
+  const FOG_BAND_WIDTH = 1.6; // multiple of canvas width -- wide enough that each copy's own fade is soft
   for (const f of scene.fogBands) {
     const fy = f.yFrac * h;
-    const fx = (f.xFrac - 0.5) * w * 1.6; // wide enough band that the wrap point never lands on-screen
-    const grad = ctx.createLinearGradient(fx - w * 0.5, 0, fx + w * 0.5, 0);
-    grad.addColorStop(0, 'rgba(200,200,210,0)');
-    grad.addColorStop(0.5, `rgba(200,200,210,${f.opacity.toFixed(3)})`);
-    grad.addColorStop(1, 'rgba(200,200,210,0)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, fy - h * 0.03, w, h * 0.06);
+    for (const fx of [f.xFrac * w, f.xFrac * w - w]) {
+      const grad = ctx.createLinearGradient(fx - w * FOG_BAND_WIDTH / 2, 0, fx + w * FOG_BAND_WIDTH / 2, 0);
+      grad.addColorStop(0, 'rgba(200,200,210,0)');
+      grad.addColorStop(0.5, `rgba(200,200,210,${f.opacity.toFixed(3)})`);
+      grad.addColorStop(1, 'rgba(200,200,210,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, fy - h * 0.03, w, h * 0.06);
+    }
   }
 
   // Bare trees -- forking branches rather than Forest's solid canopy, so
@@ -8807,8 +8813,13 @@ function drawHalloweenScene() {
   // forest fireflies (layered sine noise), sitting on the ground line.
   for (const p of scene.pumpkins) {
     const px = p.xFrac * w;
-    const py = h - 6 - p.sizeFrac * h * 0.9;
     const r = p.sizeFrac * Math.min(w, h);
+    // Anchored from the ellipse's own rendered vertical radius (r * 0.82,
+    // matching the ellipse call below) rather than a separate h-based
+    // offset -- those disagreed on portrait canvases (min(w,h) = w there),
+    // leaving every pumpkin visibly floating above the ground line
+    // (review catch, PR #70).
+    const py = h - 6 - r * 0.82;
     const flicker = 0.75 + 0.25 * Math.sin(t * 0.15 + p.flickerPhase) * Math.sin(t * 0.047 + p.flickerPhase * 1.3);
 
     const glow = ctx.createRadialGradient(px, py, 0, px, py, r * 3);
