@@ -2752,6 +2752,18 @@ const STATE = {
 // SECTION 3: MUSIC ENGINE (procedural song generation & playback)
 // ============================================================
 function initAudio() {
+  // A context that's gone fully 'closed' (see recoverAudioAfterVisible)
+  // needs to be treated exactly like having no context at all -- checked
+  // via its state directly rather than relying on createBuffer/
+  // createBufferSource/connect/start throwing below, since the spec
+  // doesn't guarantee those throw on every browser once a context is
+  // closed (review catch: the try/catch further down is a real backstop
+  // for genuinely unexpected throws, but isn't guaranteed to ever run for
+  // this specific, entirely expected case, which would otherwise leave
+  // STATE.audioCtx pointing at a dead context forever).
+  if (STATE.audioCtx && STATE.audioCtx.state === 'closed') {
+    STATE.audioCtx = null;
+  }
   const hadNoContext = !STATE.audioCtx;
   if (!STATE.audioCtx) {
     // Wrapped in try/catch: if anything in graph setup ever throws (an
@@ -2773,31 +2785,43 @@ function initAudio() {
   // context suspended even when created inside a user gesture, and can fail
   // to fully engage the hardware audio session until a buffer is actually
   // played. Resume + play a silent buffer synchronously on every gesture as
-  // a robust unlock — cheap and idempotent if already unlocked.
-  if (STATE.audioCtx.state === 'suspended') {
-    const resumingCtx = STATE.audioCtx;
-    STATE.audioCtx.resume().then(() => {
-      // A phone call, Siri, another app grabbing the audio session, or the
-      // screen locking can leave an iOS Safari AudioContext permanently
-      // unable to resume no matter how many times resume() is called on
-      // it again — every future gesture in this same session just keeps
-      // retrying the same wedged instance. If it's still not running once
-      // this resume() actually settles, discard it so the *next* gesture
-      // builds a completely fresh AudioContext (and redecodes into it)
-      // instead of retrying forever — self-healing without requiring the
-      // player to know a full page reload is what actually fixes it.
-      if (STATE.audioCtx === resumingCtx && STATE.audioCtx.state !== 'running') {
-        STATE.audioCtx = null;
-      }
-    }).catch(() => {
-      if (STATE.audioCtx === resumingCtx) STATE.audioCtx = null;
-    });
+  // a robust unlock — cheap and idempotent if already unlocked. Wrapped in
+  // try/catch: a context that's gone fully 'closed' (see
+  // recoverAudioAfterVisible below) throws synchronously from
+  // createBuffer/createBufferSource/start rather than merely failing to
+  // resume — an uncaught throw here would abort whatever tap handler called
+  // initAudio(). Resetting audioCtx to null instead means this tap's caller
+  // still runs to completion, and the *next* tap gets a clean rebuild.
+  try {
+    if (STATE.audioCtx.state === 'suspended') {
+      const resumingCtx = STATE.audioCtx;
+      STATE.audioCtx.resume().then(() => {
+        // A phone call, Siri, another app grabbing the audio session, or the
+        // screen locking can leave an iOS Safari AudioContext permanently
+        // unable to resume no matter how many times resume() is called on
+        // it again — every future gesture in this same session just keeps
+        // retrying the same wedged instance. If it's still not running once
+        // this resume() actually settles, discard it so the *next* gesture
+        // builds a completely fresh AudioContext (and redecodes into it)
+        // instead of retrying forever — self-healing without requiring the
+        // player to know a full page reload is what actually fixes it.
+        if (STATE.audioCtx === resumingCtx && STATE.audioCtx.state !== 'running') {
+          STATE.audioCtx = null;
+        }
+      }).catch(() => {
+        if (STATE.audioCtx === resumingCtx) STATE.audioCtx = null;
+      });
+    }
+    const unlockBuffer = STATE.audioCtx.createBuffer(1, 1, 22050);
+    const unlockSource = STATE.audioCtx.createBufferSource();
+    unlockSource.buffer = unlockBuffer;
+    unlockSource.connect(STATE.audioCtx.destination);
+    unlockSource.start(0);
+  } catch (e) {
+    console.error('initAudio unlock failed; will retry on next input:', e);
+    STATE.audioCtx = null;
+    return;
   }
-  const unlockBuffer = STATE.audioCtx.createBuffer(1, 1, 22050);
-  const unlockSource = STATE.audioCtx.createBufferSource();
-  unlockSource.buffer = unlockBuffer;
-  unlockSource.connect(STATE.audioCtx.destination);
-  unlockSource.start(0);
 
   // A brand new context -- the very first one ever, or a rebuild after a
   // wedged one got discarded above -- starts with no song scheduled at
@@ -2859,16 +2883,51 @@ function scheduleCurrentSongOnceReady() {
 // full reload was the only thing that actually brought music back (a
 // reload always re-enters through startWave). This tries to recover the
 // instant the game regains focus instead, without waiting for a tap.
-// Only acts if the context was actually found suspended -- an innocuous
-// visibility blip (opening Control Center, a quick app-switcher swipe
-// that never truly backgrounds this tab) leaves it 'running' the whole
-// time, and forcing a reschedule then would just be an audible glitch
-// for no reason.
+// Only acts if the context was actually found suspended (or closed, see
+// below) -- an innocuous visibility blip (opening Control Center, a quick
+// app-switcher swipe that never truly backgrounds this tab) leaves it
+// 'running' the whole time, and forcing a reschedule then would just be an
+// audible glitch for no reason.
+//
+// Listened for on visibilitychange, pageshow, AND focus (see the three
+// addEventListener calls below) rather than visibilitychange alone --
+// player reports of this recovery occasionally not kicking in line up
+// with known cross-browser inconsistency in exactly when/whether
+// visibilitychange fires on a real app-switch-back gesture (as opposed to
+// same-tab backgrounding, which is more reliable). audioRecoveryPending
+// exists because those three can genuinely fire together for the same
+// real-world "switched back" moment -- without it, each would
+// independently call resume() and, once it settled, independently stop
+// and reschedule the song, doubling up on an otherwise harmless recovery
+// into an audible glitch.
+let audioRecoveryPending = false;
 function recoverAudioAfterVisible() {
   if (document.visibilityState !== 'visible') return;
   const ctx = STATE.audioCtx;
-  if (!ctx || ctx.state !== 'suspended') return;
+  if (!ctx) return;
+  // A real app-switch can leave the context fully 'closed' rather than
+  // merely 'suspended' on some mobile browsers under memory pressure --
+  // closed contexts can never resume, only be replaced. This used to fall
+  // straight through the (then suspended-only) guard below untouched: it
+  // stayed set as STATE.audioCtx forever, so even the *next* tap's
+  // initAudio() saw a non-null (but permanently dead) context and never
+  // rebuilt it -- silence that persisted across further taps, not just
+  // until the next one. Dropping it here (same outcome as the wedged
+  // branch at the bottom of this function) is enough; actually building a
+  // replacement has to wait for that next tap regardless, since
+  // constructing/resuming a *new* context from a background lifecycle
+  // event rather than a user gesture is unreliable across browsers' own
+  // autoplay policies -- the same reason the wedged branch below already
+  // defers to initAudio() instead of rebuilding inline.
+  if (ctx.state === 'closed') {
+    STATE.audioCtx = null;
+    return;
+  }
+  if (ctx.state !== 'suspended') return;
+  if (audioRecoveryPending) return;
+  audioRecoveryPending = true;
   Promise.resolve(ctx.resume()).catch(() => {}).then(() => {
+    audioRecoveryPending = false;
     if (STATE.audioCtx !== ctx) return; // some other recovery already replaced it
     if (ctx.state === 'running') {
       // Even a context reporting healthy again can have silently dropped
@@ -2892,6 +2951,8 @@ function recoverAudioAfterVisible() {
   });
 }
 document.addEventListener('visibilitychange', recoverAudioAfterVisible);
+window.addEventListener('pageshow', recoverAudioAfterVisible);
+window.addEventListener('focus', recoverAudioAfterVisible);
 
 // One-time master bus + decode kickoff, split out of initAudio so it can
 // be wrapped in a single try/catch there.
@@ -2938,9 +2999,11 @@ function initAudioGraph() {
   // the whole ambient bed against the song without touching individual
   // layers, and it rides along with the exact same pause/resume ducking
   // and peak limiting the music already gets, rather than a second,
-  // separately-tuned signal path.
+  // separately-tuned signal path. Its value is capped (see
+  // ambientMasterGainValue) rather than left at a flat 1.0, on player
+  // report that ambience could sometimes read louder than the music itself.
   const ambientGain = STATE.audioCtx.createGain();
-  ambientGain.gain.value = 1.0;
+  ambientGain.gain.value = ambientMasterGainValue();
   ambientGain.connect(compressor);
   STATE.ambientGain = ambientGain;
 
@@ -3439,7 +3502,54 @@ const AMBIENT_VARIATION = {
                             // the attack on every event-type retrigger (owl, gulls,
                             // whale, birthday's horn/cork) without erasing each
                             // sound's own character
+  // Player report: ambience can sometimes read louder than the music
+  // itself -- never acceptable. Enforced as a single shared multiplier on
+  // STATE.ambientGain (see ambientMasterGainValue/initAudioGraph) rather
+  // than hand-tuning every individual layer's own gain in
+  // SCENE_AMBIENT_CONFIG down, so each scene's already-hand-tuned internal
+  // balance between its own layers (e.g. "shorebirds' gain is down 20% on
+  // player feedback it ran hot relative to the rest of the scene") stays
+  // untouched -- only the whole bed's ceiling moves.
+  VOLUME_CAP_RATIO: 0.75,
 };
+
+// The value STATE.ambientGain (the one shared node every scene's whole
+// ambient bed routes through) is set to at graph-init time. Derived from
+// live constants rather than a hardcoded number so a future retune of
+// either side can't silently let this drift back out of sync with itself.
+//
+// Budgets the worst case as every layer *within a scene* summing
+// simultaneously, not just whichever single layer has the highest
+// configured gain (review catch: once a scene's ambient streak is fully
+// revealed, every one of its layers -- including its "rare" one-shot
+// events, which can still land on top of the continuous ones by chance --
+// is genuinely live at once, and Web Audio literally sums whatever's
+// connected to a shared node sample-by-sample; a single-layer budget left
+// real headroom for a fully-revealed scene's combined mix to blow well
+// past the cap even though each individual layer looked fine on its own).
+// Takes whichever scene's own layers sum to the highest total, accounts
+// for that landing at the very top of AMBIENT_VARIATION.GAIN_RANGE's
+// per-repeat jitter (its true worst case), and scales the whole shared
+// node down so even that worst case can't exceed
+// AMBIENT_VARIATION.VOLUME_CAP_RATIO of the loudest thing the music itself
+// ever produces -- a melody note at full peak and velocity,
+// KIND_PEAK.melody. Every other, quieter scene/moment ends up
+// proportionally further under the cap than that, which is fine: this is
+// a ceiling, not a target every scene needs to individually reach. Doesn't
+// separately budget for a single layer's own loop crossfade
+// (AMBIENT_VARIATION.CROSSFADE_SEC) -- an equal-power crossfade is
+// specifically designed to keep that one layer's own perceived loudness
+// roughly constant through the transition, not spike it, unlike genuinely
+// independent layers stacking.
+function ambientMasterGainValue() {
+  const worstCaseSceneGainSum = Math.max(
+    ...Object.values(SCENE_AMBIENT_CONFIG).map(scene =>
+      Object.values(scene.sounds).reduce((sum, s) => sum + s.gain, 0)
+    )
+  );
+  const worstCasePossibleMix = worstCaseSceneGainSum * AMBIENT_VARIATION.GAIN_RANGE[1];
+  return (AMBIENT_VARIATION.VOLUME_CAP_RATIO * KIND_PEAK.melody) / worstCasePossibleMix;
+}
 
 function randRange([lo, hi]) {
   return lo + Math.random() * (hi - lo);

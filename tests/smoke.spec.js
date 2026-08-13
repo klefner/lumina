@@ -3926,6 +3926,149 @@ test('recoverAudioAfterVisible discards a context that stays wedged after resume
   expect(errors).toEqual([]);
 });
 
+// Regression guard for the same underlying defect continuing to occur
+// occasionally even with the above recovery in place: a real app-switch on
+// some mobile browsers leaves the audio session fully 'closed' rather than
+// merely 'suspended' under memory pressure. The old guard only matched
+// 'suspended', so a closed context fell straight through untouched and
+// stayed set as STATE.audioCtx forever -- not just silent until the next
+// tap, but silent even *after* one, since initAudio() would see a non-null
+// (dead) context and never rebuild it.
+test('recoverAudioAfterVisible drops a fully closed audio context (not just suspended) instead of leaving it stuck forever', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const fakeCtx = {
+      state: 'closed',
+      currentTime: 0,
+      resume() { return Promise.reject(new Error('cannot resume a closed context')); },
+    };
+    STATE.audioCtx = fakeCtx;
+    recoverAudioAfterVisible();
+    // Dropped synchronously -- no resume() attempt needed for an already-closed context.
+    return { audioCtxDroppedSynchronously: STATE.audioCtx === null };
+  });
+
+  expect(result.audioCtxDroppedSynchronously).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+// initAudio checks ctx.state === 'closed' directly, up front, independent
+// of whether anything throws -- the Web Audio spec doesn't guarantee
+// createBuffer/createBufferSource/connect/start throw merely because a
+// context is closed, so relying on a try/catch around those calls alone
+// (an earlier version of this fix) would never even run on a browser
+// where they stay silently callable (review catch). Uses a closed fake
+// context whose methods are all silently callable -- no throw anywhere --
+// to prove detection doesn't depend on an exception showing up. Because
+// the check happens before initAudioGraph(), a closed context is rebuilt
+// into a fresh, real, working one in this same call -- not merely dropped
+// for some later tap to rebuild.
+test('initAudio detects and replaces a closed context with a fresh one, even when none of its methods actually throw', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const fakeCtx = {
+      state: 'closed',
+      // Every method a lenient/non-conformant browser might leave
+      // silently callable on a closed context -- none of them throw.
+      createBuffer() { return {}; },
+      createBufferSource() { return { connect() {}, start() {} }; },
+      resume() { return Promise.resolve(); },
+    };
+    STATE.audioCtx = fakeCtx;
+    initAudio();
+    return {
+      hasContext: !!STATE.audioCtx,
+      wasReplaced: STATE.audioCtx !== fakeCtx,
+      newContextNotClosed: STATE.audioCtx && STATE.audioCtx.state !== 'closed',
+    };
+  });
+
+  expect(result.hasContext).toBe(true);
+  expect(result.wasReplaced).toBe(true);
+  expect(result.newContextNotClosed).toBe(true);
+  expect(errors).toEqual([]); // no exception needed to detect or recover from this
+});
+
+// The try/catch around initAudio's tap-triggered unlock code is a
+// backstop for genuinely unexpected failures *other* than a closed
+// context (that specific case is now caught earlier, before this code
+// ever runs -- see the test above) -- e.g. some other transient browser
+// quirk touching the context. Simulates one directly so this backstop
+// itself stays covered, confirming initAudio still self-heals rather than
+// throwing out to its caller.
+test('initAudio self-heals instead of throwing on an unexpected failure from the unlock code itself', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const fakeCtx = {
+      state: 'running', // not 'closed' -- this exercises the try/catch backstop, not the closed-state check
+      createBuffer() { throw new Error('unexpected browser quirk'); },
+    };
+    STATE.audioCtx = fakeCtx;
+    let threw = false;
+    try {
+      initAudio();
+    } catch (e) {
+      threw = true;
+    }
+    return { threw, audioCtxDropped: STATE.audioCtx === null };
+  });
+
+  expect(result.threw).toBe(false);
+  expect(result.audioCtxDropped).toBe(true);
+  // Not asserting errors is empty here -- the self-heal path deliberately
+  // logs via console.error (same pattern initAudioGraph's own catch
+  // already uses), which is exactly what's being exercised.
+});
+
+// recoverAudioAfterVisible is now wired to visibilitychange, pageshow, AND
+// focus (not just visibilitychange) so a real app-switch-back is recovered
+// even on browsers that fire only some of those for the same "switched
+// back" moment -- player reports of the recovery occasionally not kicking
+// in line up with known cross-browser inconsistency in exactly when/
+// whether visibilitychange itself fires there. Those three genuinely can
+// fire together, though, so this confirms the re-entrancy guard collapses
+// them into a single resume() attempt rather than each independently
+// resuming and rescheduling (which would otherwise double up into an
+// audible glitch).
+test('multiple lifecycle events firing together for the same recovery moment (visibilitychange + pageshow + focus) only resume the context once', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    const fakeCtx = {
+      state: 'suspended',
+      currentTime: 0,
+      resumeCalls: 0,
+      resume() {
+        this.resumeCalls++;
+        this.state = 'running';
+        return new Promise(r => setTimeout(r, 30));
+      },
+    };
+    STATE.audioCtx = fakeCtx;
+    STATE.song = null; // isolate this test from any real scheduling attempt
+    // Simulate all three listeners firing for the same real-world moment.
+    recoverAudioAfterVisible();
+    recoverAudioAfterVisible();
+    recoverAudioAfterVisible();
+    await new Promise(r => setTimeout(r, 100));
+    return { resumeCalls: fakeCtx.resumeCalls };
+  });
+
+  expect(result.resumeCalls).toBe(1);
+  expect(errors).toEqual([]);
+});
+
 test('a mid-wave audio context rebuild (initAudio after a wedge) reschedules the current song instead of leaving it silent until the next wave', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
@@ -6359,6 +6502,46 @@ test('the scene ambience gain node exists once audio initializes, feeding into t
   }));
   expect(result.hasAmbientGain).toBe(true);
   expect(result.hasMasterBus).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+// Player report: ambience could sometimes read louder than the music
+// itself. Confirms the structural guarantee added for it -- and,
+// specifically, that the guarantee holds for a scene's *combined* mix
+// once its whole ambient streak is revealed (every layer live at once,
+// including "rare" one-shot events landing on top of the continuous ones
+// by chance), not just whichever single layer happens to have the highest
+// configured gain in isolation (review catch on the first version of this
+// fix: a single-layer budget left real headroom for a fully-revealed
+// scene's true combined mix to blow past the cap even with every
+// individual layer, and this exact test, passing).
+test("the ambient bed's shared gain node keeps even a scene's full combined mix (every layer live at once) under the music-relative volume cap", async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(500);
+
+  const result = await page.evaluate(() => {
+    const worstCaseSceneMixAmplitude = Math.max(
+      ...Object.values(SCENE_AMBIENT_CONFIG).map(scene => {
+        const sceneGainSum = Object.values(scene.sounds).reduce((sum, s) => sum + s.gain, 0);
+        return sceneGainSum * AMBIENT_VARIATION.GAIN_RANGE[1] * STATE.ambientGain.gain.value;
+      })
+    );
+    return {
+      worstCaseSceneMixAmplitude,
+      musicPeak: KIND_PEAK.melody,
+      capRatio: AMBIENT_VARIATION.VOLUME_CAP_RATIO,
+      ambientGainValue: STATE.ambientGain.gain.value,
+    };
+  });
+
+  // Not toBeCloseTo/exact equality -- this is a "never exceed" ceiling by
+  // design (quieter-than-cap is fine, e.g. any scene whose own combined
+  // mix isn't the global worst case), not a value every scene must hit.
+  expect(result.worstCaseSceneMixAmplitude).toBeLessThanOrEqual(result.musicPeak * result.capRatio + 1e-6);
+  expect(result.ambientGainValue).toBeLessThan(1.0); // confirms this is a real cap, not a vacuous no-op
   expect(errors).toEqual([]);
 });
 
