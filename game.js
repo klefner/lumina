@@ -254,7 +254,13 @@ function saveStats(stats) {
 const SAVE_KEY = 'lumina_save_v1';
 function saveGame() {
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify({ wave: STATE.wave, score: STATE.score }));
+    // rotateSeed rides along with the save it actually belongs to (see
+    // newRotateSeed's own comment) -- a single global "current" seed
+    // would get silently overwritten the moment a fresh game starts
+    // without touching this save, so loading the save back afterward
+    // would resolve its already-played waves against the wrong seed,
+    // possibly changing which package they'd shown.
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ wave: STATE.wave, score: STATE.score, rotateSeed: STATE.rotateSeed }));
     return true;
   } catch (e) { return false; }
 }
@@ -264,7 +270,10 @@ function loadSave() {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed.wave || parsed.wave < 1) return null;
-    return { wave: parsed.wave, score: parsed.score || 0 };
+    // rotateSeed is missing on a save written before this field existed --
+    // every call site falls back to STATE's own current seed when this is
+    // null (see handleLoadGameFromTitle/handleLoadGame/startGameFromTitle).
+    return { wave: parsed.wave, score: parsed.score || 0, rotateSeed: parsed.rotateSeed || null };
   } catch (e) { return null; }
 }
 function clearSave() {
@@ -313,12 +322,14 @@ function saveCockpitModeSetting(enabled) {
 
 // Scene -- which background plays behind the board (see SECTION 7C's
 // Space starfield/celestial bodies and SECTION 7E's Night Forest/7F's
-// Beach at Night). Either a fixed scene, or 'rotate' to cycle through
-// every entry in SCENE_LIST (see resolveSceneForWave), so two players
-// sitting side by side comparing scenes never need to touch the dropdown
-// mid-session. Defaults to 'rotate' (unlike flight/cockpit mode's
-// off-by-default) since picking a scene doesn't change how you play -- an
-// unconfigured player should just see everything.
+// Beach at Night). Either a fixed scene, or 'rotate' to work through every
+// entry in SCENE_LIST in a random order, one whole package (a scene's full
+// run of consecutive waves) at a time (see resolveSceneBlock's random-
+// package-order rewrite), so two players sitting side by side comparing
+// scenes never need to touch the dropdown mid-session. Defaults to
+// 'rotate' (unlike flight/cockpit mode's off-by-default) since picking a
+// scene doesn't change how you play -- an unconfigured player should just
+// see everything.
 const SCENE_LIST = ['space', 'forest', 'beach', 'birthday', 'halloween', 'christmas'];
 const SCENE_KEY = 'lumina_scene_v1';
 function loadSceneSetting() {
@@ -339,6 +350,50 @@ function loadSceneSetting() {
 }
 function saveSceneSetting(mode) {
   try { localStorage.setItem(SCENE_KEY, mode); } catch (e) { /* best-effort only */ }
+}
+
+// Rotate mode's package order (player request, 2026-08-14): instead of
+// always working through SCENE_LIST in the same fixed order, each
+// completed package -- one scene's whole run of consecutive waves, e.g.
+// Birthday's 5 -- is followed by a randomly chosen next package, not
+// necessarily the next array entry. Every wave of whichever package comes
+// up still plays in full before another package gets picked; nothing
+// about mid-package behavior changes, only which package comes next.
+//
+// The actual pick has to be reproducible, not just "call Math.random()
+// once" -- resolveSceneBlock is a pure function of waveNumber elsewhere
+// (the HUD's own progress display calls it every frame, see
+// updateWaveDisplay), and it has to keep agreeing with itself for the
+// same wave, including after a reload mid-run (loading a save re-derives
+// the scene from scratch, see startWave). A small seeded PRNG (mulberry32
+// -- public-domain, single self-contained function, no library needed)
+// makes the whole sequence a pure function of (seed, block index)
+// instead: same seed always produces the same package order, so as long
+// as the seed itself is persisted rather than re-rolled, a reload can't
+// retroactively change which package a wave the player already reached
+// was playing.
+function mulberry32(seed) {
+  return function () {
+    seed |= 0;
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// One seed per playthrough, riding along with whichever save it actually
+// belongs to (see SAVE_KEY's own rotateSeed field) rather than one global
+// "current" seed -- a single shared key would get silently overwritten
+// the moment a fresh game starts without touching an existing save
+// (Codex review catch, PR #87), so loading that save back afterward would
+// resolve its already-played waves against the WRONG seed, possibly
+// changing which package they'd shown. Every load/resume path restores
+// the seed the save was actually written with; only a genuinely new
+// playthrough (Start Game without autoload, Restart Game) calls this to
+// roll a fresh one.
+function newRotateSeed() {
+  return 1 + Math.floor(Math.random() * 0xFFFFFFFE);
 }
 
 // Paid scenes (see the Store: index.html's #store-overlay and
@@ -491,14 +546,29 @@ function resolveSceneBlock(waveNumber) {
     const scene = scenes.includes(requested) ? requested : 'space';
     return { scene, blockPosition: 0 };
   }
-  const counts = scenes.map(sceneWaveCount);
-  const cycleLength = counts.reduce((sum, n) => sum + n, 0);
-  let position = (waveNumber - 1) % cycleLength;
-  for (let i = 0; i < scenes.length; i++) {
-    if (position < counts[i]) return { scene: scenes[i], blockPosition: position };
-    position -= counts[i];
+  // Random package order (see mulberry32/newRotateSeed above) --
+  // packages no longer sit at fixed positions in one repeating cycle, so
+  // there's no modulo shortcut anymore: walk forward package by package,
+  // deterministically re-rolling the same sequence from the same seed
+  // every time, until the one containing waveNumber is reached. scenes is
+  // never empty (see activeSceneList) and every package is at least 1
+  // wave long (see sceneWaveCount), so `remaining` strictly decreases and
+  // this always terminates -- the iteration cap is just a defensive
+  // backstop, never expected to actually bite.
+  const rand = mulberry32(STATE.rotateSeed);
+  let previousScene = null;
+  let remaining = waveNumber - 1;
+  for (let guard = 0; guard < 100000; guard++) {
+    const candidates = (previousScene !== null && scenes.length > 1)
+      ? scenes.filter((s) => s !== previousScene) // never repeat the immediately previous package back to back
+      : scenes;
+    const scene = candidates[Math.floor(rand() * candidates.length)];
+    previousScene = scene;
+    const count = sceneWaveCount(scene);
+    if (remaining < count) return { scene, blockPosition: remaining };
+    remaining -= count;
   }
-  return { scene: scenes[0], blockPosition: 0 }; // unreachable given the loop above covers the full cycle -- keeps this total
+  return { scene: scenes[0], blockPosition: 0 }; // unreachable in practice -- see the guard's own comment
 }
 
 function resolveSceneForWave(waveNumber) {
@@ -2489,6 +2559,7 @@ function handleLoadGameFromTitle() {
   const resume = STATE.pendingResume;
   STATE.pendingResume = null;
   STATE.score = resume.score;
+  if (resume.rotateSeed) STATE.rotateSeed = resume.rotateSeed; // this save's own order, not whatever's currently in STATE
   startWave(resume.wave);
 }
 
@@ -2510,9 +2581,11 @@ function startGameFromTitle() {
     const resume = STATE.pendingResume;
     STATE.pendingResume = null;
     STATE.score = resume.score;
+    if (resume.rotateSeed) STATE.rotateSeed = resume.rotateSeed; // this save's own order, not whatever's currently in STATE
     startWave(resume.wave);
   } else {
     STATE.pendingResume = null;
+    STATE.rotateSeed = newRotateSeed(); // a genuinely new playthrough gets its own random package order
     startWave(1);
   }
 }
@@ -2732,7 +2805,10 @@ const STATE = {
   celestialBodies: [], // 0-2 large planets/moons/a star, spawned once per wave-complete reveal
 
   sceneMode: 'rotate', // persisted (see SCENE_KEY) -- picked on the title screen: a fixed scene,
-                        // or 'rotate' to cycle through SCENE_LIST a wave at a time
+                        // or 'rotate' to work through SCENE_LIST in a random package order
+  rotateSeed: 1,        // seeds Rotate mode's random package order (see mulberry32/newRotateSeed) --
+                         // set for real in init() from the pending save's own seed, or freshly
+                         // rolled if there isn't one; this placeholder is only ever read before that
   scene: 'space',       // this wave's actual resolved scene (see resolveSceneForWave/startWave) --
                          // what render() actually draws, independent of sceneMode
   forestScene: null,    // { trees, fireflies, moonXFrac, ... } for the current wave when
@@ -3908,13 +3984,16 @@ const SCENE_HUD_NAMES = {
 function queueSceneCompleteToast(scene) {
   const celebration = SCENE_COMPLETE_CELEBRATIONS[scene];
   if (!celebration) return;
-  // Must walk the same filtered list resolveSceneBlock actually rotates
-  // through (see activeSceneList) -- under Sleep mode, the unfiltered
-  // SCENE_LIST could name a scene as "next" that Sleep mode is about to
-  // skip right over, announcing an arrival that never happens.
-  const scenes = activeSceneList();
-  const sceneIndex = scenes.indexOf(scene);
-  const nextScene = scenes[(sceneIndex + 1) % scenes.length];
+  // Packages no longer sit in a fixed repeating order (see resolveSceneBlock's
+  // random-package-order rewrite), so "next" can't be read off scene's own
+  // position in activeSceneList anymore -- ask resolveSceneBlock itself,
+  // the one place that actually knows, for whichever wave starts the next
+  // package (this wave's block still has its own "bonus" wave left after
+  // this reveal, hence the blockPosition arithmetic below, not just
+  // STATE.wave + 1).
+  const { blockPosition } = resolveSceneBlock(STATE.wave);
+  const nextBlockFirstWave = STATE.wave + (sceneWaveCount(scene) - blockPosition);
+  const nextScene = resolveSceneBlock(nextBlockFirstWave).scene;
   queueAchievement({
     glyph: celebration.glyph,
     bg: celebration.bg,
@@ -11204,12 +11283,13 @@ function handleLoadGame() {
   }
   closePauseMenuUI();
   STATE.paused = false;
-  // A save only stores wave + score, not how many scene-ambience layers
-  // had built up -- there's no correct streak to resume into, so start
-  // the reveal over rather than guess.
+  // A save doesn't store how many scene-ambience layers had built up --
+  // there's no correct streak to resume into, so start the reveal over
+  // rather than guess.
   resetSceneAmbience();
   startFadeToBlack(() => {
     STATE.score = save.score;
+    if (save.rotateSeed) STATE.rotateSeed = save.rotateSeed; // this save's own order, not whatever's currently in STATE
     startWave(save.wave);
     startFadeFromBlack();
   });
@@ -11234,6 +11314,7 @@ function handleRestartGame() {
   closePauseMenuUI();
   STATE.paused = false;
   resetSceneAmbience(); // a genuine fresh start, same reasoning as handleLoadGame above
+  STATE.rotateSeed = newRotateSeed(); // same reasoning as startGameFromTitle's fresh-start branch
   startFadeToBlack(() => {
     STATE.score = 0;
     startWave(1);
@@ -12505,6 +12586,10 @@ function init() {
   STATE.cockpitMode = loadCockpitModeSetting();
   STATE.sceneMode = loadSceneSetting();
   STATE.purchasedScenes = loadPurchasedScenes();
+  // Adopt the pending save's own seed if it has one (matches what that
+  // save's already-played waves actually showed); only roll a fresh one
+  // when there's nothing to resume, or it predates this field.
+  STATE.rotateSeed = STATE.pendingResume?.rotateSeed || newRotateSeed();
   if (STATE.cockpitMode) ensureThreeLoaded(); // preload -- the title screen may already be showing it as checked
   applyDifficulty(STATE.difficulty);
   setupDifficultySelectorListeners();

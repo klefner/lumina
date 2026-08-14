@@ -270,10 +270,10 @@ test('Restart Current Level under Rotate mode does not inflate the scene wave co
   const result = await page.evaluate(() => {
     STATE.sceneMode = 'rotate';
     STATE.difficulty = 'normal';
-    startWave(1); // wave 1 is always the first Rotate-mode scene (space), 1 of 1
+    startWave(1); // whichever package Rotate mode's random order puts first (see resolveSceneBlock)
 
     STATE.sceneMode = 'rotate';
-    startWave(2); // first wave of the next scene's block
+    startWave(2); // wherever wave 2 actually falls -- same package's 2nd wave, or the next package's 1st
     const total = sceneWaveCount(STATE.scene);
     const beforeComplete = document.getElementById('scene-progress-display').textContent;
 
@@ -7203,35 +7203,130 @@ test('a Birthday-scene wave uses the real melody, and every other scene keeps th
 // Rotate mode's per-scene block schedule (see resolveSceneForWave/
 // sceneWaveCount) -- each scene holds for as many consecutive waves as it
 // has ambient sounds, so a player actually hears a scene's full set
-// before the background moves on, instead of it changing every wave.
+// before the background moves on, instead of it changing every wave. Which
+// package comes next is randomly chosen (see resolveSceneBlock/
+// mulberry32), not the next entry in a fixed list.
 // ------------------------------------------------------------
 
-test('Rotate mode holds each scene for as many waves as it has ambient sounds, then cycles', async ({ page }) => {
+test('Rotate mode holds each package for exactly as many waves as it has ambient sounds, moves to a randomly (and never immediately repeated) different package after, and the same seed always reproduces the same order', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
 
-  const scenes = await page.evaluate(() => {
+  const result = await page.evaluate(() => {
     STATE.sceneMode = 'rotate';
-    const result = [];
-    for (let wave = 1; wave <= 28; wave++) result.push(resolveSceneForWave(wave));
-    return result;
+
+    function runSequence(seed, waveCount) {
+      STATE.rotateSeed = seed;
+      const scenes = [];
+      for (let wave = 1; wave <= waveCount; wave++) scenes.push(resolveSceneForWave(wave));
+      return scenes;
+    }
+
+    const sequence = runSequence(112233, 60);
+
+    // Collapse the per-wave list into (scene, runLength) packages.
+    const blocks = [];
+    for (const scene of sequence) {
+      if (blocks.length && blocks[blocks.length - 1].scene === scene) {
+        blocks[blocks.length - 1].length++;
+      } else {
+        blocks.push({ scene, length: 1 });
+      }
+    }
+
+    return {
+      // Every package's run length must equal that scene's own real wave
+      // count (see sceneWaveCount) -- a package is never cut short or run
+      // long regardless of what order it lands in.
+      lengthsMatch: blocks.every((b) => b.length === sceneWaveCount(b.scene)),
+      // Shuffled, not just "the next one in a fixed list" -- but still
+      // never the exact same package twice in a row (see resolveSceneBlock).
+      noImmediateRepeat: blocks.every((b, i) => i === 0 || b.scene !== blocks[i - 1].scene),
+      distinctScenesSeen: new Set(blocks.map((b) => b.scene)).size,
+      blockCount: blocks.length,
+      // The same seed must always produce the same order (needed for the
+      // HUD's own repeated resolveSceneBlock calls, and for a reload
+      // mid-run to agree with itself -- see the save's own rotateSeed
+      // field in saveGame/loadSave).
+      sameSeedReproducible: JSON.stringify(sequence) === JSON.stringify(runSequence(112233, 60)),
+      // A different seed must (overwhelmingly likely, with 6+ scenes and
+      // 60 waves) actually produce a different order -- proving this is
+      // real randomness, not a fixed sequence in disguise.
+      differsAcrossSeeds: JSON.stringify(sequence) !== JSON.stringify(runSequence(998877, 60)),
+    };
   });
 
-  // space:1, forest:5, beach:5, birthday:5, halloween:6, christmas:5 (each
-  // scene's SCENE_AMBIENT_CONFIG.<scene>.order.length + one bonus wave --
-  // see sceneWaveCount; halloween grew to 5 ambient layers with the
-  // ghost/witch-cackle/trick-or-treat redesign), then the cycle (length 27)
-  // wraps back to space at wave 28.
-  expect(scenes).toEqual([
-    'space',
-    'forest', 'forest', 'forest', 'forest', 'forest',
-    'beach', 'beach', 'beach', 'beach', 'beach',
-    'birthday', 'birthday', 'birthday', 'birthday', 'birthday',
-    'halloween', 'halloween', 'halloween', 'halloween', 'halloween', 'halloween',
-    'christmas', 'christmas', 'christmas', 'christmas', 'christmas',
-    'space',
-  ]);
+  expect(result.lengthsMatch).toBe(true);
+  expect(result.noImmediateRepeat).toBe(true);
+  expect(result.distinctScenesSeen).toBeGreaterThan(1);
+  expect(result.blockCount).toBeGreaterThan(3);
+  expect(result.sameSeedReproducible).toBe(true);
+  expect(result.differsAcrossSeeds).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('Rotate mode\'s random package order rides along with a saved game across a reload (review catch, PR #87 -- a global "current" seed would drift out of sync with an untouched save), and a genuinely new game (Start Game without autoload, or Restart Game) reseeds it', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  // With no save at all, there's no "in-progress run" to protect -- a
+  // reload is free to roll a fresh seed each time, same as any other
+  // fresh session.
+  const seedBeforeSave = await page.evaluate(() => STATE.rotateSeed);
+  expect(Number.isFinite(seedBeforeSave)).toBe(true);
+  await page.reload();
+  await page.waitForFunction(() => window.__lumina);
+  const seedAfterReloadNoSave = await page.evaluate(() => STATE.rotateSeed);
+  expect(seedAfterReloadNoSave).not.toBe(seedBeforeSave);
+
+  // Once a save actually exists, its own embedded seed (see SAVE_KEY) must
+  // survive a reload -- loading it back needs to resolve its already-
+  // played waves against the exact seed they were shown with, not
+  // whatever a since-started different playthrough left lying around.
+  const savedSeed = await page.evaluate(() => {
+    STATE.wave = 5;
+    STATE.score = 100;
+    saveGame();
+    return STATE.rotateSeed;
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.__lumina);
+  const seedAfterReloadWithSave = await page.evaluate(() => STATE.rotateSeed);
+  expect(seedAfterReloadWithSave).toBe(savedSeed);
+
+  // Start Game with autoload off ignores that save and starts fresh -- a
+  // genuinely new playthrough, so it gets its own shuffle.
+  await page.click('#start-game-button');
+  const seedAfterFreshStart = await page.evaluate(() => STATE.rotateSeed);
+  expect(seedAfterFreshStart).not.toBe(savedSeed);
+
+  // Loading that same save back explicitly restores its own seed, not
+  // whatever the fresh start above just rolled.
+  await page.click('#pause-button');
+  await page.click('#pause-load');
+  await page.waitForTimeout(1100); // > FADE_CONFIG.OUT_DURATION_SEC (900ms) -- must outlast the fade-out before its onComplete (where the real state change happens) runs
+  const seedAfterExplicitLoad = await page.evaluate(() => STATE.rotateSeed);
+  expect(seedAfterExplicitLoad).toBe(savedSeed);
+
+  // Restart Game is the same kind of genuinely-new-playthrough moment as
+  // Start Game above.
+  await page.click('#pause-button');
+  await page.click('#pause-restart-game');
+  await page.waitForTimeout(1100);
+  const seedAfterRestartGame = await page.evaluate(() => STATE.rotateSeed);
+  expect(seedAfterRestartGame).not.toBe(savedSeed);
+
+  // Restart Current Level (unlike Restart Game) replays the same wave,
+  // not a new playthrough -- it must NOT reseed, or the package that wave
+  // was already showing could change out from under the player mid-retry.
+  await page.click('#pause-button');
+  await page.click('#pause-restart-level');
+  await page.waitForTimeout(1100);
+  const seedAfterRestartLevel = await page.evaluate(() => STATE.rotateSeed);
+  expect(seedAfterRestartLevel).toBe(seedAfterRestartGame);
+
   expect(errors).toEqual([]);
 });
 
@@ -7251,7 +7346,7 @@ test('a fixed scene mode is unaffected by the block schedule -- every wave resol
   expect(errors).toEqual([]);
 });
 
-test('completing a scene\'s ambient set under Rotate mode queues a celebration toast naming it and the next scene', async ({ page }) => {
+test('completing a scene\'s ambient set under Rotate mode queues a celebration toast naming it and the actual next package (order-agnostic -- see the random-package-order rewrite)', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });
   await injectSceneWaveSetup(page);
@@ -7262,33 +7357,51 @@ test('completing a scene\'s ambient set under Rotate mode queues a celebration t
   const result = await page.evaluate(async () => {
     await STATE.ambientBuffersReadyPromise;
     STATE.sceneMode = 'rotate';
+    STATE.rotateSeed = 55443322; // fixed -- order-agnostic below, but must still be reproducible
     // Suppress the unrelated wave-milestone/high-score achievements so
     // only the scene-complete toast this test cares about ends up queued.
     STATE.stats.bestWave = 999999;
     STATE.stats.bestWaveScore = 999999999;
 
-    // Drive real startWave() calls across the whole forest block (waves
-    // 2-5 under the block schedule) so both resolveSceneForWave and the
-    // ambience streak advance exactly as they would in real play.
-    for (let wave = 2; wave <= 5; wave++) {
-      startWave(wave);
-      setUpCompletableSceneWave(STATE.scene, wave);
+    // Which package lands first is no longer fixed -- find the first
+    // block whose scene actually has ambient layers to reveal (space has
+    // none, so completing it never queues this toast).
+    let wave = 1;
+    let blockScene, blockPosition;
+    while (true) {
+      ({ scene: blockScene, blockPosition } = resolveSceneBlock(wave));
+      if (SCENE_AMBIENT_CONFIG[blockScene]) break;
+      wave += sceneWaveCount(blockScene) - blockPosition;
+    }
+    const blockStart = wave - blockPosition;
+    const blockEnd = blockStart + sceneWaveCount(blockScene) - 1;
+    const expectedNextScene = resolveSceneBlock(blockEnd + 1).scene;
+    const expectedToastText = `${SCENE_DISPLAY_NAMES[blockScene]} Complete! ${SCENE_DISPLAY_NAMES[expectedNextScene]} Ahead`;
+
+    // Drive real startWave() calls across the whole block so both
+    // resolveSceneForWave and the ambience streak advance exactly as they
+    // would in real play.
+    for (let w = blockStart; w <= blockEnd; w++) {
+      startWave(w);
+      setUpCompletableSceneWave(STATE.scene, w);
       checkWaveComplete();
       await new Promise(r => setTimeout(r, 30));
     }
 
     return {
+      blockScene, expectedToastText,
       sceneAtEnd: STATE.scene,
       streakAtEnd: STATE.ambienceStreak,
+      expectedStreak: SCENE_AMBIENT_CONFIG[blockScene].order.length,
       toastVisible: document.getElementById('achievement-toast').classList.contains('visible'),
       toastText: document.getElementById('achievement-label').textContent,
     };
   });
 
-  expect(result.sceneAtEnd).toBe('forest');
-  expect(result.streakAtEnd).toBe(4);
+  expect(result.sceneAtEnd).toBe(result.blockScene);
+  expect(result.streakAtEnd).toBe(result.expectedStreak);
   expect(result.toastVisible).toBe(true);
-  expect(result.toastText).toBe('Forest Complete! Beach Ahead');
+  expect(result.toastText).toBe(result.expectedToastText);
   expect(errors).toEqual([]);
 });
 
@@ -7337,6 +7450,7 @@ test('the bonus wave after a scene completes keeps the full soundscape playing, 
   const result = await page.evaluate(async () => {
     await STATE.ambientBuffersReadyPromise;
     STATE.sceneMode = 'rotate';
+    STATE.rotateSeed = 13579; // fixed -- order-agnostic below, but must still be reproducible
     function setUpWave(wave) {
       canvas.width = 500; canvas.height = 900;
       STATE.world = { w: 2000, h: 2000 };
@@ -7348,40 +7462,59 @@ test('the bonus wave after a scene completes keeps the full soundscape playing, 
       STATE.waveStartScore = 0;
       STATE.score = 0;
     }
-    // Forest occupies waves 2-6 under the block schedule (4 reveals +
-    // 1 bonus wave -- see sceneWaveCount). Play through wave 5, the wave
-    // that reveals the 4th/last sound (owl).
-    for (let wave = 2; wave <= 5; wave++) {
-      startWave(wave);
-      setUpWave(wave);
+
+    // Random package order (see resolveSceneBlock) means which scene
+    // lands where is no longer fixed -- find the first block whose scene
+    // actually has ambient layers to reveal (space has none, so a bonus
+    // wave/handoff there would be a no-op, not a meaningful test of this
+    // behavior).
+    let wave = 1;
+    let blockScene, blockPosition;
+    while (true) {
+      ({ scene: blockScene, blockPosition } = resolveSceneBlock(wave));
+      if (SCENE_AMBIENT_CONFIG[blockScene]) break;
+      wave += sceneWaveCount(blockScene) - blockPosition;
+    }
+    const blockStart = wave - blockPosition;
+    const order = SCENE_AMBIENT_CONFIG[blockScene].order;
+    const lastRevealWave = blockStart + order.length - 1;
+    const bonusWave = blockStart + order.length; // == this block's last wave
+    const nextScene = resolveSceneBlock(bonusWave + 1).scene;
+
+    for (let w = blockStart; w <= lastRevealWave; w++) {
+      startWave(w);
+      setUpWave(w);
       checkWaveComplete();
       await new Promise(r => setTimeout(r, 30));
     }
     const sceneAndLayersAfterLastReveal = { scene: STATE.scene, layers: Object.keys(STATE.ambienceLayers) };
 
-    // Start wave 6 -- the bonus wave. If the fix weren't in place, this
-    // would already have switched to 'beach' and reset every forest layer.
-    startWave(6);
+    // Start the bonus wave. If the fix weren't in place, this would
+    // already have switched to nextScene and reset every layer.
+    startWave(bonusWave);
     const sceneAndLayersAtBonusWaveStart = { scene: STATE.scene, layers: Object.keys(STATE.ambienceLayers) };
-    setUpWave(6);
+    setUpWave(bonusWave);
     checkWaveComplete();
     await new Promise(r => setTimeout(r, 30));
-    const streakAfterBonusWave = STATE.ambienceStreak; // must not advance past 4 -- nothing left to reveal
+    const streakAfterBonusWave = STATE.ambienceStreak; // must not advance past order.length -- nothing left to reveal
 
-    // Only now, starting wave 7, should the scene actually hand off.
-    startWave(7);
+    // Only now should the scene actually hand off.
+    startWave(bonusWave + 1);
     const sceneAndLayersAfterHandoff = { scene: STATE.scene, layers: Object.keys(STATE.ambienceLayers) };
 
-    return { sceneAndLayersAfterLastReveal, sceneAndLayersAtBonusWaveStart, streakAfterBonusWave, sceneAndLayersAfterHandoff };
+    return {
+      blockScene, order, nextScene,
+      sceneAndLayersAfterLastReveal, sceneAndLayersAtBonusWaveStart, streakAfterBonusWave, sceneAndLayersAfterHandoff,
+    };
   });
 
-  expect(result.sceneAndLayersAfterLastReveal).toEqual({ scene: 'forest', layers: ['wind', 'crickets', 'frogs', 'owl'] });
+  expect(result.sceneAndLayersAfterLastReveal).toEqual({ scene: result.blockScene, layers: result.order });
   // The critical assertion: starting the bonus wave keeps the scene AND
   // every layer intact -- nothing gets cut off just because the set is
   // now complete.
-  expect(result.sceneAndLayersAtBonusWaveStart).toEqual({ scene: 'forest', layers: ['wind', 'crickets', 'frogs', 'owl'] });
-  expect(result.streakAfterBonusWave).toBe(4);
-  expect(result.sceneAndLayersAfterHandoff).toEqual({ scene: 'beach', layers: [] });
+  expect(result.sceneAndLayersAtBonusWaveStart).toEqual({ scene: result.blockScene, layers: result.order });
+  expect(result.streakAfterBonusWave).toBe(result.order.length);
+  expect(result.sceneAndLayersAfterHandoff).toEqual({ scene: result.nextScene, layers: [] });
   expect(errors).toEqual([]);
 });
 
@@ -7396,6 +7529,7 @@ test('loading or restarting mid-block backfills already-revealed sounds so the s
   const result = await page.evaluate(async () => {
     await STATE.ambientBuffersReadyPromise;
     STATE.sceneMode = 'rotate';
+    STATE.rotateSeed = 24680; // fixed -- order-agnostic below, but must still be reproducible
     // Suppress the unrelated wave-milestone/high-score achievements so
     // the toast asserted on below can only be the scene-complete one.
     STATE.stats.bestWave = 999999;
@@ -7412,46 +7546,66 @@ test('loading or restarting mid-block backfills already-revealed sounds so the s
       STATE.score = 0;
     }
 
-    // Simulate loading a save at wave 4 (the 3rd wave of the Forest
-    // block, which runs waves 2-6) -- a real load calls resetSceneAmbience
-    // first (a save only stores wave + score, see handleLoadGame), then
-    // starts that wave fresh, same as here.
+    // Same reasoning as the bonus-wave test above -- find the first block
+    // with at least 3 ambient layers, so "mid-block" (position 2) is
+    // strictly before both the last reveal and the bonus wave.
+    let wave = 1;
+    let blockScene, blockPosition;
+    while (true) {
+      ({ scene: blockScene, blockPosition } = resolveSceneBlock(wave));
+      const config = SCENE_AMBIENT_CONFIG[blockScene];
+      if (config && config.order.length >= 3) break;
+      wave += sceneWaveCount(blockScene) - blockPosition;
+    }
+    const blockStart = wave - blockPosition;
+    const order = SCENE_AMBIENT_CONFIG[blockScene].order;
+    const blockEnd = blockStart + order.length; // this block's bonus (last) wave
+    const midWave = blockStart + 2; // 0-indexed blockPosition 2 -- two layers already revealed
+    const nextScene = resolveSceneBlock(blockEnd + 1).scene;
+    const expectedToastText = `${SCENE_DISPLAY_NAMES[blockScene]} Complete! ${SCENE_DISPLAY_NAMES[nextScene]} Ahead`;
+
+    // Simulate loading a save mid-block -- a real load calls
+    // resetSceneAmbience first (a save only stores wave + score, see
+    // handleLoadGame), then starts that wave fresh, same as here.
     resetSceneAmbience();
-    startWave(4);
+    startWave(midWave);
     await new Promise(r => setTimeout(r, 30)); // startSceneAmbienceLayer (called from catchUpAmbienceStreakForWave) is fire-and-forget
     const layersRightAfterLoad = Object.keys(STATE.ambienceLayers).sort();
     const streakRightAfterLoad = STATE.ambienceStreak;
 
     // Play the rest of the block out normally and confirm it still
-    // reaches full completion (+ the toast) and still hands off to Beach
-    // at exactly the same wave a continuous playthrough would.
-    for (let wave = 4; wave <= 6; wave++) {
-      setUpWave(wave);
+    // reaches full completion (+ the toast) and still hands off at
+    // exactly the same wave a continuous playthrough would.
+    for (let w = midWave; w <= blockEnd; w++) {
+      setUpWave(w);
       checkWaveComplete();
       await new Promise(r => setTimeout(r, 30));
-      if (wave < 6) startWave(wave + 1);
+      if (w < blockEnd) startWave(w + 1);
     }
     const streakAfterBlockFinishes = STATE.ambienceStreak;
     const toastText = document.getElementById('achievement-label').textContent;
     const toastVisible = document.getElementById('achievement-toast').classList.contains('visible');
 
-    startWave(7);
+    startWave(blockEnd + 1);
     const sceneAfterHandoff = STATE.scene;
 
-    return { layersRightAfterLoad, streakRightAfterLoad, streakAfterBlockFinishes, toastVisible, toastText, sceneAfterHandoff };
+    return {
+      blockScene, order, nextScene, expectedToastText,
+      layersRightAfterLoad, streakRightAfterLoad, streakAfterBlockFinishes, toastVisible, toastText, sceneAfterHandoff,
+    };
   });
 
-  // Wave 4 is blockPosition 2 (0-indexed) into Forest -- 'wind' and
-  // 'crickets' (the first two in FOREST order) should already be
-  // playing, backfilled silently rather than making the player wait
-  // through two more wave completions to get sounds that, per the
-  // absolute wave number, should already be there.
-  expect(result.layersRightAfterLoad).toEqual(['crickets', 'wind']);
+  // blockPosition 2 (0-indexed) into the block -- the first two sounds in
+  // this scene's own reveal order should already be playing, backfilled
+  // silently rather than making the player wait through two more wave
+  // completions to get sounds that, per the absolute wave number, should
+  // already be there.
+  expect(result.layersRightAfterLoad).toEqual(result.order.slice(0, 2).slice().sort());
   expect(result.streakRightAfterLoad).toBe(2);
-  expect(result.streakAfterBlockFinishes).toBe(4);
+  expect(result.streakAfterBlockFinishes).toBe(result.order.length);
   expect(result.toastVisible).toBe(true);
-  expect(result.toastText).toBe('Forest Complete! Beach Ahead');
-  expect(result.sceneAfterHandoff).toBe('beach');
+  expect(result.toastText).toBe(result.expectedToastText);
+  expect(result.sceneAfterHandoff).toBe(result.nextScene);
   expect(errors).toEqual([]);
 });
 
