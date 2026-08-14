@@ -11804,6 +11804,20 @@ function runSplashScreen() {
     overlay.remove();
     return;
   }
+
+  // The title screen and HELP/PAUSE buttons underneath are already fully
+  // initialized and keyboard-focusable at this point (paint order, not
+  // DOM/tab order, is the only thing keeping them visually covered) --
+  // without this, a keyboard user tabbing through the page while the
+  // splash is up could focus and activate Start Game or another control
+  // that's still hidden underneath it (review catch, PR #84). `inert`
+  // removes a whole subtree from the tab order and assistive tech in one
+  // property; restored the moment dismiss() runs.
+  const messageOverlay = document.getElementById('message-overlay');
+  const uiOverlay = document.getElementById('ui-overlay');
+  if (messageOverlay) messageOverlay.inert = true;
+  if (uiOverlay) uiOverlay.inert = true;
+
   const sctx = splashCanvas.getContext('2d');
 
   function resizeSplashCanvas() {
@@ -11896,6 +11910,8 @@ function runSplashScreen() {
     if (rafId) cancelAnimationFrame(rafId);
     window.removeEventListener('resize', resizeSplashCanvas);
     clearTimeout(autoDismissTimer);
+    if (messageOverlay) messageOverlay.inert = false;
+    if (uiOverlay) uiOverlay.inert = false;
     overlay.classList.add('dismissing');
     // Matches #splash-overlay's own CSS transition duration -- removed
     // from the DOM (not just hidden) once fully faded so it can never
@@ -11910,6 +11926,11 @@ function runSplashScreen() {
     window.removeEventListener('keydown', onKey);
   }, { once: true });
   const autoDismissTimer = setTimeout(dismiss, SPLASH_CONFIG.AUTO_DISMISS_MS);
+
+  // Everything else keyboard-focusable is now inert (see above), so this
+  // is the only place Tab/Enter/Space can land -- makes the splash the
+  // active keyboard target rather than leaving focus on nothing at all.
+  overlay.focus();
 }
 
 // ============================================================

@@ -39,6 +39,15 @@ html, body {
   opacity: 0;
   pointer-events: none;
 }
+/* A real, visible focus ring -- runSplashScreen makes this the sole
+   keyboard-focusable target while the splash is up (everything else goes
+   inert), programmatically focusing it, so it needs its own ring rather
+   than relying on the browser default against this custom background.
+   Same reasoning/pattern as #erase-mode-banner's own focus-visible ring. */
+#splash-overlay:focus-visible {
+  outline: 2px solid rgba(150, 180, 255, 0.85);
+  outline-offset: -4px;
+}
 
 #splash-canvas {
   position: absolute;

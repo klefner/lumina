@@ -67,6 +67,38 @@ test('the splash shows its content and sits on top of the title screen underneat
   expect(errors).toEqual([]);
 });
 
+// Review catch, PR #84: the title screen and HELP/PAUSE buttons underneath
+// are already keyboard-focusable at this point (paint order, not DOM/tab
+// order, is the only thing keeping them visually covered) -- without the
+// inert fix, a keyboard user tabbing through the page while the splash is
+// up could focus and activate a control that's still hidden underneath it.
+test('while the splash is up, the title screen and HUD buttons underneath are inert (not keyboard-focusable), and the splash itself is the focused target', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { window.__SKIP_SPLASH__ = false; });
+  await page.goto('/index.html');
+
+  const result = await page.evaluate(() => ({
+    messageOverlayInert: document.getElementById('message-overlay').inert,
+    uiOverlayInert: document.getElementById('ui-overlay').inert,
+    activeElementId: document.activeElement && document.activeElement.id,
+  }));
+  expect(result.messageOverlayInert).toBe(true);
+  expect(result.uiOverlayInert).toBe(true);
+  expect(result.activeElementId).toBe('splash-overlay');
+
+  // Dismissing restores both -- the title screen must be fully usable
+  // again afterward, not permanently locked out.
+  await page.click('#splash-overlay');
+  await page.waitForTimeout(700);
+  const after = await page.evaluate(() => ({
+    messageOverlayInert: document.getElementById('message-overlay').inert,
+    uiOverlayInert: document.getElementById('ui-overlay').inert,
+  }));
+  expect(after.messageOverlayInert).toBe(false);
+  expect(after.uiOverlayInert).toBe(false);
+  expect(errors).toEqual([]);
+});
+
 test('tapping/clicking the splash dismisses it and cleanly reveals a fully working title screen', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => {
