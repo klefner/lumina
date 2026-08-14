@@ -4515,7 +4515,7 @@ test('mid-game, the top button row holds only the single MENU button, and its pa
       .map(el => el.id)
   );
   expect(panelOrder).toEqual([
-    'pause-resume', 'pause-hint', 'pause-erase', 'pause-help',
+    'pause-resume', 'pause-hint', 'pause-erase', 'pause-help', 'pause-shop',
     'pause-save', 'pause-load', 'pause-restart-level', 'pause-restart-game', 'pause-exit',
   ]);
   expect(errors).toEqual([]);
@@ -7618,3 +7618,266 @@ test('picking Birthday under Normal then switching to Sleep resets the stored se
   expect(errors).toEqual([]);
 });
 
+
+// ============================================================
+// STORE / PREMIUM SCENES (Dreamscape Pack: Aurora Skies, Coral Reef Glow,
+// Crystal Cave -- see STORE_PRODUCTS/PREMIUM_SCENE_LIST in game.js)
+// ============================================================
+
+test('a premium scene is unowned by default, gets granted by completeSimulatedPurchase, and that grant persists across a reload', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const before = await page.evaluate(() => isPremiumSceneOwned('aurora'));
+  expect(before).toBe(false);
+
+  await page.evaluate(() => completeSimulatedPurchase('premium_scene_pack'));
+  const afterPurchase = await page.evaluate(() => ({
+    aurora: isPremiumSceneOwned('aurora'),
+    reef: isPremiumSceneOwned('reef'),
+    cavern: isPremiumSceneOwned('cavern'),
+  }));
+  expect(afterPurchase).toEqual({ aurora: true, reef: true, cavern: true });
+
+  await page.reload();
+  await page.waitForFunction(() => window.__lumina);
+  const afterReload = await page.evaluate(() => isPremiumSceneOwned('aurora'));
+  expect(afterReload).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('resolveSceneBlock never plays an unowned premium scene, even if STATE.sceneMode names one directly (real enforcement backstop, not just the dropdown)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.difficulty = 'normal';
+    STATE.sceneMode = 'aurora'; // set directly, bypassing the dropdown/Store entirely
+    const unownedResolved = resolveSceneBlock(5).scene;
+
+    completeSimulatedPurchase('premium_scene_pack');
+    const ownedResolved = resolveSceneBlock(5).scene;
+
+    return { unownedResolved, ownedResolved };
+  });
+
+  expect(result.unownedResolved).toBe('space'); // falls back, same as any other invalid fixed pick
+  expect(result.ownedResolved).toBe('aurora');
+  expect(errors).toEqual([]);
+});
+
+test('premium scenes never appear in Rotate mode\'s cycle, purchased or not', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    completeSimulatedPurchase('premium_scene_pack');
+    STATE.difficulty = 'normal';
+    STATE.sceneMode = 'rotate';
+    const scenesSeen = new Set();
+    for (let wave = 1; wave <= 40; wave++) scenesSeen.add(resolveSceneBlock(wave).scene);
+    return Array.from(scenesSeen);
+  });
+
+  expect(result).not.toContain('aurora');
+  expect(result).not.toContain('reef');
+  expect(result).not.toContain('cavern');
+  expect(errors).toEqual([]);
+});
+
+test('the scene selector locks premium options until purchased, then unlocks and unlabels them', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.difficulty = 'normal';
+    refreshSceneSelector();
+    const auroraOption = document.querySelector('#scene-selector option[value="aurora"]');
+    const disabledBefore = auroraOption.disabled;
+    const textBefore = auroraOption.textContent;
+
+    completeSimulatedPurchase('premium_scene_pack');
+    const disabledAfter = auroraOption.disabled;
+    const textAfter = auroraOption.textContent;
+
+    return { disabledBefore, textBefore, disabledAfter, textAfter };
+  });
+
+  expect(result.disabledBefore).toBe(true);
+  expect(result.textBefore).toContain('🔒');
+  expect(result.disabledAfter).toBe(false);
+  expect(result.textAfter).not.toContain('🔒');
+  expect(errors).toEqual([]);
+});
+
+test('a fixed premium scene pick survives reload once owned, but self-heals back to Rotate on reload if ownership is missing (storage cleared, different device)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  // Owned case: loadSceneSetting accepts the premium id, and
+  // refreshSceneSelector (called from init) has no reason to touch it
+  // since isPremiumSceneOwned('reef') is true.
+  await page.evaluate(() => {
+    completeSimulatedPurchase('premium_scene_pack');
+    STATE.sceneMode = 'reef';
+    saveSceneSetting('reef');
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.__lumina);
+  const ownedResult = await page.evaluate(() => ({
+    sceneModeAfterReload: STATE.sceneMode,
+    resolved: resolveSceneBlock(3).scene,
+  }));
+  expect(ownedResult.sceneModeAfterReload).toBe('reef');
+  expect(ownedResult.resolved).toBe('reef');
+
+  // Unowned case: same stored pick, but purchase history cleared (e.g. a
+  // different device/browser profile) -- refreshSceneSelector's own
+  // ownership re-check during init self-heals the stored selection back
+  // to Rotate, the same "displayed value can never disagree with what
+  // actually plays" guarantee Sleep mode's fallback already relies on.
+  await page.evaluate(() => localStorage.removeItem('lumina_purchased_scenes_v1'));
+  await page.reload();
+  await page.waitForFunction(() => window.__lumina);
+  const unownedResult = await page.evaluate(() => ({
+    sceneModeAfterReload: STATE.sceneMode,
+    resolved: resolveSceneBlock(3).scene,
+  }));
+  expect(unownedResult.sceneModeAfterReload).toBe('rotate');
+  expect(unownedResult.resolved).not.toBe('reef');
+
+  expect(errors).toEqual([]);
+});
+
+test('the three premium scenes are marked sleep-safe, matching their calm/glowy design intent', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => ({
+    aurora: isSceneSleepSafe('aurora'),
+    reef: isSceneSleepSafe('reef'),
+    cavern: isSceneSleepSafe('cavern'),
+  }));
+  expect(result).toEqual({ aurora: true, reef: true, cavern: true });
+  expect(errors).toEqual([]);
+});
+
+test('Aurora Skies, Coral Reef Glow, and Crystal Cave all generate and draw without error', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+
+    STATE.scene = 'aurora';
+    STATE.auroraScene = generateAuroraScene();
+    updateAuroraScene();
+    drawAuroraScene();
+    const auroraOk = STATE.auroraScene.ribbons.length > 0 && STATE.auroraScene.phase === 1;
+
+    STATE.scene = 'reef';
+    STATE.reefScene = generateReefScene();
+    updateReefScene();
+    drawReefScene();
+    const reefOk = STATE.reefScene.coral.length > 0 && STATE.reefScene.fish.length > 0 && STATE.reefScene.phase === 1;
+
+    STATE.scene = 'cavern';
+    STATE.cavernScene = generateCavernScene();
+    updateCavernScene();
+    drawCavernScene();
+    const cavernOk = STATE.cavernScene.crystals.length > 0 && STATE.cavernScene.motes.length > 0 && STATE.cavernScene.phase === 1;
+
+    return { auroraOk, reefOk, cavernOk };
+  });
+
+  expect(result.auroraOk).toBe(true);
+  expect(result.reefOk).toBe(true);
+  expect(result.cavernOk).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('#store-row loses its visible class once the title screen is left, same as every other title-only row (review catch, PR #86)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await expect(page.locator('#store-row')).toBeVisible();
+
+  await page.click('#start-game-button');
+  const storeRowVisible = await page.evaluate(() => document.getElementById('store-row').classList.contains('visible'));
+  expect(storeRowVisible).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('the Store opens from the title screen, walks browse -> checkout -> simulated purchase -> success, and the success grants the pack', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await expect(page.locator('#store-overlay')).not.toHaveClass(/visible/);
+  await page.click('#store-open-button');
+  await expect(page.locator('#store-overlay')).toHaveClass(/visible/);
+  await expect(page.locator('#store-product')).toBeVisible();
+  await expect(page.locator('#store-buy-button')).toBeVisible();
+
+  await page.click('#store-buy-button');
+  await expect(page.locator('#store-checkout')).toBeVisible();
+  await expect(page.locator('#store-product')).not.toBeVisible();
+
+  await page.click('#store-simulate-button');
+  await expect(page.locator('#store-success')).toBeVisible();
+
+  const owned = await page.evaluate(() => isPremiumSceneOwned('aurora') && isPremiumSceneOwned('reef') && isPremiumSceneOwned('cavern'));
+  expect(owned).toBe(true);
+
+  await page.click('#store-success-done');
+  await expect(page.locator('#store-owned-badge')).toBeVisible();
+  await expect(page.locator('#store-buy-button')).not.toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('canceling the Store checkout step returns to browse without granting anything, and the backdrop/close button both dismiss it back to the title screen', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await page.click('#store-open-button');
+  await page.click('#store-buy-button');
+  await page.click('#store-checkout-cancel');
+  await expect(page.locator('#store-product')).toBeVisible();
+
+  const owned = await page.evaluate(() => isPremiumSceneOwned('aurora'));
+  expect(owned).toBe(false);
+
+  await page.click('#store-close');
+  await expect(page.locator('#store-overlay')).not.toHaveClass(/visible/);
+  expect(errors).toEqual([]);
+});
+
+test('the Store is also reachable mid-game via #pause-shop, and closing it resumes play directly (same as Help, not back to the pause menu)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await page.click('#start-game-button');
+  await page.click('#pause-button');
+  await expect(page.locator('#pause-overlay')).toHaveClass(/visible/);
+
+  await page.click('#pause-shop');
+  await expect(page.locator('#store-overlay')).toHaveClass(/visible/);
+  await expect(page.locator('#pause-overlay')).not.toHaveClass(/visible/);
+
+  await page.click('#store-close');
+  await expect(page.locator('#store-overlay')).not.toHaveClass(/visible/);
+  await expect(page.locator('#pause-overlay')).not.toHaveClass(/visible/);
+  const stillPaused = await page.evaluate(() => STATE.paused);
+  expect(stillPaused).toBe(false);
+  expect(errors).toEqual([]);
+});

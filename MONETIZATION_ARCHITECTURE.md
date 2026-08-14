@@ -96,6 +96,36 @@ sharing isn't built in yet, since it isn't needed until Downtown Devour actually
 boundaries were chosen with it in mind. Same spirit as `studio-ops`: build what's needed now, shaped so it
 doesn't have to be redone later when the second consumer shows up.
 
+## Paywall infrastructure: RevenueCat/Superwall/Adapty considered, rejected (decided 2026-08-14)
+
+Prompted by the observation that a lot of iOS games share near-identical storefront UI (same layout, same
+"limited time" urgency framing, same buy-buttons) — that similarity traces back to a real category of
+paywall-infrastructure platforms (RevenueCat, Superwall, Adapty) that now also support web paywalls billed
+through Stripe. Worth evaluating seriously rather than dismissing on a first pass, and this is the second
+pass after an initial shallow "nothing turnkey exists" answer didn't hold up.
+
+**Rejected**, for three reasons:
+- Their core value is unifying entitlements across App Store + Play Store + Web into one purchase record.
+  Lumina is deliberately web-only (see Platform decision above) — there's nothing to unify.
+- The actual engineering savings for one $1.99 one-time SKU is modest. The other four of five planned backend
+  modules (Identity, Save-Sync, Entitlement & Paid Content, Webhook Handler) are needed regardless of what
+  handles checkout — a paywall SDK only ever touches the Checkout Service, the smallest of the five.
+- Their hosted paywall UI conventions (urgency/countdown timers, high-contrast "BUY NOW" styling) clash with
+  Lumina's calm, whimsical brand — the same reasoning that already ruled out urgency mechanics for the splash
+  screen. Adopting one would mean fighting its default templates to make it look like Lumina, at which point
+  the "speed" argument mostly disappears.
+
+**Adopted instead: Stripe Payment Links** for the real-world Checkout Service. It's Stripe's own free,
+no-code, hosted single-product checkout page — fires the same `checkout.session.completed` webhook a custom
+Checkout Session would, so the Webhook Handler design above doesn't change. It's compatible with the Stripe
+processor decision already made, adds no new vendor or fee, and reduces the Checkout Service module to
+"paste a link" rather than a service to build.
+
+**Current status:** the in-game storefront UI shipping now is a client-side-only demo — same honest-placeholder
+pattern as `PREMIUM_MUSIC_UNLOCKED` in `game.js` (an explicit, documented stand-in, not a real entitlement
+check). It is not yet wired to Stripe Payment Links or to the Cloudflare Workers entitlement backend above;
+that wiring is future work, gated on the backend actually existing.
+
 ## Open, not yet decided
 
 - Exact pricing per monetized feature (music packs, line cosmetics, dot skins, reveal themes, practice pack)

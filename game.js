@@ -324,13 +324,82 @@ const SCENE_KEY = 'lumina_scene_v1';
 function loadSceneSetting() {
   try {
     const saved = localStorage.getItem(SCENE_KEY);
-    return (saved === 'rotate' || SCENE_LIST.includes(saved)) ? saved : 'rotate';
+    // Premium ids are accepted here purely so a fixed pick survives a
+    // reload -- this is NOT where ownership is granted or checked (that's
+    // isPremiumSceneOwned, read fresh by resolveSceneBlock/
+    // refreshSceneSelector every time). A player who picked an owned
+    // premium scene, then somehow lost ownership (cleared storage, new
+    // device), keeps the stored selection but simply never gets it played
+    // or shown as selectable, same as a Sleep-incompatible fixed pick
+    // already behaves.
+    return (saved === 'rotate' || SCENE_LIST.includes(saved) || PREMIUM_SCENE_LIST.includes(saved)) ? saved : 'rotate';
   } catch (e) {
     return 'rotate';
   }
 }
 function saveSceneSetting(mode) {
   try { localStorage.setItem(SCENE_KEY, mode); } catch (e) { /* best-effort only */ }
+}
+
+// Paid scenes (see the Store: index.html's #store-overlay and
+// STORE_PRODUCTS below) -- deliberately never merged into SCENE_LIST.
+// Keeping them a wholly separate list is what keeps them out of Rotate
+// mode and every free-scene code path (activeSceneList, sceneWaveCount's
+// caller in resolveSceneBlock's rotate branch) without any of those
+// needing to know purchases exist at all -- the only place ownership
+// actually gets checked is resolveSceneBlock's own premium branch below,
+// which is the real enforcement backstop, not the dropdown (see
+// refreshSceneSelector) that merely reflects it.
+const PREMIUM_SCENE_LIST = ['aurora', 'reef', 'cavern'];
+const PREMIUM_SCENE_NAMES = { aurora: 'Aurora Skies', reef: 'Coral Reef Glow', cavern: 'Crystal Cave' };
+
+// This is a prototype storefront (see MONETIZATION_ARCHITECTURE.md's
+// paywall-infrastructure entry) -- "purchasing" just writes scene ids to
+// localStorage, the same honest-placeholder pattern PREMIUM_MUSIC_UNLOCKED
+// already uses elsewhere in this file. Nothing here is a real entitlement
+// check; a real launch replaces this with the Entitlement & Paid Content
+// Service that doc describes, served from a Cloudflare Worker a static
+// GitHub Pages site can't fake its way around.
+const PURCHASED_SCENES_KEY = 'lumina_purchased_scenes_v1';
+function loadPurchasedScenes() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PURCHASED_SCENES_KEY) || '[]');
+    return Array.isArray(saved) ? saved.filter((id) => PREMIUM_SCENE_LIST.includes(id)) : [];
+  } catch (e) {
+    return [];
+  }
+}
+function savePurchasedScenes(ids) {
+  try { localStorage.setItem(PURCHASED_SCENES_KEY, JSON.stringify(ids)); } catch (e) { /* best-effort only */ }
+}
+function isPremiumSceneOwned(sceneId) {
+  return STATE.purchasedScenes.includes(sceneId);
+}
+
+// The one product this demo storefront sells -- a single $1.99 bundle
+// covering all three premium scenes at once, not three separate SKUs.
+// Simpler for a first product, and matches the original ask ("three
+// backgrounds... $1.99" as one pack, not $1.99 each).
+const STORE_PRODUCTS = [{
+  id: 'premium_scene_pack',
+  name: 'Dreamscape Pack',
+  priceLabel: '$1.99',
+  sceneIds: PREMIUM_SCENE_LIST,
+}];
+
+// Grants every scene in the given product to the player and persists it.
+// Called only from the demo checkout's "Simulate Purchase" button (see
+// setupStoreListeners) -- a real Stripe Payment Links checkout would call
+// this instead from a webhook-confirmed response, never from a client-side
+// button tap alone (see MONETIZATION_ARCHITECTURE.md).
+function completeSimulatedPurchase(productId) {
+  const product = STORE_PRODUCTS.find((p) => p.id === productId);
+  if (!product) return;
+  const owned = new Set(STATE.purchasedScenes);
+  for (const sceneId of product.sceneIds) owned.add(sceneId);
+  STATE.purchasedScenes = Array.from(owned);
+  savePurchasedScenes(STATE.purchasedScenes);
+  refreshSceneSelector();
 }
 
 // How many consecutive waves Rotate mode holds a given scene for, before
@@ -368,7 +437,11 @@ function sceneWaveCount(scene) {
 // under it, no matter what a player last had selected under a different
 // difficulty. Every other difficulty can select any scene at all; this
 // set only ever narrows things down while STATE.difficulty === 'sleep'.
-const SLEEP_SAFE_SCENES = new Set(['space', 'forest', 'beach', 'christmas']);
+// The three premium scenes (see PREMIUM_SCENE_LIST) are all deliberately
+// calm, glowy backdrops -- no bursts, no jump-scare timing -- built with
+// Sleep mode as a use case from the start, so all three are included here
+// too, same as the free calm scenes.
+const SLEEP_SAFE_SCENES = new Set(['space', 'forest', 'beach', 'christmas', 'aurora', 'reef', 'cavern']);
 
 function isSceneSleepSafe(scene) {
   return SLEEP_SAFE_SCENES.has(scene);
@@ -391,6 +464,22 @@ function activeSceneList() {
 function resolveSceneBlock(waveNumber) {
   const scenes = activeSceneList();
   if (STATE.sceneMode !== 'rotate') {
+    // Premium scenes never enter activeSceneList/SCENE_LIST at all (see
+    // PREMIUM_SCENE_LIST's own comment), so they need their own branch
+    // here rather than falling into the `requested`/`scenes.includes`
+    // check below, which would just always reject them. This is the real
+    // enforcement backstop for "unpurchased scenes never actually play" --
+    // ownership is re-checked fresh on every call, not cached, so it can't
+    // be stale relative to a purchase that just happened, and a
+    // STATE.sceneMode set directly (devtools, or a stale value from before
+    // a purchase existed) can never play a scene that isn't owned right
+    // now, regardless of what the dropdown (see refreshSceneSelector)
+    // happens to be showing.
+    if (PREMIUM_SCENE_LIST.includes(STATE.sceneMode)) {
+      const allowed = isPremiumSceneOwned(STATE.sceneMode)
+        && (STATE.difficulty !== 'sleep' || isSceneSleepSafe(STATE.sceneMode));
+      return { scene: allowed ? STATE.sceneMode : 'space', blockPosition: 0 };
+    }
     const requested = SCENE_LIST.includes(STATE.sceneMode) ? STATE.sceneMode : 'space';
     // A fixed pick that Sleep mode has ruled out (see SLEEP_SAFE_SCENES)
     // falls back to Space for the rest of this Sleep session, rather than
@@ -2498,6 +2587,15 @@ function refreshSceneSelector() {
     STATE.sceneMode = 'space';
     saveSceneSetting(STATE.sceneMode);
   }
+  // Same reasoning, for ownership instead of sleep-safety: a premium scene
+  // that's no longer owned (storage cleared, different device) shouldn't
+  // stay the displayed selection just because it once was -- reset it to
+  // Rotate rather than silently showing a locked scene as "selected" while
+  // resolveSceneBlock is actually playing Space underneath it.
+  if (PREMIUM_SCENE_LIST.includes(STATE.sceneMode) && !isPremiumSceneOwned(STATE.sceneMode)) {
+    STATE.sceneMode = 'rotate';
+    saveSceneSetting(STATE.sceneMode);
+  }
 
   select.value = STATE.sceneMode;
   // Cockpit Mode renders its own Three.js scene (see render()'s cockpitMode
@@ -2510,6 +2608,19 @@ function refreshSceneSelector() {
 
   for (const option of select.options) {
     if (option.value === 'rotate') continue;
+    // Premium options are gated on ownership first -- this is what a
+    // player actually sees (locked padlock, disabled), while
+    // resolveSceneBlock's ownership re-check above is what actually
+    // prevents an unpurchased scene from playing even if this UI-layer
+    // gate were somehow bypassed.
+    if (PREMIUM_SCENE_LIST.includes(option.value)) {
+      const owned = isPremiumSceneOwned(option.value);
+      const sleepBlocked = sleepModeActive && !isSceneSleepSafe(option.value);
+      option.disabled = !owned || sleepBlocked;
+      option.textContent = owned ? PREMIUM_SCENE_NAMES[option.value] : `${PREMIUM_SCENE_NAMES[option.value]} 🔒`;
+      option.title = !owned ? 'Purchase this pack in the Store to unlock' : (sleepBlocked ? 'Not available in Sleep mode' : '');
+      continue;
+    }
     const disable = sleepModeActive && !isSceneSleepSafe(option.value);
     option.disabled = disable;
     option.title = disable ? 'Not available in Sleep mode' : '';
@@ -2634,6 +2745,14 @@ const STATE = {
                            // scene === 'halloween' (see generateHalloweenScene); null otherwise
   christmasScene: null,   // { snowflakes, lights, treeXFrac, ... } for the current wave when
                            // scene === 'christmas' (see generateChristmasScene); null otherwise
+  auroraScene: null,     // { ribbons, ... } for the current wave when scene === 'aurora'
+                          // (see generateAuroraScene); null otherwise -- premium, see PREMIUM_SCENE_LIST
+  reefScene: null,        // { coral, fish, bubbles, ... } for the current wave when scene === 'reef'
+                           // (see generateReefScene); null otherwise -- premium, see PREMIUM_SCENE_LIST
+  cavernScene: null,      // { crystals, motes, ... } for the current wave when scene === 'cavern'
+                           // (see generateCavernScene); null otherwise -- premium, see PREMIUM_SCENE_LIST
+  purchasedScenes: [],   // premium scene ids owned this session (see loadPurchasedScenes/PURCHASED_SCENES_KEY) --
+                          // loaded once at init, updated by completeSimulatedPurchase
 
   ambientGain: null,     // GainNode every scene ambience layer routes through (see initAudioGraph)
   ambientBuffers: {},     // { forest: { wind: AudioBuffer, ... }, beach: { waves: AudioBuffer, ... } }
@@ -3771,7 +3890,10 @@ const SCENE_COMPLETE_CELEBRATIONS = {
   halloween: { glyph: '🎃', bg: 'radial-gradient(circle at 35% 30%, #ffcf8a, #9a4a12)', glow: 'rgba(255,140,20,0.6)' },
   christmas: { glyph: '🎄', bg: 'radial-gradient(circle at 35% 30%, #cdeccb, #1f5c3a)', glow: 'rgba(60,190,110,0.6)' },
 };
-const SCENE_DISPLAY_NAMES = { space: 'Space', forest: 'Forest', beach: 'Beach', birthday: 'Birthday', halloween: 'Halloween', christmas: 'Christmas' };
+const SCENE_DISPLAY_NAMES = {
+  space: 'Space', forest: 'Forest', beach: 'Beach', birthday: 'Birthday', halloween: 'Halloween', christmas: 'Christmas',
+  aurora: 'Aurora Skies', reef: 'Coral Reef', cavern: 'Crystal Cave',
+};
 
 // Full names matching the title screen's own scene-selector option text
 // (see index.html) -- used by #scene-progress-display below, which names
@@ -3780,6 +3902,7 @@ const SCENE_DISPLAY_NAMES = { space: 'Space', forest: 'Forest', beach: 'Beach', 
 const SCENE_HUD_NAMES = {
   space: 'Space', forest: 'Night Forest', beach: 'Beach at Night',
   birthday: 'Birthday Party', halloween: 'Halloween', christmas: 'Christmas',
+  aurora: 'Aurora Skies', reef: 'Coral Reef Glow', cavern: 'Crystal Cave',
 };
 
 function queueSceneCompleteToast(scene) {
@@ -7495,6 +7618,9 @@ function startWave(waveNumber) {
   STATE.birthdayScene = STATE.scene === 'birthday' ? generateBirthdayScene() : null;
   STATE.halloweenScene = STATE.scene === 'halloween' ? generateHalloweenScene() : null;
   STATE.christmasScene = STATE.scene === 'christmas' ? generateChristmasScene() : null;
+  STATE.auroraScene = STATE.scene === 'aurora' ? generateAuroraScene() : null;
+  STATE.reefScene = STATE.scene === 'reef' ? generateReefScene() : null;
+  STATE.cavernScene = STATE.scene === 'cavern' ? generateCavernScene() : null;
   // Stop any leftover ambience from whatever scene the previous wave was
   // on the instant this wave's scene turns out to be different -- see
   // syncAmbienceToScene's own comment for why this can't just wait for
@@ -10522,6 +10648,360 @@ function drawSpaceObjects() {
 }
 
 // ============================================================
+// SECTION 7J: PREMIUM SCENES (STORE) -- Aurora Skies, Coral Reef Glow,
+// Crystal Cave
+// ============================================================
+// The three scenes sold as the Dreamscape Pack (see STORE_PRODUCTS/
+// PREMIUM_SCENE_LIST). Built the same way every free scene above is --
+// fractional positions so resize needs no top-up pass, a phase
+// accumulator driving all motion, drawn straight onto the main canvas --
+// the only thing actually different about them is that resolveSceneBlock
+// only ever resolves to one of these if isPremiumSceneOwned() says so.
+// None have their own ambient sound layer (no SCENE_AMBIENT_CONFIG entry)
+// or Rotate-mode slot -- purely a paid visual backdrop for now.
+
+// Shared little helper: a soft wavy ribbon between two sine curves, used
+// by Aurora's ribbons below. Kept generic (not folded into
+// drawAuroraScene) since drawing one is just "walk left to right on the
+// top curve, then right to left on the bottom curve, fill the loop."
+function drawWavyRibbon(baseYFrac, ampFrac, thicknessFrac, speed, phase, colorStops, w, h, t) {
+  const steps = 20;
+  ctx.beginPath();
+  for (let i = 0; i <= steps; i++) {
+    const xf = i / steps;
+    const wave = Math.sin(xf * Math.PI * 2.2 + phase + t * speed) * ampFrac * h;
+    const y = baseYFrac * h + wave - thicknessFrac * h * 0.5;
+    if (i === 0) ctx.moveTo(xf * w, y); else ctx.lineTo(xf * w, y);
+  }
+  for (let i = steps; i >= 0; i--) {
+    const xf = i / steps;
+    const wave = Math.sin(xf * Math.PI * 2.2 + phase + t * speed) * ampFrac * h;
+    ctx.lineTo(xf * w, baseYFrac * h + wave + thicknessFrac * h * 0.5);
+  }
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, baseYFrac * h - thicknessFrac * h, 0, baseYFrac * h + thicknessFrac * h);
+  grad.addColorStop(0, colorStops[0]);
+  grad.addColorStop(0.5, colorStops[1]);
+  grad.addColorStop(1, colorStops[2]);
+  ctx.fillStyle = grad;
+  ctx.fill();
+}
+
+const AURORA_CONFIG = {
+  SKY_TOP: '#050612', SKY_MID: '#0a1230', SKY_HORIZON: '#132a3a',
+  RIDGE_COLOR: '#04060d',
+  RIBBON_PALETTES: [
+    ['rgba(60,220,150,0)', 'rgba(60,220,150,0.4)', 'rgba(60,220,150,0)'],
+    ['rgba(120,200,255,0)', 'rgba(120,200,255,0.32)', 'rgba(120,200,255,0)'],
+    ['rgba(180,120,230,0)', 'rgba(180,120,230,0.3)', 'rgba(180,120,230,0)'],
+  ],
+};
+
+function generateAuroraScene() {
+  const ribbons = [];
+  for (let i = 0; i < 3; i++) {
+    ribbons.push({
+      baseYFrac: 0.18 + i * 0.1 + Math.random() * 0.06,
+      ampFrac: 0.03 + Math.random() * 0.025,
+      thicknessFrac: 0.09 + Math.random() * 0.05,
+      speed: 0.00025 + Math.random() * 0.0002,
+      phase: Math.random() * Math.PI * 2,
+      colors: AURORA_CONFIG.RIBBON_PALETTES[i % AURORA_CONFIG.RIBBON_PALETTES.length],
+    });
+  }
+  const ridgeCount = 7 + Math.floor(Math.random() * 4);
+  const ridge = [];
+  for (let i = 0; i <= ridgeCount; i++) {
+    ridge.push({ xFrac: i / ridgeCount, heightFrac: 0.05 + Math.random() * 0.09 });
+  }
+  return { ribbons, ridge, phase: 0 };
+}
+
+function updateAuroraScene() {
+  if (STATE.scene !== 'aurora' || !STATE.auroraScene) return;
+  STATE.auroraScene.phase += 1;
+}
+
+function drawAuroraScene() {
+  const scene = STATE.auroraScene;
+  if (!scene) return;
+  const w = canvas.width, h = canvas.height, t = scene.phase;
+
+  const sky = ctx.createLinearGradient(0, 0, 0, h);
+  sky.addColorStop(0, AURORA_CONFIG.SKY_TOP);
+  sky.addColorStop(0.55, AURORA_CONFIG.SKY_MID);
+  sky.addColorStop(1, AURORA_CONFIG.SKY_HORIZON);
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, w, h);
+
+  drawStars(); // same twinkling starfield every other scene uses
+
+  for (const r of scene.ribbons) {
+    drawWavyRibbon(r.baseYFrac, r.ampFrac, r.thicknessFrac, r.speed, r.phase, r.colors, w, h, t);
+  }
+
+  // A still mountain ridge along the bottom -- same grounding role as
+  // Forest's tree line -- so the aurora reads as something happening in a
+  // sky above a place, not an abstract pattern filling the screen.
+  ctx.beginPath();
+  ctx.moveTo(0, h);
+  for (const p of scene.ridge) ctx.lineTo(p.xFrac * w, h - p.heightFrac * h);
+  ctx.lineTo(w, h);
+  ctx.closePath();
+  ctx.fillStyle = AURORA_CONFIG.RIDGE_COLOR;
+  ctx.fill();
+}
+
+const REEF_CONFIG = {
+  WATER_TOP: '#02121e', WATER_MID: '#04405c', WATER_BOTTOM: '#0a6e78',
+  CORAL_COLORS: ['#ff7fb0', '#7de89a', '#ffd36e', '#7ee8e0'],
+};
+
+function generateReefScene() {
+  const coralCount = 6 + Math.floor(Math.random() * 4);
+  const coral = [];
+  for (let i = 0; i < coralCount; i++) {
+    coral.push({
+      xFrac: Math.random(),
+      heightFrac: 0.1 + Math.random() * 0.12,
+      color: REEF_CONFIG.CORAL_COLORS[i % REEF_CONFIG.CORAL_COLORS.length],
+      pulsePhase: Math.random() * Math.PI * 2,
+      pulseSpeed: 0.0015 + Math.random() * 0.0015,
+      branches: 3 + Math.floor(Math.random() * 3),
+    });
+  }
+  const fishCount = 4 + Math.floor(Math.random() * 3);
+  const fish = [];
+  for (let i = 0; i < fishCount; i++) {
+    fish.push({
+      yFrac: 0.15 + Math.random() * 0.5,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.00035 + Math.random() * 0.0003,
+      dir: Math.random() < 0.5 ? 1 : -1,
+      size: 8 + Math.random() * 6,
+      color: REEF_CONFIG.CORAL_COLORS[(i + 1) % REEF_CONFIG.CORAL_COLORS.length],
+    });
+  }
+  const bubbleCount = 12 + Math.floor(Math.random() * 8);
+  const bubbles = [];
+  for (let i = 0; i < bubbleCount; i++) {
+    bubbles.push({
+      xFrac: Math.random(),
+      startPhase: Math.random() * Math.PI * 2,
+      riseSpeed: 0.00025 + Math.random() * 0.0003,
+      driftAmpFrac: 0.008 + Math.random() * 0.012,
+      size: 1.5 + Math.random() * 2.5,
+    });
+  }
+  return { coral, fish, bubbles, phase: 0 };
+}
+
+function updateReefScene() {
+  if (STATE.scene !== 'reef' || !STATE.reefScene) return;
+  STATE.reefScene.phase += 1;
+}
+
+function drawReefScene() {
+  const scene = STATE.reefScene;
+  if (!scene) return;
+  const w = canvas.width, h = canvas.height, t = scene.phase;
+
+  const water = ctx.createLinearGradient(0, 0, 0, h);
+  water.addColorStop(0, REEF_CONFIG.WATER_TOP);
+  water.addColorStop(0.5, REEF_CONFIG.WATER_MID);
+  water.addColorStop(1, REEF_CONFIG.WATER_BOTTOM);
+  ctx.fillStyle = water;
+  ctx.fillRect(0, 0, w, h);
+
+  // Soft diagonal light shafts from the surface -- a couple of wide,
+  // low-alpha gradient wedges, not literal sunbeam geometry.
+  for (let i = 0; i < 3; i++) {
+    const rayX = w * (0.15 + i * 0.32);
+    const ray = ctx.createLinearGradient(rayX, 0, rayX + w * 0.18, h);
+    ray.addColorStop(0, 'rgba(220,255,240,0.10)');
+    ray.addColorStop(1, 'rgba(220,255,240,0)');
+    ctx.fillStyle = ray;
+    ctx.beginPath();
+    ctx.moveTo(rayX - w * 0.05, 0);
+    ctx.lineTo(rayX + w * 0.05, 0);
+    ctx.lineTo(rayX + w * 0.22, h);
+    ctx.lineTo(rayX + w * 0.1, h);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Bubbles -- same rise-and-recycle motion as Christmas's chimney smoke,
+  // just cooler-colored and unbounded by a chimney origin.
+  for (const b of scene.bubbles) {
+    const cyclePos = ((t * b.riseSpeed + b.startPhase / (Math.PI * 2)) % 1 + 1) % 1;
+    const by = h * (1 - cyclePos);
+    const bx = b.xFrac * w + Math.sin(cyclePos * Math.PI * 4 + b.startPhase) * b.driftAmpFrac * w;
+    const alpha = 0.5 * Math.sin(cyclePos * Math.PI);
+    ctx.beginPath();
+    ctx.arc(bx, by, b.size, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(210,245,255,${Math.max(0, alpha).toFixed(3)})`;
+    ctx.fill();
+  }
+
+  // Coral -- glowing branch clusters anchored to the sea floor.
+  const floorY = h - 4;
+  for (const c of scene.coral) {
+    const cx = c.xFrac * w;
+    const ch = c.heightFrac * h;
+    const pulse = 0.6 + 0.4 * Math.sin(t * c.pulseSpeed + c.pulsePhase);
+    const glow = ctx.createRadialGradient(cx, floorY - ch * 0.5, 0, cx, floorY - ch * 0.5, ch * 0.9);
+    glow.addColorStop(0, `${c.color}55`); // hex + alpha suffix -- c.color is always a plain 6-digit hex from REEF_CONFIG.CORAL_COLORS
+    glow.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalAlpha = 0.35 * pulse;
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(cx, floorY - ch * 0.5, ch * 0.9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    ctx.strokeStyle = c.color;
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    for (let b = 0; b < c.branches; b++) {
+      const spread = (b - (c.branches - 1) / 2) * 0.12;
+      ctx.beginPath();
+      ctx.moveTo(cx, floorY);
+      ctx.quadraticCurveTo(cx + spread * w * 0.5, floorY - ch * 0.6, cx + spread * w, floorY - ch);
+      ctx.stroke();
+    }
+  }
+
+  // Fish -- simple drifting silhouettes crossing the mid-water, looping
+  // off one edge and back in from the other.
+  for (const f of scene.fish) {
+    const cyclePos = ((t * f.speed + f.phase / (Math.PI * 2)) % 1 + 1) % 1;
+    const fx = f.dir > 0 ? cyclePos * (w + 60) - 30 : w - cyclePos * (w + 60) + 30;
+    const fy = f.yFrac * h + Math.sin(t * 0.01 + f.phase) * 10;
+    ctx.save();
+    ctx.translate(fx, fy);
+    ctx.scale(f.dir, 1);
+    ctx.fillStyle = f.color;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, f.size, f.size * 0.55, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-f.size * 0.9, 0);
+    ctx.lineTo(-f.size * 1.6, -f.size * 0.5);
+    ctx.lineTo(-f.size * 1.6, f.size * 0.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+const CAVERN_CONFIG = {
+  ROCK_TOP: '#030308', ROCK_MID: '#1c1330', ROCK_BOTTOM: '#241238',
+  CRYSTAL_COLORS: ['#7ee8e0', '#b06fe8', '#ff9edb', '#7ac8ff'],
+  // Same four colors as CRYSTAL_COLORS above, pre-split into r,g,b so the
+  // crystal fill below can vary the alpha channel with the pulse without
+  // parsing a hex string on every frame.
+  CRYSTAL_COLORS_RGB: ['126,232,224', '176,111,232', '255,158,219', '122,200,255'],
+};
+
+function generateCavernScene() {
+  const crystalCount = 8 + Math.floor(Math.random() * 5);
+  const crystals = [];
+  for (let i = 0; i < crystalCount; i++) {
+    const fromCeiling = Math.random() < 0.4;
+    crystals.push({
+      xFrac: Math.random(),
+      sizeFrac: 0.05 + Math.random() * 0.09,
+      fromCeiling,
+      color: CAVERN_CONFIG.CRYSTAL_COLORS[i % CAVERN_CONFIG.CRYSTAL_COLORS.length],
+      colorRgb: CAVERN_CONFIG.CRYSTAL_COLORS_RGB[i % CAVERN_CONFIG.CRYSTAL_COLORS_RGB.length],
+      pulsePhase: Math.random() * Math.PI * 2,
+      pulseSpeed: 0.0012 + Math.random() * 0.0014,
+      tilt: (Math.random() - 0.5) * 0.3,
+    });
+  }
+  const moteCount = 30 + Math.floor(Math.random() * 15);
+  const motes = [];
+  for (let i = 0; i < moteCount; i++) {
+    motes.push({
+      xFrac: Math.random(),
+      yFrac: Math.random(),
+      driftXFrac: 0.006 + Math.random() * 0.01,
+      driftYFrac: 0.004 + Math.random() * 0.008,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.0004 + Math.random() * 0.0004,
+      twinklePhase: Math.random() * Math.PI * 2,
+    });
+  }
+  return { crystals, motes, phase: 0 };
+}
+
+function updateCavernScene() {
+  if (STATE.scene !== 'cavern' || !STATE.cavernScene) return;
+  STATE.cavernScene.phase += 1;
+}
+
+function drawCavernScene() {
+  const scene = STATE.cavernScene;
+  if (!scene) return;
+  const w = canvas.width, h = canvas.height, t = scene.phase;
+
+  const rock = ctx.createLinearGradient(0, 0, 0, h);
+  rock.addColorStop(0, CAVERN_CONFIG.ROCK_TOP);
+  rock.addColorStop(0.6, CAVERN_CONFIG.ROCK_MID);
+  rock.addColorStop(1, CAVERN_CONFIG.ROCK_BOTTOM);
+  ctx.fillStyle = rock;
+  ctx.fillRect(0, 0, w, h);
+
+  // Drifting dust motes -- Forest's fireflies, recolored and slower, with
+  // no pulse-glow gradient (a plain twinkling dot reads better at this
+  // density than 30+ radial gradients would).
+  for (const m of scene.motes) {
+    const drift = t * m.speed + m.phase;
+    const mx = (m.xFrac + Math.sin(drift) * m.driftXFrac) * w;
+    const my = (m.yFrac + Math.cos(drift * 0.8) * m.driftYFrac) * h;
+    const twinkle = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(t * 0.02 + m.twinklePhase));
+    ctx.beginPath();
+    ctx.fillStyle = `rgba(200, 220, 255, ${(0.5 * twinkle).toFixed(3)})`;
+    ctx.arc(mx, my, 1.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Crystal clusters -- a glow behind a faceted polygon, jutting up from
+  // the floor or down from the ceiling depending on fromCeiling.
+  for (const c of scene.crystals) {
+    const cx = c.xFrac * w;
+    const size = c.sizeFrac * Math.min(w, h);
+    const baseY = c.fromCeiling ? 0 : h;
+    const tipY = c.fromCeiling ? size * 2.2 : h - size * 2.2;
+    const pulse = 0.55 + 0.45 * Math.sin(t * c.pulseSpeed + c.pulsePhase);
+
+    const glow = ctx.createRadialGradient(cx, (baseY + tipY) / 2, 0, cx, (baseY + tipY) / 2, size * 2.2);
+    glow.addColorStop(0, c.color);
+    glow.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalAlpha = 0.3 * pulse;
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(cx, (baseY + tipY) / 2, size * 2.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    ctx.save();
+    ctx.translate(cx, baseY);
+    ctx.rotate(c.tilt);
+    ctx.beginPath();
+    ctx.moveTo(-size * 0.5, 0);
+    ctx.lineTo(-size * 0.2, (tipY - baseY) * 0.7);
+    ctx.lineTo(0, tipY - baseY);
+    ctx.lineTo(size * 0.2, (tipY - baseY) * 0.7);
+    ctx.lineTo(size * 0.5, 0);
+    ctx.closePath();
+    ctx.fillStyle = `rgba(${c.colorRgb}, ${(0.55 + 0.25 * pulse).toFixed(3)})`;
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ============================================================
 // SECTION 8: HAPTICS
 // ============================================================
 function haptic(type) {
@@ -10642,6 +11122,60 @@ function openHelp() {
 function closeHelp() {
   document.getElementById('help-overlay').classList.remove('visible');
   resumeGame();
+}
+
+// ============================================================
+// STORE OVERLAY -- demo storefront (see STORE_PRODUCTS/
+// completeSimulatedPurchase and MONETIZATION_ARCHITECTURE.md). Same two
+// entry points as Help above: the title-screen-only #store-open-button,
+// and #pause-shop inside the in-game menu.
+// ============================================================
+// Which of #store-product/#store-checkout/#store-success is showing --
+// openStore always resets to 'product' so a player who backed out mid
+// checkout, closed the store, and reopened it doesn't land back in the
+// checkout step for a purchase they never confirmed.
+function renderStoreProduct() {
+  const product = STORE_PRODUCTS[0];
+  const owned = product.sceneIds.every(isPremiumSceneOwned);
+  document.getElementById('store-buy-button').style.display = owned ? 'none' : 'block';
+  document.getElementById('store-owned-badge').classList.toggle('visible', owned);
+}
+
+function setStorePanelStep(step) {
+  document.getElementById('store-product').classList.toggle('visible', step === 'product');
+  document.getElementById('store-checkout').classList.toggle('visible', step === 'checkout');
+  document.getElementById('store-success').classList.toggle('visible', step === 'success');
+}
+
+function openStore() {
+  document.getElementById('pause-overlay').classList.remove('visible'); // no-op if reached from the title screen, where it was never shown
+  renderStoreProduct();
+  setStorePanelStep('product');
+  document.getElementById('store-overlay').classList.add('visible');
+}
+
+function closeStore() {
+  document.getElementById('store-overlay').classList.remove('visible');
+  resumeGame(); // guarded no-op from the title screen, same as closeHelp
+}
+
+function setupStoreListeners() {
+  document.getElementById('store-open-button').addEventListener('click', openStore);
+  document.getElementById('pause-shop').addEventListener('click', openStore);
+  document.getElementById('store-close').addEventListener('click', closeStore);
+  document.getElementById('store-overlay').addEventListener('click', (e) => {
+    if (e.target.id === 'store-overlay') closeStore(); // tapping the backdrop itself, not the panel
+  });
+  document.getElementById('store-buy-button').addEventListener('click', () => setStorePanelStep('checkout'));
+  document.getElementById('store-checkout-cancel').addEventListener('click', () => setStorePanelStep('product'));
+  document.getElementById('store-simulate-button').addEventListener('click', () => {
+    completeSimulatedPurchase(STORE_PRODUCTS[0].id);
+    setStorePanelStep('success');
+  });
+  document.getElementById('store-success-done').addEventListener('click', () => {
+    renderStoreProduct();
+    setStorePanelStep('product');
+  });
 }
 
 function handleSaveGame() {
@@ -10911,6 +11445,7 @@ function showMessage(title, subtitle, opts) {
   document.getElementById('sound-hint').classList.toggle('visible', isTitleScreen);
   document.getElementById('difficulty-selector').classList.toggle('visible', isTitleScreen);
   document.getElementById('scene-row').classList.toggle('visible', isTitleScreen);
+  document.getElementById('store-row').classList.toggle('visible', isTitleScreen);
   document.getElementById('flight-mode-row').classList.toggle('visible', isTitleScreen);
   document.getElementById('cockpit-mode-row').classList.toggle('visible', isTitleScreen);
   document.getElementById('title-load-row').classList.toggle('visible', isTitleScreen);
@@ -10933,6 +11468,7 @@ function hideMessage() {
   document.getElementById('message-content').classList.remove('title-screen');
   document.getElementById('difficulty-selector').classList.remove('visible');
   document.getElementById('scene-row').classList.remove('visible');
+  document.getElementById('store-row').classList.remove('visible');
   document.getElementById('flight-mode-row').classList.remove('visible');
   document.getElementById('cockpit-mode-row').classList.remove('visible');
   document.getElementById('title-load-row').classList.remove('visible');
@@ -11589,6 +12125,9 @@ function update() {
   updateBirthdayScene();
   updateHalloweenScene();
   updateChristmasScene();
+  updateAuroraScene();
+  updateReefScene();
+  updateCavernScene();
   // Asteroids/satellites/comets only drift through once the whole wave's
   // line-galaxy is complete — they'd be a distraction while still connecting.
   if (STATE.phase === 'WAVE_COMPLETE') { updateSpaceObjects(); updateCelestialBodies(); }
@@ -11657,6 +12196,12 @@ function render() {
     drawHalloweenScene();
   } else if (STATE.scene === 'christmas') {
     drawChristmasScene();
+  } else if (STATE.scene === 'aurora') {
+    drawAuroraScene();
+  } else if (STATE.scene === 'reef') {
+    drawReefScene();
+  } else if (STATE.scene === 'cavern') {
+    drawCavernScene();
   } else {
     drawStars();
     if (STATE.phase === 'WAVE_COMPLETE') { drawCelestialBodies(); drawSpaceObjects(); }
@@ -11959,12 +12504,15 @@ function init() {
   STATE.flightMode = loadFlightModeSetting();
   STATE.cockpitMode = loadCockpitModeSetting();
   STATE.sceneMode = loadSceneSetting();
+  STATE.purchasedScenes = loadPurchasedScenes();
   if (STATE.cockpitMode) ensureThreeLoaded(); // preload -- the title screen may already be showing it as checked
   applyDifficulty(STATE.difficulty);
   setupDifficultySelectorListeners();
   setupTitleLoadListeners();
   setupSceneSelectorListeners();
   setupShareListeners();
+  setupStoreListeners();
+  refreshSceneSelector(); // reflects loaded purchases/difficulty in the dropdown before the title screen is ever shown
   showMessage('LUMINA', titleSubtitleText(), { isTitleScreen: true });
   updateWaveDisplay();
   runSplashScreen(); // purely decorative overlay on top of the title screen above -- see its own comment
