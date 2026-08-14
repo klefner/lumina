@@ -50,14 +50,26 @@ html, body {
 /* The itch.io storefront's own hero art (art/hero-splash.jpg), reused as
    this splash's foundation rather than a second, different piece of key
    art -- one consistent first impression from storefront to first launch.
-   object-fit: cover crops differently by aspect ratio (full height/cropped
-   sides on a narrow phone; full width/cropped top-and-bottom on a wide
-   desktop window) -- object-position biases the vertical crop toward the
-   hand/line/shape cluster in the image's middle rather than centering
-   blindly, since that's this image's own actual focal point. The
-   wordmark baked into the image itself is a bonus where the crop
-   preserves it, not something relied on -- #splash-title/#splash-tagline
-   below are the real, always-visible version. */
+   Two player reports drove this to its current form: first, that the
+   image's own baked-in wordmark read as "UMIN" on a portrait phone
+   (`cover` crops the sides on a narrow viewport, and the wordmark spans
+   nearly the image's full width, so a phone-width slice cuts clean
+   through the middle of it). Switching to `object-fit: contain` there
+   fixed the cropping but traded it for a second, equally real complaint:
+   a large dead black gap where the letterboxing landed -- "using a tiny
+   amount of the screen."
+   The actual fix was upstream of either CSS tweak: art/hero-splash.jpg no
+   longer contains the wordmark/tagline band at all (cropped out of the
+   source asset itself, at build time, not hidden with CSS) -- there was
+   never a crop that could both fill the screen edge-to-edge AND guarantee
+   the wordmark never got sliced, since those are opposite requirements on
+   the same pixels. With the text gone, `object-fit: cover` alone is
+   correct on every viewport again: it always fills the screen with no
+   dead space, and there's no text left in the image to cut through no
+   matter how aggressively a narrow or wide window crops it.
+   #splash-title/#splash-tagline below remain the real "LUMINA" text --
+   they were always meant to be that, this just makes it literally true
+   rather than a fallback that happened to usually agree with the photo. */
 #splash-hero {
   position: absolute;
   top: 0;
@@ -65,34 +77,8 @@ html, body {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: center 38%;
+  object-position: center 42%;
   display: block;
-}
-
-/* Player report: on a portrait phone, `cover` above crops the image's own
-   wordmark from both sides at once, since it spans nearly the image's
-   full width -- the visible slice reads as "UMIN", not "LUMINA" (the
-   comment above called this wordmark "a bonus where the crop preserves
-   it, not something relied on", but a half-legible brand name reads as
-   broken, not merely absent). Below the image's own aspect ratio
-   (1400/1120 = 5/4), `cover` would need to crop horizontally to fill the
-   viewport; switching to `contain` there shows the whole image
-   uncropped (letterboxed top/bottom into the overlay's own black
-   background) so the wordmark is always either fully visible or, on an
-   even narrower viewport where #splash-content's caption bar overlaps
-   it, fully covered by that caption's own scrim -- never sliced through
-   the middle. Wide viewports are untouched: `cover` only ever crops
-   those top/bottom, which doesn't touch the wordmark's width at all. */
-@media (max-aspect-ratio: 5/4) {
-  #splash-hero {
-    object-fit: contain;
-    /* `center 38%` was tuned for `cover`'s crop focal point -- irrelevant
-       once nothing is being cropped. Top-aligning here collects all of
-       contain's leftover letterbox space into one gap at the bottom
-       (above the caption bar) instead of splitting it above and below
-       the image. */
-    object-position: center top;
-  }
 }
 
 #splash-canvas {
