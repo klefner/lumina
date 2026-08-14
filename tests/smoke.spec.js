@@ -7803,6 +7803,19 @@ test('Aurora Skies, Coral Reef Glow, and Crystal Cave all generate and draw with
   expect(errors).toEqual([]);
 });
 
+test('#store-row loses its visible class once the title screen is left, same as every other title-only row (review catch, PR #86)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await expect(page.locator('#store-row')).toBeVisible();
+
+  await page.click('#start-game-button');
+  const storeRowVisible = await page.evaluate(() => document.getElementById('store-row').classList.contains('visible'));
+  expect(storeRowVisible).toBe(false);
+  expect(errors).toEqual([]);
+});
+
 test('the Store opens from the title screen, walks browse -> checkout -> simulated purchase -> success, and the success grants the pack', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
