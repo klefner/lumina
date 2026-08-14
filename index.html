@@ -23,6 +23,32 @@
   <title>Lumina</title>
 </head>
 <body>
+  <!-- First-launch splash -- built on the same hero art already used for
+       the itch.io storefront listing (art/hero-splash.jpg): a hand
+       reaching up from orbit, a glowing line winding from its fingertip
+       through the game's own dot shapes (star/diamond/hexagon/triangle)
+       and drifting music notes to the wordmark. #splash-canvas layers a
+       restrained twinkle/ember animation on top -- see runSplashScreen in
+       game.js -- rather than competing with the image's own line, and
+       gives it continued motion a static image alone wouldn't have.
+       #splash-title/#splash-tagline are real, always-visible captions
+       (not just baked into the image) since object-fit: cover crops the
+       image differently across aspect ratios -- the image's own wordmark
+       isn't guaranteed to survive every crop, but this caption always
+       will. Owns its own canvas/animation loop, completely independent of
+       gameCanvas/STATE/the main render loop -- the game underneath
+       initializes and shows the title screen exactly as before; this only
+       ever sits on top of it and gets removed. Tap/click/key or a short
+       timeout dismisses it -- never a hard gate on reaching the game. -->
+  <div id="splash-overlay" role="button" tabindex="0" aria-label="Skip intro">
+    <img id="splash-hero" src="art/hero-splash.jpg" alt="A hand reaches up from orbit, a glowing line winding from its fingertip through a star, a diamond, a hexagon, and a triangle, up to the Lumina wordmark.">
+    <canvas id="splash-canvas" aria-hidden="true"></canvas>
+    <div id="splash-content">
+      <div id="splash-title">LUMINA</div>
+      <div id="splash-tagline">dots, lines, music, stars</div>
+      <div id="splash-hint">tap or click to continue</div>
+    </div>
+  </div>
   <canvas id="gameCanvas"></canvas>
   <canvas id="cockpitCanvas"></canvas>
   <!-- Sleep mode's warm/dim color-grade (see toggleSleepModeTint) -- a DOM

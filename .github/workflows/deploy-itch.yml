@@ -45,7 +45,7 @@ jobs:
         run: |
           mkdir -p _site
           cp index.html game.js style.css manifest.json version.json _site/
-          cp -r icons sounds _site/
+          cp -r icons sounds art _site/
       - name: Install butler
         run: |
           curl -L -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default

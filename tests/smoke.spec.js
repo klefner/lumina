@@ -7,6 +7,18 @@
 // to reach into internals any other way.
 const { test, expect } = require('@playwright/test');
 
+// The first-launch splash (see runSplashScreen in game.js) sits on top of
+// the title screen for a few seconds by design -- exactly what none of
+// the tests below want, since they all need to interact with the title
+// screen (or whatever's beneath it) immediately after page.goto().
+// Registered once, at the top level of this file, so it applies to every
+// test below without touching each one individually -- see
+// runSplashScreen's own check for window.__SKIP_SPLASH__. The dedicated
+// splash tests further down override this back to false for themselves.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => { window.__SKIP_SPLASH__ = true; });
+});
+
 function trackErrors(page) {
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
@@ -33,6 +45,96 @@ test('loads cleanly and shows the title screen', async ({ page }) => {
   await page.goto('/index.html');
   await expect(page.locator('#message-title')).toHaveText('LUMINA');
   await expect(page.locator('#difficulty-selector')).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+// The first-launch splash (see runSplashScreen in game.js). These three
+// tests deliberately re-enable it (the shared beforeEach above skips it
+// for every other test in this file) to get real coverage of the actual
+// feature, not just the test-harness bypass.
+test('the splash shows its content and sits on top of the title screen underneath it', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { window.__SKIP_SPLASH__ = false; });
+  await page.goto('/index.html');
+
+  await expect(page.locator('#splash-overlay')).toBeVisible();
+  await expect(page.locator('#splash-title')).toHaveText('LUMINA');
+  await expect(page.locator('#splash-tagline')).toHaveText('dots, lines, music, stars');
+  // The real title screen underneath should already exist and be fully
+  // initialized in parallel -- the splash is purely a visual overlay on
+  // top of it, never a gate blocking its own setup (see init()).
+  await expect(page.locator('#message-title')).toHaveText('LUMINA');
+  expect(errors).toEqual([]);
+});
+
+// Review catch, PR #84: the title screen and HELP/PAUSE buttons underneath
+// are already keyboard-focusable at this point (paint order, not DOM/tab
+// order, is the only thing keeping them visually covered) -- without the
+// inert fix, a keyboard user tabbing through the page while the splash is
+// up could focus and activate a control that's still hidden underneath it.
+test('while the splash is up, the title screen and HUD buttons underneath are inert (not keyboard-focusable), and the splash itself is the focused target', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { window.__SKIP_SPLASH__ = false; });
+  await page.goto('/index.html');
+
+  const result = await page.evaluate(() => ({
+    messageOverlayInert: document.getElementById('message-overlay').inert,
+    uiOverlayInert: document.getElementById('ui-overlay').inert,
+    activeElementId: document.activeElement && document.activeElement.id,
+  }));
+  expect(result.messageOverlayInert).toBe(true);
+  expect(result.uiOverlayInert).toBe(true);
+  expect(result.activeElementId).toBe('splash-overlay');
+
+  // Dismissing restores both -- the title screen must be fully usable
+  // again afterward, not permanently locked out.
+  await page.click('#splash-overlay');
+  await page.waitForTimeout(700);
+  const after = await page.evaluate(() => ({
+    messageOverlayInert: document.getElementById('message-overlay').inert,
+    uiOverlayInert: document.getElementById('ui-overlay').inert,
+  }));
+  expect(after.messageOverlayInert).toBe(false);
+  expect(after.uiOverlayInert).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('tapping/clicking the splash dismisses it and cleanly reveals a fully working title screen', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => {
+    window.__SKIP_SPLASH__ = false;
+    navigator.vibrate = () => true;
+  });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+
+  await page.click('#splash-overlay');
+  // Matches the fade-then-remove timing in runSplashScreen's dismiss().
+  await page.waitForTimeout(700);
+  await expect(page.locator('#splash-overlay')).toHaveCount(0);
+
+  // The title screen underneath must still be fully interactive, not just
+  // visible -- click clean through to starting an actual game.
+  await page.click('#start-game-button');
+  await page.waitForTimeout(500);
+  const phase = await page.evaluate(() => STATE.phase);
+  expect(phase).toBe('PLAYING');
+  expect(errors).toEqual([]);
+});
+
+test('the splash auto-dismisses on its own after a few seconds, even with zero input', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { window.__SKIP_SPLASH__ = false; });
+  await page.goto('/index.html');
+
+  const autoDismissMs = await page.evaluate(() => SPLASH_CONFIG.AUTO_DISMISS_MS);
+  // Product's own explicit requirement: this must never become a hard
+  // gate in front of the game, even for a player who never touches
+  // anything -- a "few seconds" ceiling, not a minutes-long lockout.
+  expect(autoDismissMs).toBeLessThan(6000);
+
+  await page.waitForTimeout(autoDismissMs + 700); // + the fade-then-remove timing
+  await expect(page.locator('#splash-overlay')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 

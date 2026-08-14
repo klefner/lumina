@@ -11770,6 +11770,180 @@ document.addEventListener('visibilitychange', () => {
 setInterval(checkForNewVersionAndReload, 5 * 60 * 1000);
 
 // ============================================================
+// SECTION 10B: FIRST-LAUNCH SPLASH
+// ============================================================
+// A self-contained animated intro built on the same hero art already used
+// for the itch.io storefront listing (art/hero-splash.jpg, an #splash-hero
+// <img> in index.html) -- a hand reaching up from orbit, a glowing line
+// winding from its fingertip through the game's own dot shapes to the
+// wordmark. #splash-canvas layers a restrained twinkle/ember animation on
+// top of that photo (see drawFrame below) rather than the busier
+// dot-pairing-and-connecting animation an earlier version of this used --
+// the photo is already the dramatic visual and its own line is already
+// the "connect the dots" moment; anything competing with it on top reads
+// as clutter, not reinforcement. This layer's only job is to keep the
+// splash feeling alive (a still photo alone doesn't) and to nod at scene
+// variety via EMBER_COLORS, one per real scene, without spelling out scene
+// names on the very first thing a player ever sees. Deliberately owns its
+// own tiny canvas and requestAnimationFrame loop instead of hooking into
+// gameCanvas/render()/update(): the title screen underneath initializes
+// and shows completely normally in parallel (see init()), and dismissing
+// this is nothing more than fading out and removing one DOM element -- it
+// can never leave the actual game in some half-initialized state if
+// anything here misbehaves. Always dismissible by tap/click/keypress, and
+// always auto-advances on its own after a few seconds even with zero
+// input -- per its own design brief, this must never become a hard gate
+// in front of the game, for a first-time player or, especially, a
+// returning one.
+const SPLASH_CONFIG = {
+  AUTO_DISMISS_MS: 3800,
+  STAR_COUNT: 46,
+  EMBER_COUNT: 7,
+  EMBER_COLORS: ['#bcd7ff', '#7de89a', '#7ee8e0', '#ff9edb', '#ffb066', '#ff6b6b'],
+};
+
+function runSplashScreen() {
+  const overlay = document.getElementById('splash-overlay');
+  const splashCanvas = document.getElementById('splash-canvas');
+  if (!overlay || !splashCanvas) return;
+  // Test-harness hook (see tests/smoke.spec.js's shared beforeEach) --
+  // every automated test needs a title screen it can interact with
+  // immediately after page.goto(), not a multi-second decorative intro
+  // sitting on top of it. Reaches the same end state a real dismiss()
+  // does (the overlay gone), just without ever animating or attaching
+  // listeners first.
+  if (window.__SKIP_SPLASH__) {
+    overlay.remove();
+    return;
+  }
+
+  // The title screen and HELP/PAUSE buttons underneath are already fully
+  // initialized and keyboard-focusable at this point (paint order, not
+  // DOM/tab order, is the only thing keeping them visually covered) --
+  // without this, a keyboard user tabbing through the page while the
+  // splash is up could focus and activate Start Game or another control
+  // that's still hidden underneath it (review catch, PR #84). `inert`
+  // removes a whole subtree from the tab order and assistive tech in one
+  // property; restored the moment dismiss() runs.
+  const messageOverlay = document.getElementById('message-overlay');
+  const uiOverlay = document.getElementById('ui-overlay');
+  if (messageOverlay) messageOverlay.inert = true;
+  if (uiOverlay) uiOverlay.inert = true;
+
+  const sctx = splashCanvas.getContext('2d');
+
+  function resizeSplashCanvas() {
+    splashCanvas.width = window.innerWidth;
+    splashCanvas.height = window.innerHeight;
+  }
+  resizeSplashCanvas();
+  window.addEventListener('resize', resizeSplashCanvas);
+
+  const stars = [];
+  for (let i = 0; i < SPLASH_CONFIG.STAR_COUNT; i++) {
+    stars.push({
+      xFrac: Math.random(),
+      yFrac: Math.random(),
+      r: 0.6 + Math.random() * 1.1,
+      baseAlpha: 0.3 + Math.random() * 0.5,
+      phase: Math.random() * Math.PI * 2,
+    });
+  }
+  // One rising ember per real scene's accent color (see
+  // SPLASH_CONFIG.EMBER_COLORS) -- see this section's own header comment
+  // for why this stays a quiet accent rather than the visual centerpiece.
+  const embers = [];
+  for (let i = 0; i < SPLASH_CONFIG.EMBER_COUNT; i++) {
+    embers.push({
+      xFrac: Math.random(),
+      yFrac: Math.random() * 1.1,
+      r: 2.2 + Math.random() * 1.6,
+      riseSpeed: 0.00004 + Math.random() * 0.00005,
+      color: SPLASH_CONFIG.EMBER_COLORS[i % SPLASH_CONFIG.EMBER_COLORS.length],
+    });
+  }
+
+  const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let dismissed = false;
+  let rafId = null;
+
+  function drawFrame(t) {
+    const w = splashCanvas.width, h = splashCanvas.height;
+    sctx.clearRect(0, 0, w, h);
+
+    // Gentle twinkling stars -- extends the hero photo's own starfield
+    // into whatever part of the viewport it doesn't cover (a wide desktop
+    // window crops some of the photo's stars off the top/bottom; a narrow
+    // phone crops the sides). Static positions, only opacity animates, so
+    // this never competes for attention with the photo's own line/hand.
+    for (const s of stars) {
+      const twinkle = reducedMotion ? 0.85 : 0.4 + 0.6 * Math.max(0, Math.sin(t * 0.0012 + s.phase));
+      sctx.globalAlpha = twinkle * s.baseAlpha;
+      sctx.fillStyle = '#ffffff';
+      sctx.beginPath();
+      sctx.arc(s.xFrac * w, s.yFrac * h, s.r * Math.min(w, h) / 700, 0, Math.PI * 2);
+      sctx.fill();
+    }
+    sctx.globalAlpha = 1;
+
+    if (!reducedMotion) {
+      for (const e of embers) {
+        e.yFrac -= e.riseSpeed;
+        if (e.yFrac < -0.05) { e.yFrac = 1.05; e.xFrac = Math.random(); }
+      }
+    }
+    for (const e of embers) {
+      const ex = e.xFrac * w, ey = e.yFrac * h;
+      const r = e.r * Math.min(w, h) / 700;
+      // Eases in/out at the very top and bottom of its rise rather than a
+      // hard on/off cut, so it never just pops in or vanishes mid-frame.
+      const fade = reducedMotion ? 0.6 : Math.max(0, Math.min(1, Math.min(e.yFrac, 1 - e.yFrac) * 6));
+      if (fade <= 0) continue;
+      const glow = sctx.createRadialGradient(ex, ey, 0, ex, ey, r * 5);
+      glow.addColorStop(0, e.color);
+      glow.addColorStop(1, 'rgba(0,0,0,0)');
+      sctx.globalAlpha = fade * 0.75;
+      sctx.fillStyle = glow;
+      sctx.beginPath();
+      sctx.arc(ex, ey, r * 5, 0, Math.PI * 2);
+      sctx.fill();
+    }
+    sctx.globalAlpha = 1;
+
+    if (!dismissed) rafId = requestAnimationFrame(drawFrame);
+  }
+  rafId = requestAnimationFrame(drawFrame);
+
+  function dismiss() {
+    if (dismissed) return;
+    dismissed = true;
+    if (rafId) cancelAnimationFrame(rafId);
+    window.removeEventListener('resize', resizeSplashCanvas);
+    clearTimeout(autoDismissTimer);
+    if (messageOverlay) messageOverlay.inert = false;
+    if (uiOverlay) uiOverlay.inert = false;
+    overlay.classList.add('dismissing');
+    // Matches #splash-overlay's own CSS transition duration -- removed
+    // from the DOM (not just hidden) once fully faded so it can never
+    // silently eat a stray tap/click again.
+    setTimeout(() => overlay.remove(), 550);
+  }
+
+  overlay.addEventListener('click', dismiss);
+  overlay.addEventListener('touchend', dismiss, { passive: true });
+  window.addEventListener('keydown', function onKey(e) {
+    dismiss();
+    window.removeEventListener('keydown', onKey);
+  }, { once: true });
+  const autoDismissTimer = setTimeout(dismiss, SPLASH_CONFIG.AUTO_DISMISS_MS);
+
+  // Everything else keyboard-focusable is now inert (see above), so this
+  // is the only place Tab/Enter/Space can land -- makes the splash the
+  // active keyboard target rather than leaving focus on nothing at all.
+  overlay.focus();
+}
+
+// ============================================================
 // SECTION 11: INITIALIZATION
 // ============================================================
 function init() {
@@ -11793,6 +11967,7 @@ function init() {
   setupShareListeners();
   showMessage('LUMINA', titleSubtitleText(), { isTitleScreen: true });
   updateWaveDisplay();
+  runSplashScreen(); // purely decorative overlay on top of the title screen above -- see its own comment
 
   gameLoop();
 }

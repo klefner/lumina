@@ -28,4 +28,4 @@ runs:
       run: |
         mkdir -p _site
         cp index.html game.js style.css manifest.json version.json _site/
-        cp -r icons sounds _site/
+        cp -r icons sounds art _site/
