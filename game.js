@@ -11770,6 +11770,149 @@ document.addEventListener('visibilitychange', () => {
 setInterval(checkForNewVersionAndReload, 5 * 60 * 1000);
 
 // ============================================================
+// SECTION 10B: FIRST-LAUNCH SPLASH
+// ============================================================
+// A self-contained animated intro -- drifting dots that pair off and
+// connect with a soft line, previewing the actual mechanic rather than a
+// generic spinner or static logo. Deliberately owns its own tiny canvas
+// and requestAnimationFrame loop instead of hooking into gameCanvas/
+// render()/update(): the title screen underneath initializes and shows
+// completely normally in parallel (see init()), and dismissing this is
+// nothing more than fading out and removing one DOM element -- it can
+// never leave the actual game in some half-initialized state if anything
+// here misbehaves. Always dismissible by tap/click/keypress, and always
+// auto-advances on its own after a few seconds even with zero input --
+// per its own design brief, this must never become a hard gate in front
+// of the game, for a first-time player or, especially, a returning one.
+const SPLASH_CONFIG = {
+  AUTO_DISMISS_MS: 3800,
+  DOT_COUNT: 16,
+  DOT_COLORS: ['#8fd3ff', '#ff9edb', '#ffe38f', '#a3ffb8'],
+};
+
+function runSplashScreen() {
+  const overlay = document.getElementById('splash-overlay');
+  const splashCanvas = document.getElementById('splash-canvas');
+  if (!overlay || !splashCanvas) return;
+  // Test-harness hook (see tests/smoke.spec.js's shared beforeEach) --
+  // every automated test needs a title screen it can interact with
+  // immediately after page.goto(), not a multi-second decorative intro
+  // sitting on top of it. Reaches the same end state a real dismiss()
+  // does (the overlay gone), just without ever animating or attaching
+  // listeners first.
+  if (window.__SKIP_SPLASH__) {
+    overlay.remove();
+    return;
+  }
+  const sctx = splashCanvas.getContext('2d');
+
+  function resizeSplashCanvas() {
+    splashCanvas.width = window.innerWidth;
+    splashCanvas.height = window.innerHeight;
+  }
+  resizeSplashCanvas();
+  window.addEventListener('resize', resizeSplashCanvas);
+
+  const dots = [];
+  for (let i = 0; i < SPLASH_CONFIG.DOT_COUNT; i++) {
+    dots.push({
+      xFrac: Math.random(),
+      yFrac: Math.random(),
+      driftAngle: Math.random() * Math.PI * 2,
+      driftSpeed: 0.00006 + Math.random() * 0.00008,
+      color: SPLASH_CONFIG.DOT_COLORS[i % SPLASH_CONFIG.DOT_COLORS.length],
+      twinklePhase: Math.random() * Math.PI * 2,
+    });
+  }
+  // Pair index i with i+DOT_COUNT/2 (matching gameplay's own colored-pair
+  // convention loosely) rather than adjacent indices, so paired dots start
+  // spread apart and the connecting line reads as deliberate, not
+  // incidental. Each pair takes its turn drawing/holding/fading on a
+  // staggered loop, never all illuminated at once -- a calmer, more
+  // legible read than every line appearing simultaneously.
+  const pairCount = Math.floor(SPLASH_CONFIG.DOT_COUNT / 2);
+  const pairs = [];
+  for (let i = 0; i < pairCount; i++) {
+    pairs.push({ a: i, b: i + pairCount, cyclePhase: (i / pairCount) * Math.PI * 2 });
+  }
+
+  const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let dismissed = false;
+  let rafId = null;
+
+  function drawFrame(t) {
+    const w = splashCanvas.width, h = splashCanvas.height;
+    sctx.clearRect(0, 0, w, h);
+
+    if (!reducedMotion) {
+      for (const d of dots) {
+        d.xFrac = (d.xFrac + Math.cos(d.driftAngle) * d.driftSpeed + 1) % 1;
+        d.yFrac = (d.yFrac + Math.sin(d.driftAngle) * d.driftSpeed + 1) % 1;
+      }
+    }
+
+    // Soft connecting lines first, so the dots themselves render on top.
+    for (const p of pairs) {
+      const a = dots[p.a], b = dots[p.b];
+      // A slow breathing cycle per pair (draw in, hold, fade out) rather
+      // than a hard on/off -- reads as gentle, not flickery.
+      const cycle = reducedMotion ? 0.6 : (Math.sin(t * 0.0006 + p.cyclePhase) + 1) / 2;
+      if (cycle < 0.35) continue;
+      const alpha = Math.min(1, (cycle - 0.35) / 0.25) * 0.55;
+      sctx.strokeStyle = `rgba(210, 225, 255, ${alpha.toFixed(3)})`;
+      sctx.lineWidth = 1.6;
+      sctx.beginPath();
+      sctx.moveTo(a.xFrac * w, a.yFrac * h);
+      sctx.lineTo(b.xFrac * w, b.yFrac * h);
+      sctx.stroke();
+    }
+
+    for (const d of dots) {
+      const twinkle = reducedMotion ? 1 : 0.7 + 0.3 * Math.sin(t * 0.002 + d.twinklePhase);
+      const r = 3.2 * Math.min(w, h) / 800;
+      const dx = d.xFrac * w, dy = d.yFrac * h;
+      const glow = sctx.createRadialGradient(dx, dy, 0, dx, dy, r * 4);
+      glow.addColorStop(0, d.color);
+      glow.addColorStop(1, 'rgba(0,0,0,0)');
+      sctx.globalAlpha = twinkle;
+      sctx.fillStyle = glow;
+      sctx.beginPath();
+      sctx.arc(dx, dy, r * 4, 0, Math.PI * 2);
+      sctx.fill();
+      sctx.globalAlpha = 1;
+      sctx.fillStyle = d.color;
+      sctx.beginPath();
+      sctx.arc(dx, dy, r, 0, Math.PI * 2);
+      sctx.fill();
+    }
+
+    if (!dismissed) rafId = requestAnimationFrame(drawFrame);
+  }
+  rafId = requestAnimationFrame(drawFrame);
+
+  function dismiss() {
+    if (dismissed) return;
+    dismissed = true;
+    if (rafId) cancelAnimationFrame(rafId);
+    window.removeEventListener('resize', resizeSplashCanvas);
+    clearTimeout(autoDismissTimer);
+    overlay.classList.add('dismissing');
+    // Matches #splash-overlay's own CSS transition duration -- removed
+    // from the DOM (not just hidden) once fully faded so it can never
+    // silently eat a stray tap/click again.
+    setTimeout(() => overlay.remove(), 550);
+  }
+
+  overlay.addEventListener('click', dismiss);
+  overlay.addEventListener('touchend', dismiss, { passive: true });
+  window.addEventListener('keydown', function onKey(e) {
+    dismiss();
+    window.removeEventListener('keydown', onKey);
+  }, { once: true });
+  const autoDismissTimer = setTimeout(dismiss, SPLASH_CONFIG.AUTO_DISMISS_MS);
+}
+
+// ============================================================
 // SECTION 11: INITIALIZATION
 // ============================================================
 function init() {
@@ -11793,6 +11936,7 @@ function init() {
   setupShareListeners();
   showMessage('LUMINA', titleSubtitleText(), { isTitleScreen: true });
   updateWaveDisplay();
+  runSplashScreen(); // purely decorative overlay on top of the title screen above -- see its own comment
 
   gameLoop();
 }

@@ -23,6 +23,22 @@
   <title>Lumina</title>
 </head>
 <body>
+  <!-- First-launch splash -- an animated constellation forming into the
+       wordmark, previewing the actual dots-and-lines mechanic rather than
+       a generic loading spinner. Owns its own canvas/animation loop,
+       completely independent of gameCanvas/STATE/the main render loop (see
+       runSplashScreen in game.js) -- the game underneath initializes and
+       shows the title screen exactly as before; this only ever sits on
+       top of it and gets removed. Tap/click/key or a short timeout
+       dismisses it -- never a hard gate on reaching the game. -->
+  <div id="splash-overlay" role="button" aria-label="Skip intro">
+    <canvas id="splash-canvas" aria-hidden="true"></canvas>
+    <div id="splash-content">
+      <div id="splash-title">LUMINA</div>
+      <div id="splash-tagline">dots, lines, music, stars</div>
+      <div id="splash-hint">tap or click to continue</div>
+    </div>
+  </div>
   <canvas id="gameCanvas"></canvas>
   <canvas id="cockpitCanvas"></canvas>
   <!-- Sleep mode's warm/dim color-grade (see toggleSleepModeTint) -- a DOM
