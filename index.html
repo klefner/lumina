@@ -120,6 +120,7 @@
       <button class="pause-menu-item" id="pause-hint">Hint</button>
       <button class="pause-menu-item" id="pause-erase">Erase a Line</button>
       <button class="pause-menu-item" id="pause-help">How to Play</button>
+      <button class="pause-menu-item" id="pause-shop">Store — More Backgrounds</button>
       <button class="pause-menu-item" id="pause-save">Save Game</button>
       <div id="save-tip">Tip: you can save your progress here!</div>
       <button class="pause-menu-item" id="pause-load">Load Game</button>
@@ -145,6 +146,35 @@
         <li>Flight Mode (title screen toggle): pilot a ship instead of dragging — hold anywhere to steer it, and fly through one dot then another to connect them, momentum and all.</li>
         <li>Cockpit Mode (title screen toggle): a first-person 3D view — hold anywhere as a joystick to bank and thrust, and fly through one dot then another to connect them. The ship drifts on release instead of stopping dead.</li>
       </ul>
+    </div>
+  </div>
+  <div id="store-overlay">
+    <div id="store-panel">
+      <button id="store-close" aria-label="Close">&times;</button>
+      <div id="store-title">STORE</div>
+      <div id="store-product">
+        <div id="store-swatches">
+          <div class="store-swatch" id="store-swatch-aurora"></div>
+          <div class="store-swatch" id="store-swatch-reef"></div>
+          <div class="store-swatch" id="store-swatch-cavern"></div>
+        </div>
+        <div id="store-product-name">Dreamscape Pack</div>
+        <div id="store-product-desc">Three new backgrounds: Aurora Skies, Coral Reef Glow, and Crystal Cave.</div>
+        <div id="store-price">$1.99</div>
+        <button id="store-buy-button">Get this pack</button>
+        <div id="store-owned-badge">You own this pack &#10003;</div>
+      </div>
+      <div id="store-checkout">
+        <div id="store-checkout-title">Confirm purchase</div>
+        <div id="store-checkout-desc">This is a demo checkout — no real payment will be made and no card details are collected.</div>
+        <button id="store-simulate-button">Simulate Purchase — $1.99</button>
+        <button id="store-checkout-cancel">Cancel</button>
+      </div>
+      <div id="store-success">
+        <div id="store-success-glyph">&#10003;</div>
+        <div id="store-success-text">Pack unlocked! Aurora Skies, Coral Reef Glow, and Crystal Cave are now in your Scene list.</div>
+        <button id="store-success-done">Done</button>
+      </div>
     </div>
   </div>
   <div id="achievement-toast">
@@ -173,7 +203,13 @@
           <option value="birthday">Birthday Party</option>
           <option value="halloween">Halloween</option>
           <option value="christmas">Christmas</option>
+          <option value="aurora">Aurora Skies</option>
+          <option value="reef">Coral Reef Glow</option>
+          <option value="cavern">Crystal Cave</option>
         </select>
+      </div>
+      <div id="store-row">
+        <button id="store-open-button">Store — More Backgrounds</button>
       </div>
       <div id="flight-mode-row">
         <label id="flight-mode-label">
