@@ -135,6 +135,22 @@ path for "sometimes synthesized."
   continuously phase-accumulated oscillator per burst instead, frequency
   following a smooth random contour — no splice, so no click, and it
   reads as tonal-squeak rather than noise-burst.
+
+  **Second correction (player feedback, 2026-08-14):** that rebuild fixed
+  the click but overshot the "clean, mostly-pure tone" reasoning above —
+  measured against the actual file, each burst was a short (~150-280ms),
+  genuinely pure pitch glide around 1-3kHz, repeated on a steady ~1-1.5s
+  cadence. That's not a squeak's acoustic signature, it's a bird/chick
+  chirp's: a clean tonal peep with sharp onset/offset and silence between
+  calls. Reported by a player as sounding "exactly like a baby chicken
+  chirping" — accurate. A real rubber-on-rubber squeak is a stick-slip
+  friction sound: rougher and noisier (not one pure partial), amplitude-
+  stutters as grip repeatedly catches and releases rather than one smooth
+  envelope, and is sustained for as long as the rub lasts (hundreds of ms
+  to ~1s), not a brief discrete peep. Rebuilt again: same relaxation-
+  oscillator carrier, but with fast pitch jitter and stick-slip amplitude
+  modulation layered on top of the slow glide, a thin filtered-noise grit
+  layer mixed in, longer (0.4-0.85s) events, and wider gaps between them.
 - `birthday-horn.mp3` — synthesized: simplified from 8-9 summed
   harmonics down to 4 with a faster amplitude rolloff (fewer, quieter
   upper harmonics reads as a papery party-horn blat rather than a denser
