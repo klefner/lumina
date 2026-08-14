@@ -11468,6 +11468,7 @@ function hideMessage() {
   document.getElementById('message-content').classList.remove('title-screen');
   document.getElementById('difficulty-selector').classList.remove('visible');
   document.getElementById('scene-row').classList.remove('visible');
+  document.getElementById('store-row').classList.remove('visible');
   document.getElementById('flight-mode-row').classList.remove('visible');
   document.getElementById('cockpit-mode-row').classList.remove('visible');
   document.getElementById('title-load-row').classList.remove('visible');
