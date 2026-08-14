@@ -11772,22 +11772,34 @@ setInterval(checkForNewVersionAndReload, 5 * 60 * 1000);
 // ============================================================
 // SECTION 10B: FIRST-LAUNCH SPLASH
 // ============================================================
-// A self-contained animated intro -- drifting dots that pair off and
-// connect with a soft line, previewing the actual mechanic rather than a
-// generic spinner or static logo. Deliberately owns its own tiny canvas
-// and requestAnimationFrame loop instead of hooking into gameCanvas/
-// render()/update(): the title screen underneath initializes and shows
-// completely normally in parallel (see init()), and dismissing this is
-// nothing more than fading out and removing one DOM element -- it can
-// never leave the actual game in some half-initialized state if anything
-// here misbehaves. Always dismissible by tap/click/keypress, and always
-// auto-advances on its own after a few seconds even with zero input --
-// per its own design brief, this must never become a hard gate in front
-// of the game, for a first-time player or, especially, a returning one.
+// A self-contained animated intro built on the same hero art already used
+// for the itch.io storefront listing (art/hero-splash.jpg, an #splash-hero
+// <img> in index.html) -- a hand reaching up from orbit, a glowing line
+// winding from its fingertip through the game's own dot shapes to the
+// wordmark. #splash-canvas layers a restrained twinkle/ember animation on
+// top of that photo (see drawFrame below) rather than the busier
+// dot-pairing-and-connecting animation an earlier version of this used --
+// the photo is already the dramatic visual and its own line is already
+// the "connect the dots" moment; anything competing with it on top reads
+// as clutter, not reinforcement. This layer's only job is to keep the
+// splash feeling alive (a still photo alone doesn't) and to nod at scene
+// variety via EMBER_COLORS, one per real scene, without spelling out scene
+// names on the very first thing a player ever sees. Deliberately owns its
+// own tiny canvas and requestAnimationFrame loop instead of hooking into
+// gameCanvas/render()/update(): the title screen underneath initializes
+// and shows completely normally in parallel (see init()), and dismissing
+// this is nothing more than fading out and removing one DOM element -- it
+// can never leave the actual game in some half-initialized state if
+// anything here misbehaves. Always dismissible by tap/click/keypress, and
+// always auto-advances on its own after a few seconds even with zero
+// input -- per its own design brief, this must never become a hard gate
+// in front of the game, for a first-time player or, especially, a
+// returning one.
 const SPLASH_CONFIG = {
   AUTO_DISMISS_MS: 3800,
-  DOT_COUNT: 16,
-  DOT_COLORS: ['#8fd3ff', '#ff9edb', '#ffe38f', '#a3ffb8'],
+  STAR_COUNT: 46,
+  EMBER_COUNT: 7,
+  EMBER_COLORS: ['#bcd7ff', '#7de89a', '#7ee8e0', '#ff9edb', '#ffb066', '#ff6b6b'],
 };
 
 function runSplashScreen() {
@@ -11827,27 +11839,28 @@ function runSplashScreen() {
   resizeSplashCanvas();
   window.addEventListener('resize', resizeSplashCanvas);
 
-  const dots = [];
-  for (let i = 0; i < SPLASH_CONFIG.DOT_COUNT; i++) {
-    dots.push({
+  const stars = [];
+  for (let i = 0; i < SPLASH_CONFIG.STAR_COUNT; i++) {
+    stars.push({
       xFrac: Math.random(),
       yFrac: Math.random(),
-      driftAngle: Math.random() * Math.PI * 2,
-      driftSpeed: 0.00006 + Math.random() * 0.00008,
-      color: SPLASH_CONFIG.DOT_COLORS[i % SPLASH_CONFIG.DOT_COLORS.length],
-      twinklePhase: Math.random() * Math.PI * 2,
+      r: 0.6 + Math.random() * 1.1,
+      baseAlpha: 0.3 + Math.random() * 0.5,
+      phase: Math.random() * Math.PI * 2,
     });
   }
-  // Pair index i with i+DOT_COUNT/2 (matching gameplay's own colored-pair
-  // convention loosely) rather than adjacent indices, so paired dots start
-  // spread apart and the connecting line reads as deliberate, not
-  // incidental. Each pair takes its turn drawing/holding/fading on a
-  // staggered loop, never all illuminated at once -- a calmer, more
-  // legible read than every line appearing simultaneously.
-  const pairCount = Math.floor(SPLASH_CONFIG.DOT_COUNT / 2);
-  const pairs = [];
-  for (let i = 0; i < pairCount; i++) {
-    pairs.push({ a: i, b: i + pairCount, cyclePhase: (i / pairCount) * Math.PI * 2 });
+  // One rising ember per real scene's accent color (see
+  // SPLASH_CONFIG.EMBER_COLORS) -- see this section's own header comment
+  // for why this stays a quiet accent rather than the visual centerpiece.
+  const embers = [];
+  for (let i = 0; i < SPLASH_CONFIG.EMBER_COUNT; i++) {
+    embers.push({
+      xFrac: Math.random(),
+      yFrac: Math.random() * 1.1,
+      r: 2.2 + Math.random() * 1.6,
+      riseSpeed: 0.00004 + Math.random() * 0.00005,
+      color: SPLASH_CONFIG.EMBER_COLORS[i % SPLASH_CONFIG.EMBER_COLORS.length],
+    });
   }
 
   const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -11858,47 +11871,44 @@ function runSplashScreen() {
     const w = splashCanvas.width, h = splashCanvas.height;
     sctx.clearRect(0, 0, w, h);
 
+    // Gentle twinkling stars -- extends the hero photo's own starfield
+    // into whatever part of the viewport it doesn't cover (a wide desktop
+    // window crops some of the photo's stars off the top/bottom; a narrow
+    // phone crops the sides). Static positions, only opacity animates, so
+    // this never competes for attention with the photo's own line/hand.
+    for (const s of stars) {
+      const twinkle = reducedMotion ? 0.85 : 0.4 + 0.6 * Math.max(0, Math.sin(t * 0.0012 + s.phase));
+      sctx.globalAlpha = twinkle * s.baseAlpha;
+      sctx.fillStyle = '#ffffff';
+      sctx.beginPath();
+      sctx.arc(s.xFrac * w, s.yFrac * h, s.r * Math.min(w, h) / 700, 0, Math.PI * 2);
+      sctx.fill();
+    }
+    sctx.globalAlpha = 1;
+
     if (!reducedMotion) {
-      for (const d of dots) {
-        d.xFrac = (d.xFrac + Math.cos(d.driftAngle) * d.driftSpeed + 1) % 1;
-        d.yFrac = (d.yFrac + Math.sin(d.driftAngle) * d.driftSpeed + 1) % 1;
+      for (const e of embers) {
+        e.yFrac -= e.riseSpeed;
+        if (e.yFrac < -0.05) { e.yFrac = 1.05; e.xFrac = Math.random(); }
       }
     }
-
-    // Soft connecting lines first, so the dots themselves render on top.
-    for (const p of pairs) {
-      const a = dots[p.a], b = dots[p.b];
-      // A slow breathing cycle per pair (draw in, hold, fade out) rather
-      // than a hard on/off -- reads as gentle, not flickery.
-      const cycle = reducedMotion ? 0.6 : (Math.sin(t * 0.0006 + p.cyclePhase) + 1) / 2;
-      if (cycle < 0.35) continue;
-      const alpha = Math.min(1, (cycle - 0.35) / 0.25) * 0.55;
-      sctx.strokeStyle = `rgba(210, 225, 255, ${alpha.toFixed(3)})`;
-      sctx.lineWidth = 1.6;
-      sctx.beginPath();
-      sctx.moveTo(a.xFrac * w, a.yFrac * h);
-      sctx.lineTo(b.xFrac * w, b.yFrac * h);
-      sctx.stroke();
-    }
-
-    for (const d of dots) {
-      const twinkle = reducedMotion ? 1 : 0.7 + 0.3 * Math.sin(t * 0.002 + d.twinklePhase);
-      const r = 3.2 * Math.min(w, h) / 800;
-      const dx = d.xFrac * w, dy = d.yFrac * h;
-      const glow = sctx.createRadialGradient(dx, dy, 0, dx, dy, r * 4);
-      glow.addColorStop(0, d.color);
+    for (const e of embers) {
+      const ex = e.xFrac * w, ey = e.yFrac * h;
+      const r = e.r * Math.min(w, h) / 700;
+      // Eases in/out at the very top and bottom of its rise rather than a
+      // hard on/off cut, so it never just pops in or vanishes mid-frame.
+      const fade = reducedMotion ? 0.6 : Math.max(0, Math.min(1, Math.min(e.yFrac, 1 - e.yFrac) * 6));
+      if (fade <= 0) continue;
+      const glow = sctx.createRadialGradient(ex, ey, 0, ex, ey, r * 5);
+      glow.addColorStop(0, e.color);
       glow.addColorStop(1, 'rgba(0,0,0,0)');
-      sctx.globalAlpha = twinkle;
+      sctx.globalAlpha = fade * 0.75;
       sctx.fillStyle = glow;
       sctx.beginPath();
-      sctx.arc(dx, dy, r * 4, 0, Math.PI * 2);
-      sctx.fill();
-      sctx.globalAlpha = 1;
-      sctx.fillStyle = d.color;
-      sctx.beginPath();
-      sctx.arc(dx, dy, r, 0, Math.PI * 2);
+      sctx.arc(ex, ey, r * 5, 0, Math.PI * 2);
       sctx.fill();
     }
+    sctx.globalAlpha = 1;
 
     if (!dismissed) rafId = requestAnimationFrame(drawFrame);
   }
