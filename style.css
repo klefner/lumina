@@ -69,6 +69,32 @@ html, body {
   display: block;
 }
 
+/* Player report: on a portrait phone, `cover` above crops the image's own
+   wordmark from both sides at once, since it spans nearly the image's
+   full width -- the visible slice reads as "UMIN", not "LUMINA" (the
+   comment above called this wordmark "a bonus where the crop preserves
+   it, not something relied on", but a half-legible brand name reads as
+   broken, not merely absent). Below the image's own aspect ratio
+   (1400/1120 = 5/4), `cover` would need to crop horizontally to fill the
+   viewport; switching to `contain` there shows the whole image
+   uncropped (letterboxed top/bottom into the overlay's own black
+   background) so the wordmark is always either fully visible or, on an
+   even narrower viewport where #splash-content's caption bar overlaps
+   it, fully covered by that caption's own scrim -- never sliced through
+   the middle. Wide viewports are untouched: `cover` only ever crops
+   those top/bottom, which doesn't touch the wordmark's width at all. */
+@media (max-aspect-ratio: 5/4) {
+  #splash-hero {
+    object-fit: contain;
+    /* `center 38%` was tuned for `cover`'s crop focal point -- irrelevant
+       once nothing is being cropped. Top-aligning here collects all of
+       contain's leftover letterbox space into one gap at the bottom
+       (above the caption bar) instead of splitting it above and below
+       the image. */
+    object-position: center top;
+  }
+}
+
 #splash-canvas {
   position: absolute;
   top: 0;
@@ -440,6 +466,13 @@ html, body {
   padding: 0 12px;
   height: 30px;
   font-weight: 700;
+  /* display:flex comes from .visible above, same as #pause-button, but
+     unlike #pause-button this never got its own align-items/justify-
+     content -- flex's default alignment (stretch/flex-start) left the
+     text sitting off-center both ways instead of centered in the pill
+     (player report). */
+  align-items: center;
+  justify-content: center;
 }
 
 /* The one on-screen control during a wave: everything ERASE/HINT/HELP/
