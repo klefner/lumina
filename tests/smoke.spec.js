@@ -7247,7 +7247,8 @@ test('Rotate mode holds each package for exactly as many waves as it has ambient
       blockCount: blocks.length,
       // The same seed must always produce the same order (needed for the
       // HUD's own repeated resolveSceneBlock calls, and for a reload
-      // mid-run to agree with itself -- see ROTATE_SEED_KEY).
+      // mid-run to agree with itself -- see the save's own rotateSeed
+      // field in saveGame/loadSave).
       sameSeedReproducible: JSON.stringify(sequence) === JSON.stringify(runSequence(112233, 60)),
       // A different seed must (overwhelmingly likely, with 6+ scenes and
       // 60 waves) actually produce a different order -- proving this is
@@ -7265,42 +7266,64 @@ test('Rotate mode holds each package for exactly as many waves as it has ambient
   expect(errors).toEqual([]);
 });
 
-test('Rotate mode\'s random package order reuses the same seed across a reload, but a genuinely new game (Start Game without autoload, or Restart Game) reseeds it', async ({ page }) => {
+test('Rotate mode\'s random package order rides along with a saved game across a reload (review catch, PR #87 -- a global "current" seed would drift out of sync with an untouched save), and a genuinely new game (Start Game without autoload, or Restart Game) reseeds it', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
 
-  const initialSeed = await page.evaluate(() => STATE.rotateSeed);
-  expect(Number.isFinite(initialSeed)).toBe(true);
-
-  // A plain reload (init() calling ensureRotateSeed()) must reuse whatever
-  // seed localStorage already has, not roll a fresh one -- otherwise an
-  // in-progress run's already-played packages could retroactively change
-  // to a different order on every reload.
+  // With no save at all, there's no "in-progress run" to protect -- a
+  // reload is free to roll a fresh seed each time, same as any other
+  // fresh session.
+  const seedBeforeSave = await page.evaluate(() => STATE.rotateSeed);
+  expect(Number.isFinite(seedBeforeSave)).toBe(true);
   await page.reload();
   await page.waitForFunction(() => window.__lumina);
-  const seedAfterPlainReload = await page.evaluate(() => STATE.rotateSeed);
-  expect(seedAfterPlainReload).toBe(initialSeed);
+  const seedAfterReloadNoSave = await page.evaluate(() => STATE.rotateSeed);
+  expect(seedAfterReloadNoSave).not.toBe(seedBeforeSave);
 
-  // Start Game with no save to autoload is a genuinely new playthrough --
-  // it should get its own fresh shuffle, not replay the same order forever.
+  // Once a save actually exists, its own embedded seed (see SAVE_KEY) must
+  // survive a reload -- loading it back needs to resolve its already-
+  // played waves against the exact seed they were shown with, not
+  // whatever a since-started different playthrough left lying around.
+  const savedSeed = await page.evaluate(() => {
+    STATE.wave = 5;
+    STATE.score = 100;
+    saveGame();
+    return STATE.rotateSeed;
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.__lumina);
+  const seedAfterReloadWithSave = await page.evaluate(() => STATE.rotateSeed);
+  expect(seedAfterReloadWithSave).toBe(savedSeed);
+
+  // Start Game with autoload off ignores that save and starts fresh -- a
+  // genuinely new playthrough, so it gets its own shuffle.
   await page.click('#start-game-button');
   const seedAfterFreshStart = await page.evaluate(() => STATE.rotateSeed);
-  expect(seedAfterFreshStart).not.toBe(initialSeed);
+  expect(seedAfterFreshStart).not.toBe(savedSeed);
 
-  // Restart Game is the same kind of genuinely-new-playthrough moment.
+  // Loading that same save back explicitly restores its own seed, not
+  // whatever the fresh start above just rolled.
+  await page.click('#pause-button');
+  await page.click('#pause-load');
+  await page.waitForTimeout(1100); // > FADE_CONFIG.OUT_DURATION_SEC (900ms) -- must outlast the fade-out before its onComplete (where the real state change happens) runs
+  const seedAfterExplicitLoad = await page.evaluate(() => STATE.rotateSeed);
+  expect(seedAfterExplicitLoad).toBe(savedSeed);
+
+  // Restart Game is the same kind of genuinely-new-playthrough moment as
+  // Start Game above.
   await page.click('#pause-button');
   await page.click('#pause-restart-game');
-  await page.waitForTimeout(700); // startFadeToBlack/FromBlack's own fade timing
+  await page.waitForTimeout(1100);
   const seedAfterRestartGame = await page.evaluate(() => STATE.rotateSeed);
-  expect(seedAfterRestartGame).not.toBe(seedAfterFreshStart);
+  expect(seedAfterRestartGame).not.toBe(savedSeed);
 
   // Restart Current Level (unlike Restart Game) replays the same wave,
   // not a new playthrough -- it must NOT reseed, or the package that wave
   // was already showing could change out from under the player mid-retry.
   await page.click('#pause-button');
   await page.click('#pause-restart-level');
-  await page.waitForTimeout(700);
+  await page.waitForTimeout(1100);
   const seedAfterRestartLevel = await page.evaluate(() => STATE.rotateSeed);
   expect(seedAfterRestartLevel).toBe(seedAfterRestartGame);
 

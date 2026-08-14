@@ -254,7 +254,13 @@ function saveStats(stats) {
 const SAVE_KEY = 'lumina_save_v1';
 function saveGame() {
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify({ wave: STATE.wave, score: STATE.score }));
+    // rotateSeed rides along with the save it actually belongs to (see
+    // newRotateSeed's own comment) -- a single global "current" seed
+    // would get silently overwritten the moment a fresh game starts
+    // without touching this save, so loading the save back afterward
+    // would resolve its already-played waves against the wrong seed,
+    // possibly changing which package they'd shown.
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ wave: STATE.wave, score: STATE.score, rotateSeed: STATE.rotateSeed }));
     return true;
   } catch (e) { return false; }
 }
@@ -264,7 +270,10 @@ function loadSave() {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed.wave || parsed.wave < 1) return null;
-    return { wave: parsed.wave, score: parsed.score || 0 };
+    // rotateSeed is missing on a save written before this field existed --
+    // every call site falls back to STATE's own current seed when this is
+    // null (see handleLoadGameFromTitle/handleLoadGame/startGameFromTitle).
+    return { wave: parsed.wave, score: parsed.score || 0, rotateSeed: parsed.rotateSeed || null };
   } catch (e) { return null; }
 }
 function clearSave() {
@@ -360,9 +369,9 @@ function saveSceneSetting(mode) {
 // -- public-domain, single self-contained function, no library needed)
 // makes the whole sequence a pure function of (seed, block index)
 // instead: same seed always produces the same package order, so as long
-// as the seed itself is persisted (see ROTATE_SEED_KEY) rather than
-// re-rolled, a reload can't retroactively change which package a
-// wave the player already reached was playing.
+// as the seed itself is persisted rather than re-rolled, a reload can't
+// retroactively change which package a wave the player already reached
+// was playing.
 function mulberry32(seed) {
   return function () {
     seed |= 0;
@@ -373,31 +382,18 @@ function mulberry32(seed) {
   };
 }
 
-// One seed per playthrough, not per session -- reused across a reload or
-// Load Game (see startGameFromTitle/handleLoadGame/handleRestartCurrentLevel)
-// so an in-progress run's already-played packages never retroactively
-// change, but rerolled fresh on an actual new game (Start Game without
-// autoload, or Restart Game) so different playthroughs get different
-// shuffles rather than replaying the exact same order forever.
-const ROTATE_SEED_KEY = 'lumina_rotate_seed_v1';
-function loadRotateSeed() {
-  try {
-    const saved = Number(localStorage.getItem(ROTATE_SEED_KEY));
-    return Number.isFinite(saved) && saved !== 0 ? saved : null;
-  } catch (e) {
-    return null;
-  }
-}
+// One seed per playthrough, riding along with whichever save it actually
+// belongs to (see SAVE_KEY's own rotateSeed field) rather than one global
+// "current" seed -- a single shared key would get silently overwritten
+// the moment a fresh game starts without touching an existing save
+// (Codex review catch, PR #87), so loading that save back afterward would
+// resolve its already-played waves against the WRONG seed, possibly
+// changing which package they'd shown. Every load/resume path restores
+// the seed the save was actually written with; only a genuinely new
+// playthrough (Start Game without autoload, Restart Game) calls this to
+// roll a fresh one.
 function newRotateSeed() {
-  // Avoid 0 -- mulberry32(0)'s very first output is deterministic in a way
-  // that's indistinguishable from "no seed was ever set" when read back via
-  // loadRotateSeed's saved !== 0 check above.
-  const seed = 1 + Math.floor(Math.random() * 0xFFFFFFFE);
-  try { localStorage.setItem(ROTATE_SEED_KEY, String(seed)); } catch (e) { /* best-effort only */ }
-  return seed;
-}
-function ensureRotateSeed() {
-  return loadRotateSeed() ?? newRotateSeed();
+  return 1 + Math.floor(Math.random() * 0xFFFFFFFE);
 }
 
 // Paid scenes (see the Store: index.html's #store-overlay and
@@ -550,7 +546,7 @@ function resolveSceneBlock(waveNumber) {
     const scene = scenes.includes(requested) ? requested : 'space';
     return { scene, blockPosition: 0 };
   }
-  // Random package order (see mulberry32/ROTATE_SEED_KEY above) --
+  // Random package order (see mulberry32/newRotateSeed above) --
   // packages no longer sit at fixed positions in one repeating cycle, so
   // there's no modulo shortcut anymore: walk forward package by package,
   // deterministically re-rolling the same sequence from the same seed
@@ -2563,6 +2559,7 @@ function handleLoadGameFromTitle() {
   const resume = STATE.pendingResume;
   STATE.pendingResume = null;
   STATE.score = resume.score;
+  if (resume.rotateSeed) STATE.rotateSeed = resume.rotateSeed; // this save's own order, not whatever's currently in STATE
   startWave(resume.wave);
 }
 
@@ -2584,6 +2581,7 @@ function startGameFromTitle() {
     const resume = STATE.pendingResume;
     STATE.pendingResume = null;
     STATE.score = resume.score;
+    if (resume.rotateSeed) STATE.rotateSeed = resume.rotateSeed; // this save's own order, not whatever's currently in STATE
     startWave(resume.wave);
   } else {
     STATE.pendingResume = null;
@@ -2808,8 +2806,9 @@ const STATE = {
 
   sceneMode: 'rotate', // persisted (see SCENE_KEY) -- picked on the title screen: a fixed scene,
                         // or 'rotate' to work through SCENE_LIST in a random package order
-  rotateSeed: 1,        // seeds Rotate mode's random package order (see mulberry32/ROTATE_SEED_KEY) --
-                         // loaded for real in init(), this placeholder is only ever read before that
+  rotateSeed: 1,        // seeds Rotate mode's random package order (see mulberry32/newRotateSeed) --
+                         // set for real in init() from the pending save's own seed, or freshly
+                         // rolled if there isn't one; this placeholder is only ever read before that
   scene: 'space',       // this wave's actual resolved scene (see resolveSceneForWave/startWave) --
                          // what render() actually draws, independent of sceneMode
   forestScene: null,    // { trees, fireflies, moonXFrac, ... } for the current wave when
@@ -11284,12 +11283,13 @@ function handleLoadGame() {
   }
   closePauseMenuUI();
   STATE.paused = false;
-  // A save only stores wave + score, not how many scene-ambience layers
-  // had built up -- there's no correct streak to resume into, so start
-  // the reveal over rather than guess.
+  // A save doesn't store how many scene-ambience layers had built up --
+  // there's no correct streak to resume into, so start the reveal over
+  // rather than guess.
   resetSceneAmbience();
   startFadeToBlack(() => {
     STATE.score = save.score;
+    if (save.rotateSeed) STATE.rotateSeed = save.rotateSeed; // this save's own order, not whatever's currently in STATE
     startWave(save.wave);
     startFadeFromBlack();
   });
@@ -12586,7 +12586,10 @@ function init() {
   STATE.cockpitMode = loadCockpitModeSetting();
   STATE.sceneMode = loadSceneSetting();
   STATE.purchasedScenes = loadPurchasedScenes();
-  STATE.rotateSeed = ensureRotateSeed(); // reused across a reload/Load Game -- see its own comment for why
+  // Adopt the pending save's own seed if it has one (matches what that
+  // save's already-played waves actually showed); only roll a fresh one
+  // when there's nothing to resume, or it predates this field.
+  STATE.rotateSeed = STATE.pendingResume?.rotateSeed || newRotateSeed();
   if (STATE.cockpitMode) ensureThreeLoaded(); // preload -- the title screen may already be showing it as checked
   applyDifficulty(STATE.difficulty);
   setupDifficultySelectorListeners();
