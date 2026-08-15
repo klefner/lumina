@@ -3645,7 +3645,17 @@ const SCENE_AMBIENT_CONFIG = {
       // synthetic about their timbre got maximum spotlight. Rebuilt (see
       // sounds/CREDITS.md) and brought down to sit with the bed rather
       // than over it.
-      horn: { file: 'birthday-horn.mp3', gain: 0.55, isEvent: true, minGapSec: 10, maxGapSec: 28 },
+      //
+      // Second correction (player feedback, 2026-08-14): 0.55 still read
+      // as dominating, specifically drowning out quiet music passages it
+      // happened to land on -- a bright, harsh one-shot transient like a
+      // horn blat masks a soft melody note far more than equal *gain*
+      // against a continuous bed would suggest (the ear weights sudden
+      // high-energy transients more than raw RMS does). Brought below the
+      // continuous bed layers (crowd/balloon) rather than just closer to
+      // them, since matching their gain still meant reading louder in
+      // practice.
+      horn: { file: 'birthday-horn.mp3', gain: 0.35, isEvent: true, minGapSec: 10, maxGapSec: 28 },
       cork: { file: 'birthday-cork.mp3', gain: 0.5, isEvent: true, minGapSec: 20, maxGapSec: 45 },
     },
   },
@@ -11080,6 +11090,164 @@ function drawCavernScene() {
   }
 }
 
+// Static store-swatch previews (player feedback: the flat CSS gradients
+// standing in for "some kind of colorful background" didn't actually show
+// what the player would be buying). Real canvas renders using each
+// scene's own palette (AURORA_CONFIG/REEF_CONFIG/CAVERN_CONFIG above) --
+// deliberately not the exact generate*Scene()/draw*Scene() functions,
+// which read/write STATE and the main gameCanvas and would need a real
+// refactor to target an arbitrary canvas safely; these are small,
+// self-contained, and drawn once rather than animated -- a thumbnail this
+// size doesn't need motion to read as "aurora ribbons" / "coral reef" /
+// "crystal cave" at a glance.
+function drawStoreSwatchAurora(c) {
+  const w = c.width, h = c.height, sctx = c.getContext('2d');
+  const sky = sctx.createLinearGradient(0, 0, 0, h);
+  sky.addColorStop(0, AURORA_CONFIG.SKY_TOP);
+  sky.addColorStop(0.55, AURORA_CONFIG.SKY_MID);
+  sky.addColorStop(1, AURORA_CONFIG.SKY_HORIZON);
+  sctx.fillStyle = sky;
+  sctx.fillRect(0, 0, w, h);
+
+  for (let i = 0; i < 16; i++) {
+    sctx.beginPath();
+    sctx.fillStyle = `rgba(255,255,255,${(0.25 + Math.random() * 0.5).toFixed(2)})`;
+    sctx.arc(Math.random() * w, Math.random() * h * 0.65, Math.random() * 1.1, 0, Math.PI * 2);
+    sctx.fill();
+  }
+
+  AURORA_CONFIG.RIBBON_PALETTES.forEach((colors, i) => {
+    const baseY = h * (0.3 + i * 0.14);
+    const grad = sctx.createLinearGradient(0, baseY - h * 0.09, 0, baseY + h * 0.09);
+    grad.addColorStop(0, colors[0]);
+    grad.addColorStop(0.5, colors[1]);
+    grad.addColorStop(1, colors[2]);
+    sctx.beginPath();
+    for (let x = 0; x <= w; x += 4) {
+      const y = baseY + Math.sin((x / w) * Math.PI * 2.2 + i * 1.7) * h * 0.06;
+      if (x === 0) sctx.moveTo(x, y); else sctx.lineTo(x, y);
+    }
+    sctx.strokeStyle = grad;
+    sctx.lineWidth = h * 0.05;
+    sctx.lineCap = 'round';
+    sctx.stroke();
+  });
+
+  sctx.beginPath();
+  sctx.moveTo(0, h);
+  sctx.lineTo(0, h * 0.85);
+  for (let x = 0; x <= w; x += w / 6) sctx.lineTo(x, h * (0.78 + Math.random() * 0.09));
+  sctx.lineTo(w, h);
+  sctx.closePath();
+  sctx.fillStyle = AURORA_CONFIG.RIDGE_COLOR;
+  sctx.fill();
+}
+
+function drawStoreSwatchReef(c) {
+  const w = c.width, h = c.height, sctx = c.getContext('2d');
+  const water = sctx.createLinearGradient(0, 0, 0, h);
+  water.addColorStop(0, REEF_CONFIG.WATER_TOP);
+  water.addColorStop(0.5, REEF_CONFIG.WATER_MID);
+  water.addColorStop(1, REEF_CONFIG.WATER_BOTTOM);
+  sctx.fillStyle = water;
+  sctx.fillRect(0, 0, w, h);
+
+  const colors = REEF_CONFIG.CORAL_COLORS;
+  for (let i = 0; i < 5; i++) {
+    const cx = ((i + 0.5) / 5) * w + (Math.random() - 0.5) * w * 0.05;
+    const chHeight = (0.28 + Math.random() * 0.22) * h;
+    const topY = h - chHeight;
+    const color = colors[i % colors.length];
+    const glow = sctx.createRadialGradient(cx, h - chHeight * 0.5, 0, cx, h - chHeight * 0.5, chHeight * 0.85);
+    glow.addColorStop(0, `${color}55`);
+    glow.addColorStop(1, 'rgba(0,0,0,0)');
+    sctx.fillStyle = glow;
+    sctx.beginPath();
+    sctx.arc(cx, h - chHeight * 0.5, chHeight * 0.85, 0, Math.PI * 2);
+    sctx.fill();
+
+    sctx.strokeStyle = color;
+    sctx.lineWidth = 2;
+    sctx.lineCap = 'round';
+    for (let b = 0; b < 3; b++) {
+      const spread = (b - 1) * 0.14;
+      sctx.beginPath();
+      sctx.moveTo(cx, h);
+      sctx.quadraticCurveTo(cx + spread * w * 0.5, h - chHeight * 0.6, cx + spread * w, topY);
+      sctx.stroke();
+    }
+  }
+
+  for (let i = 0; i < 3; i++) {
+    const fx = Math.random() * w, fy = h * (0.12 + Math.random() * 0.4);
+    sctx.fillStyle = colors[(i + 1) % colors.length];
+    sctx.beginPath();
+    sctx.ellipse(fx, fy, w * 0.045, h * 0.02, 0, 0, Math.PI * 2);
+    sctx.fill();
+  }
+
+  for (let i = 0; i < 7; i++) {
+    sctx.beginPath();
+    sctx.strokeStyle = 'rgba(255,255,255,0.4)';
+    sctx.lineWidth = 1;
+    sctx.arc(Math.random() * w, Math.random() * h, 1 + Math.random() * 1.4, 0, Math.PI * 2);
+    sctx.stroke();
+  }
+}
+
+function drawStoreSwatchCavern(c) {
+  const w = c.width, h = c.height, sctx = c.getContext('2d');
+  const rock = sctx.createLinearGradient(0, 0, 0, h);
+  rock.addColorStop(0, CAVERN_CONFIG.ROCK_TOP);
+  rock.addColorStop(0.6, CAVERN_CONFIG.ROCK_MID);
+  rock.addColorStop(1, CAVERN_CONFIG.ROCK_BOTTOM);
+  sctx.fillStyle = rock;
+  sctx.fillRect(0, 0, w, h);
+
+  for (let i = 0; i < 12; i++) {
+    sctx.beginPath();
+    sctx.fillStyle = `rgba(200,220,255,${(0.15 + Math.random() * 0.3).toFixed(2)})`;
+    sctx.arc(Math.random() * w, Math.random() * h, 1, 0, Math.PI * 2);
+    sctx.fill();
+  }
+
+  const colors = CAVERN_CONFIG.CRYSTAL_COLORS;
+  const colorsRgb = CAVERN_CONFIG.CRYSTAL_COLORS_RGB;
+  for (let i = 0; i < 5; i++) {
+    const cx = ((i + 0.5) / 5) * w + (Math.random() - 0.5) * w * 0.08;
+    const fromCeiling = i % 2 === 0;
+    const size = h * (0.16 + Math.random() * 0.07);
+    const baseY = fromCeiling ? 0 : h;
+    const tipY = fromCeiling ? size * 1.8 : h - size * 1.8;
+    const rgb = colorsRgb[i % colorsRgb.length];
+
+    const glow = sctx.createRadialGradient(cx, (baseY + tipY) / 2, 0, cx, (baseY + tipY) / 2, size * 1.8);
+    glow.addColorStop(0, `rgba(${rgb},0.5)`);
+    glow.addColorStop(1, `rgba(${rgb},0)`);
+    sctx.fillStyle = glow;
+    sctx.beginPath();
+    sctx.arc(cx, (baseY + tipY) / 2, size * 1.8, 0, Math.PI * 2);
+    sctx.fill();
+
+    sctx.beginPath();
+    sctx.moveTo(cx - size * 0.35, baseY);
+    sctx.lineTo(cx, tipY);
+    sctx.lineTo(cx + size * 0.35, baseY);
+    sctx.closePath();
+    sctx.fillStyle = colors[i % colors.length];
+    sctx.fill();
+  }
+}
+
+// Rendered once at setup, not re-rendered on every store open -- a
+// product thumbnail should look the same each time a player sees it, not
+// reshuffle underneath them.
+function renderStoreSwatches() {
+  drawStoreSwatchAurora(document.getElementById('store-swatch-aurora'));
+  drawStoreSwatchReef(document.getElementById('store-swatch-reef'));
+  drawStoreSwatchCavern(document.getElementById('store-swatch-cavern'));
+}
+
 // ============================================================
 // SECTION 8: HAPTICS
 // ============================================================
@@ -11239,6 +11407,7 @@ function closeStore() {
 }
 
 function setupStoreListeners() {
+  renderStoreSwatches();
   document.getElementById('store-open-button').addEventListener('click', openStore);
   document.getElementById('pause-shop').addEventListener('click', openStore);
   document.getElementById('store-close').addEventListener('click', closeStore);

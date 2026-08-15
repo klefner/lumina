@@ -868,11 +868,24 @@ html, body {
 }
 #message-content.title-screen {
   pointer-events: auto;
+  /* Player feedback: centered ended up reading as "too far down the
+     screen" -- as more title-screen rows (Store, then whatever comes
+     next) were added over the game's life, vertically centering the
+     WHOLE stack pushed its top (the title itself) further and further
+     past comfortable eye level, purely because the stack itself got
+     taller. align-self (not a change to #message-overlay's own
+     align-items) scopes this to the title screen specifically -- that
+     shared overlay is also WAVE_COMPLETE's payoff message (see
+     showMessage's isTitleScreen toggle), which deliberately stays
+     centered on the playfield mid-game and must NOT drift to a fixed
+     top offset along with it (review catch). */
+  align-self: flex-start;
+  margin-top: 9vh;
 }
 
 #message-title {
   font-family: 'Courier New', monospace;
-  font-size: 42px;
+  font-size: 54px;
   font-weight: 300;
   line-height: 1.3;
   color: rgba(255, 255, 255, 0.9);
@@ -892,7 +905,7 @@ html, body {
    narrow screens. */
 #message-subtitle {
   font-family: 'Courier New', monospace;
-  font-size: 18px;
+  font-size: 22px;
   line-height: 1.4;
   color: rgba(255, 255, 255, 0.85);
   letter-spacing: 0.15em;
@@ -1058,6 +1071,23 @@ html, body {
 #scene-selector:hover {
   background: rgba(255, 255, 255, 0.1);
   color: rgba(255, 255, 255, 0.95);
+}
+/* Player report: on desktop Chrome/Windows, the OPEN dropdown list
+   rendered near-invisible near-white text on an opaque white background --
+   the native popup ignores the translucent dark #scene-selector background
+   above entirely (falls back to an opaque system color) while still
+   inheriting that near-white `color`, so text and background ended up
+   nearly the same shade. Mobile's native picker wasn't affected (it uses
+   its own themed rendering regardless of this CSS), which is why this
+   only showed up on PC. Setting an explicit background/color on the
+   <option> elements themselves (not just inherited from the select) is
+   what Chromium actually respects for the popup's own rows. */
+#scene-selector option {
+  background: #14141c;
+  color: rgba(255, 255, 255, 0.92);
+}
+#scene-selector option:disabled {
+  color: rgba(255, 255, 255, 0.35);
 }
 
 /* Title-screen-only entry point into #store-overlay -- sits right under
@@ -1521,10 +1551,12 @@ html, body {
 }
 
 /* Three small gradient swatches standing in for the actual scene
-   thumbnails -- enough to read as "three distinct new looks" at a glance
-   without needing real rendered screenshots baked into the store. Colors
-   match each premium scene's own palette (see AURORA_CONFIG/REEF_CONFIG/
-   CAVERN_CONFIG in game.js) so the preview and the real thing agree. */
+   thumbnails -- real canvas renders of each scene's own palette and
+   decorations (see drawStoreSwatchAurora/Reef/Cavern and
+   renderStoreSwatches in game.js), not just a flat gradient standing in
+   for "some kind of colorful background." Drawn at 2x the CSS size
+   (128px canvas, 64px displayed) so they stay crisp on high-DPI
+   screens. */
 #store-swatches {
   display: flex;
   justify-content: center;
@@ -1536,15 +1568,7 @@ html, body {
   height: 64px;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.18);
-}
-#store-swatch-aurora {
-  background: linear-gradient(160deg, #0a0e2a 0%, #143a52 45%, #35c98c 75%, #7a5ed6 100%);
-}
-#store-swatch-reef {
-  background: linear-gradient(160deg, #031a2e 0%, #04486b 50%, #17c9c9 80%, #ff7fb0 100%);
-}
-#store-swatch-cavern {
-  background: linear-gradient(160deg, #05040a 0%, #241a3d 50%, #7a3fd1 75%, #52d9ff 100%);
+  display: block;
 }
 
 #store-product-name {
