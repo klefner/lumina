@@ -838,17 +838,8 @@ html, body {
   width: 100%;
   height: 100%;
   display: flex;
-  /* Player feedback: centered ended up reading as "too far down the
-     screen" -- as more title-screen rows (Store, then whatever comes
-     next) were added over the game's life, vertically centering the
-     WHOLE stack pushed its top (the title itself) further and further
-     past comfortable eye level, purely because the stack itself got
-     taller. Top-anchored + a fixed offset keeps the title landing in
-     roughly the same place regardless of how many rows are below it,
-     instead of drifting with every future addition. */
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
-  padding-top: 9vh;
   pointer-events: none;
   z-index: 20;
   opacity: 1;
@@ -877,6 +868,19 @@ html, body {
 }
 #message-content.title-screen {
   pointer-events: auto;
+  /* Player feedback: centered ended up reading as "too far down the
+     screen" -- as more title-screen rows (Store, then whatever comes
+     next) were added over the game's life, vertically centering the
+     WHOLE stack pushed its top (the title itself) further and further
+     past comfortable eye level, purely because the stack itself got
+     taller. align-self (not a change to #message-overlay's own
+     align-items) scopes this to the title screen specifically -- that
+     shared overlay is also WAVE_COMPLETE's payoff message (see
+     showMessage's isTitleScreen toggle), which deliberately stays
+     centered on the playfield mid-game and must NOT drift to a fixed
+     top offset along with it (review catch). */
+  align-self: flex-start;
+  margin-top: 9vh;
 }
 
 #message-title {
