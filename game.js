@@ -330,7 +330,7 @@ function saveCockpitModeSetting(enabled) {
 // 'rotate' (unlike flight/cockpit mode's off-by-default) since picking a
 // scene doesn't change how you play -- an unconfigured player should just
 // see everything.
-const SCENE_LIST = ['space', 'forest', 'beach', 'birthday', 'halloween', 'christmas'];
+const SCENE_LIST = ['space', 'forest', 'beach', 'birthday', 'halloween', 'christmas', 'safari'];
 const SCENE_KEY = 'lumina_scene_v1';
 function loadSceneSetting() {
   try {
@@ -496,7 +496,11 @@ function sceneWaveCount(scene) {
 // calm, glowy backdrops -- no bursts, no jump-scare timing -- built with
 // Sleep mode as a use case from the start, so all three are included here
 // too, same as the free calm scenes.
-const SLEEP_SAFE_SCENES = new Set(['space', 'forest', 'beach', 'christmas', 'aurora', 'reef', 'cavern']);
+// Safari included: a slow photo pan/zoom and a soft, walking-pace
+// ambient track are exactly the low-arousal profile Sleep mode wants --
+// same class of calm as Forest/Beach/Christmas, not Birthday/Halloween's
+// deliberate higher energy.
+const SLEEP_SAFE_SCENES = new Set(['space', 'forest', 'beach', 'christmas', 'aurora', 'reef', 'cavern', 'safari']);
 
 function isSceneSleepSafe(scene) {
   return SLEEP_SAFE_SCENES.has(scene);
@@ -2827,6 +2831,10 @@ const STATE = {
                            // (see generateReefScene); null otherwise -- premium, see PREMIUM_SCENE_LIST
   cavernScene: null,      // { crystals, motes, ... } for the current wave when scene === 'cavern'
                            // (see generateCavernScene); null otherwise -- premium, see PREMIUM_SCENE_LIST
+  safariScene: null,      // { variant, phase } for the current wave when scene === 'safari'
+                           // (see generateSafariScene); null otherwise
+  safariVariant: null,    // 'day' or 'night', persists across a whole safari block once rolled --
+                           // see generateSafariScene's own comment for why this can't just live on safariScene
   purchasedScenes: [],   // premium scene ids owned this session (see loadPurchasedScenes/PURCHASED_SCENES_KEY) --
                           // loaded once at init, updated by completeSimulatedPurchase
 
@@ -3690,6 +3698,20 @@ const SCENE_AMBIENT_CONFIG = {
       chimes: { file: 'christmas-chimes.mp3', gain: 0.45, isEvent: true, minGapSec: 30, maxGapSec: 65 },
     },
   },
+  // The composed African-inspired track is the scene's floor (same
+  // reasoning as every other scene's first-revealed layer), with the bus
+  // engine hum right behind it -- both continuous beds. wildlife is the
+  // one occasional event layer: a soft, distant, low elephant rumble,
+  // deliberately gentle rather than a jump-scare trumpet blast (see
+  // sounds/CREDITS.md).
+  safari: {
+    order: ['song', 'engine', 'wildlife'],
+    sounds: {
+      song: { file: 'safari-song.mp3', gain: 0.5, isEvent: false },
+      engine: { file: 'safari-engine.mp3', gain: 0.28, isEvent: false },
+      wildlife: { file: 'safari-wildlife.mp3', gain: 0.4, isEvent: true, minGapSec: 25, maxGapSec: 55 },
+    },
+  },
 };
 
 // Applied fresh on every repeat (a loop's next crossfaded pass, or an
@@ -3975,9 +3997,10 @@ const SCENE_COMPLETE_CELEBRATIONS = {
   birthday: { glyph: '🎂', bg: 'radial-gradient(circle at 35% 30%, #ffd3e6, #c93f7a)', glow: 'rgba(255,93,143,0.6)' },
   halloween: { glyph: '🎃', bg: 'radial-gradient(circle at 35% 30%, #ffcf8a, #9a4a12)', glow: 'rgba(255,140,20,0.6)' },
   christmas: { glyph: '🎄', bg: 'radial-gradient(circle at 35% 30%, #cdeccb, #1f5c3a)', glow: 'rgba(60,190,110,0.6)' },
+  safari: { glyph: '🦒', bg: 'radial-gradient(circle at 35% 30%, #f6dfa0, #7a5a1e)', glow: 'rgba(230,180,80,0.6)' },
 };
 const SCENE_DISPLAY_NAMES = {
-  space: 'Space', forest: 'Forest', beach: 'Beach', birthday: 'Birthday', halloween: 'Halloween', christmas: 'Christmas',
+  space: 'Space', forest: 'Forest', beach: 'Beach', birthday: 'Birthday', halloween: 'Halloween', christmas: 'Christmas', safari: 'Safari',
   aurora: 'Aurora Skies', reef: 'Coral Reef', cavern: 'Crystal Cave',
 };
 
@@ -3987,7 +4010,7 @@ const SCENE_DISPLAY_NAMES = {
 // SCENE_DISPLAY_NAMES uses ("Beach at Night", not just "Beach").
 const SCENE_HUD_NAMES = {
   space: 'Space', forest: 'Night Forest', beach: 'Beach at Night',
-  birthday: 'Birthday Party', halloween: 'Halloween', christmas: 'Christmas',
+  birthday: 'Birthday Party', halloween: 'Halloween', christmas: 'Christmas', safari: 'Safari',
   aurora: 'Aurora Skies', reef: 'Coral Reef Glow', cavern: 'Crystal Cave',
 };
 
@@ -7710,6 +7733,16 @@ function startWave(waveNumber) {
   STATE.auroraScene = STATE.scene === 'aurora' ? generateAuroraScene() : null;
   STATE.reefScene = STATE.scene === 'reef' ? generateReefScene() : null;
   STATE.cavernScene = STATE.scene === 'cavern' ? generateCavernScene() : null;
+  // Unlike every scene above, safari's own day/night pick has to survive
+  // every wave of its block unchanged (see generateSafariScene's own
+  // comment) -- passing the OUTGOING STATE.safariScene (still holding the
+  // previous wave's value here, since this assignment hasn't happened
+  // yet) is what lets it tell "still safari from last wave" (reuse) apart
+  // from "just arrived at safari" (reroll). blockPosition can't make that
+  // distinction on its own: a fixed (non-Rotate) sceneMode always reports
+  // blockPosition 0, every single wave (see resolveSceneBlock), which
+  // would reroll on every wave instead of just the first.
+  STATE.safariScene = STATE.scene === 'safari' ? generateSafariScene(STATE.safariScene) : null;
   // Stop any leftover ambience from whatever scene the previous wave was
   // on the instant this wave's scene turns out to be different -- see
   // syncAmbienceToScene's own comment for why this can't just wait for
@@ -11249,6 +11282,114 @@ function renderStoreSwatches() {
 }
 
 // ============================================================
+// SECTION 7K: SAFARI BACKGROUND (real photo, not procedural)
+// ============================================================
+// Every other scene here is hand-drawn canvas art -- deliberately
+// different direction for this one (player request, 2026-08-16): a real,
+// high-resolution photograph instead, given a slow Ken Burns pan/zoom so
+// it reads as motion rather than a static slide. Two source photos (day
+// and night savanna), licensed CC-BY/Pexels -- see art/CREDITS.md.
+//
+// Which of the two plays is picked once per Rotate-mode block and held
+// for every wave in it, not rerolled each wave like every other scene's
+// decorative details (see generateSafariScene's own comment) -- the
+// player's explicit ask ("stays until all waves are completed").
+const SAFARI_CONFIG = {
+  images: { day: 'art/safari-day.jpg', night: 'art/safari-night.jpg' },
+  // One full slow pan/zoom cycle, in frames at the game's ~60fps loop --
+  // long and gentle on purpose, background motion, not something that
+  // competes for attention with the dots/lines in front of it.
+  PAN_CYCLE_FRAMES: 2700,
+  ZOOM_MIN: 1.06,
+  ZOOM_MAX: 1.22,
+};
+
+const SAFARI_IMAGES = {
+  day: Object.assign(new Image(), { src: SAFARI_CONFIG.images.day }),
+  night: Object.assign(new Image(), { src: SAFARI_CONFIG.images.night }),
+};
+
+// previousScene is the prior wave's STATE.safariScene -- non-null only
+// when the prior wave was ALSO safari, which is exactly "still partway
+// through the same block" (a scene change, restart, or load always nulls
+// it out first -- see this function's only call site). Reroll on a
+// genuinely fresh arrival (previousScene is null) or when there's no
+// variant to fall back on yet (a load/restart landing mid-block with a
+// fresh STATE object, same class of decoration-not-preserved-across-reload
+// gap every other scene already has for its own decorative details);
+// otherwise keep whatever STATE.safariVariant already holds, and let the
+// pan/zoom's phase keep counting forward rather than jumping, so the
+// motion reads as continuous across the wave transition instead of
+// visibly resetting.
+function generateSafariScene(previousScene) {
+  if (!previousScene || !STATE.safariVariant) {
+    STATE.safariVariant = Math.random() < 0.5 ? 'day' : 'night';
+  }
+  return {
+    variant: STATE.safariVariant,
+    // Staggers where each fresh block's pan cycle starts, so consecutive
+    // safari blocks don't all visibly begin from the exact same framing.
+    phase: previousScene ? previousScene.phase : Math.floor(Math.random() * SAFARI_CONFIG.PAN_CYCLE_FRAMES),
+  };
+}
+
+function updateSafariScene() {
+  if (STATE.scene !== 'safari' || !STATE.safariScene) return;
+  STATE.safariScene.phase += 1;
+}
+
+function drawSafariScene() {
+  const scene = STATE.safariScene;
+  if (!scene) return;
+  const w = canvas.width, h = canvas.height;
+  const img = SAFARI_IMAGES[scene.variant];
+
+  // Still loading (first time this session needs it) -- a flat fill
+  // matching the variant's own mood beats a blank/white flash while the
+  // photo finishes downloading.
+  if (!img.complete || img.naturalWidth === 0) {
+    ctx.fillStyle = scene.variant === 'day' ? '#bcd9ea' : '#0a0d18';
+    ctx.fillRect(0, 0, w, h);
+    return;
+  }
+
+  const cfg = SAFARI_CONFIG;
+  const cycle = (scene.phase % cfg.PAN_CYCLE_FRAMES) / cfg.PAN_CYCLE_FRAMES; // 0..1, wraps
+  // Smooth back-and-forth rather than a hard jump-cut loop: eases
+  // 0 -> 1 -> 0 across the cycle instead of snapping back to start.
+  const t = 0.5 - 0.5 * Math.cos(cycle * Math.PI * 2);
+  const zoom = cfg.ZOOM_MIN + (cfg.ZOOM_MAX - cfg.ZOOM_MIN) * t;
+
+  // Cover-fit (like CSS object-fit: cover): scale so the shorter
+  // canvas-relative dimension is fully covered, then crop the overflow.
+  const imgAspect = img.naturalWidth / img.naturalHeight;
+  const canvasAspect = w / h;
+  let drawW, drawH;
+  if (imgAspect > canvasAspect) {
+    drawH = h * zoom;
+    drawW = drawH * imgAspect;
+  } else {
+    drawW = w * zoom;
+    drawH = drawW / imgAspect;
+  }
+  const panX = (drawW - w) * t;
+  const panY = (drawH - h) * (0.5 + 0.3 * Math.sin(cycle * Math.PI * 2));
+  ctx.drawImage(img, -panX, -panY, drawW, drawH);
+
+  // A real photo has arbitrary local contrast a hand-drawn scene never
+  // does -- a uniform radial dim (clear center, where the board mostly
+  // sits, darker toward the edges) keeps dots/lines readable everywhere
+  // without hiding the photo itself, and doubles as the same moody
+  // atmosphere every other scene already has (the day variant is
+  // otherwise far brighter than anything else in SCENE_LIST).
+  const vignette = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.25, w / 2, h / 2, Math.max(w, h) * 0.72);
+  vignette.addColorStop(0, 'rgba(0,0,0,0)');
+  vignette.addColorStop(1, scene.variant === 'day' ? 'rgba(10,14,8,0.4)' : 'rgba(0,0,0,0.5)');
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, w, h);
+}
+
+// ============================================================
 // SECTION 8: HAPTICS
 // ============================================================
 function haptic(type) {
@@ -12378,6 +12519,7 @@ function update() {
   updateAuroraScene();
   updateReefScene();
   updateCavernScene();
+  updateSafariScene();
   // Asteroids/satellites/comets only drift through once the whole wave's
   // line-galaxy is complete — they'd be a distraction while still connecting.
   if (STATE.phase === 'WAVE_COMPLETE') { updateSpaceObjects(); updateCelestialBodies(); }
@@ -12452,6 +12594,8 @@ function render() {
     drawReefScene();
   } else if (STATE.scene === 'cavern') {
     drawCavernScene();
+  } else if (STATE.scene === 'safari') {
+    drawSafariScene();
   } else {
     drawStars();
     if (STATE.phase === 'WAVE_COMPLETE') { drawCelestialBodies(); drawSpaceObjects(); }
