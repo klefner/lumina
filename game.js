@@ -259,8 +259,11 @@ function saveGame() {
     // would get silently overwritten the moment a fresh game starts
     // without touching this save, so loading the save back afterward
     // would resolve its already-played waves against the wrong seed,
-    // possibly changing which package they'd shown.
-    localStorage.setItem(SAVE_KEY, JSON.stringify({ wave: STATE.wave, score: STATE.score, rotateSeed: STATE.rotateSeed }));
+    // possibly changing which package they'd shown. safariVariant rides
+    // along for the exact same reason (review catch, PR #91): without it,
+    // reloading mid-Safari-block would have a coin-flip chance of
+    // switching day<->night before that block's waves were actually done.
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ wave: STATE.wave, score: STATE.score, rotateSeed: STATE.rotateSeed, safariVariant: STATE.safariVariant }));
     return true;
   } catch (e) { return false; }
 }
@@ -270,10 +273,12 @@ function loadSave() {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed.wave || parsed.wave < 1) return null;
-    // rotateSeed is missing on a save written before this field existed --
-    // every call site falls back to STATE's own current seed when this is
-    // null (see handleLoadGameFromTitle/handleLoadGame/startGameFromTitle).
-    return { wave: parsed.wave, score: parsed.score || 0, rotateSeed: parsed.rotateSeed || null };
+    // rotateSeed/safariVariant are missing on a save written before those
+    // fields existed -- every call site falls back to STATE's own current
+    // value (rotateSeed) or lets generateSafariScene reroll fresh
+    // (safariVariant) when this is null (see
+    // handleLoadGameFromTitle/handleLoadGame/startGameFromTitle).
+    return { wave: parsed.wave, score: parsed.score || 0, rotateSeed: parsed.rotateSeed || null, safariVariant: parsed.safariVariant || null };
   } catch (e) { return null; }
 }
 function clearSave() {
@@ -2564,6 +2569,7 @@ function handleLoadGameFromTitle() {
   STATE.pendingResume = null;
   STATE.score = resume.score;
   if (resume.rotateSeed) STATE.rotateSeed = resume.rotateSeed; // this save's own order, not whatever's currently in STATE
+  STATE.safariVariant = resume.safariVariant || null; // this save's own day/night pick, not a leftover from earlier in this page session
   startWave(resume.wave);
 }
 
@@ -2586,10 +2592,19 @@ function startGameFromTitle() {
     STATE.pendingResume = null;
     STATE.score = resume.score;
     if (resume.rotateSeed) STATE.rotateSeed = resume.rotateSeed; // this save's own order, not whatever's currently in STATE
+    STATE.safariVariant = resume.safariVariant || null; // this save's own day/night pick, not a leftover from earlier in this page session
     startWave(resume.wave);
   } else {
     STATE.pendingResume = null;
     STATE.rotateSeed = newRotateSeed(); // a genuinely new playthrough gets its own random package order
+    // Same reasoning as rotateSeed just above: a genuinely new playthrough
+    // must not inherit whatever day/night pick (or mid-pan phase) was
+    // still sitting in STATE from earlier in this page session -- without
+    // this, a fresh Start Game landing on Safari again would silently
+    // treat itself as "still the same block" (see generateSafariScene's
+    // previousScene check) and keep the old variant instead of rerolling.
+    STATE.safariScene = null;
+    STATE.safariVariant = null;
     startWave(1);
   }
 }
@@ -2833,7 +2848,8 @@ const STATE = {
                            // (see generateCavernScene); null otherwise -- premium, see PREMIUM_SCENE_LIST
   safariScene: null,      // { variant, phase } for the current wave when scene === 'safari'
                            // (see generateSafariScene); null otherwise
-  safariVariant: null,    // 'day' or 'night', persists across a whole safari block once rolled --
+  safariVariant: null,    // 'day' or 'night', persists across a whole safari block once rolled, and
+                           // rides along with SAVE_KEY the same way rotateSeed does (see saveGame/loadSave) --
                            // see generateSafariScene's own comment for why this can't just live on safariScene
   purchasedScenes: [],   // premium scene ids owned this session (see loadPurchasedScenes/PURCHASED_SCENES_KEY) --
                           // loaded once at init, updated by completeSimulatedPurchase
@@ -11309,20 +11325,32 @@ const SAFARI_IMAGES = {
   night: Object.assign(new Image(), { src: SAFARI_CONFIG.images.night }),
 };
 
-// previousScene is the prior wave's STATE.safariScene -- non-null only
-// when the prior wave was ALSO safari, which is exactly "still partway
-// through the same block" (a scene change, restart, or load always nulls
-// it out first -- see this function's only call site). Reroll on a
-// genuinely fresh arrival (previousScene is null) or when there's no
-// variant to fall back on yet (a load/restart landing mid-block with a
-// fresh STATE object, same class of decoration-not-preserved-across-reload
-// gap every other scene already has for its own decorative details);
-// otherwise keep whatever STATE.safariVariant already holds, and let the
-// pan/zoom's phase keep counting forward rather than jumping, so the
-// motion reads as continuous across the wave transition instead of
-// visibly resetting.
+// The reroll decision rests entirely on STATE.safariVariant itself, not
+// on previousScene (used below only for phase continuity) -- an earlier
+// draft also required previousScene to be non-null before trusting an
+// existing variant, which broke the very save-restore this was meant to
+// protect: right after a reload, STATE.safariScene is always null (a
+// fresh page has no "previous wave" at all) even when
+// handleLoadGameFromTitle/handleLoadGame/startGameFromTitle just
+// restored a perfectly good STATE.safariVariant from the save a moment
+// earlier, so that ANDed-in previousScene check discarded it and
+// rerolled anyway (review catch, PR #91's own follow-up). Every call
+// site that means "this is genuinely a fresh pick" now explicitly nulls
+// STATE.safariVariant itself first (see startGameFromTitle's non-autoload
+// branch, handleRestartGame), and every call site that means "resume
+// this exact save" explicitly restores it first (see
+// handleLoadGameFromTitle/handleLoadGame/startGameFromTitle's autoload
+// branch, all reading SAVE_KEY's own safariVariant field via
+// saveGame/loadSave) -- so a plain null check here is both necessary and
+// sufficient, regardless of whether this is mid-block, a fresh reload, a
+// save restore, or a genuinely new playthrough.
+//
+// previousScene is still the prior wave's STATE.safariScene, used only so
+// the pan/zoom's phase keeps counting forward rather than jumping when
+// truly continuing mid-block (null just means "start the pan cycle at a
+// random point," never affects which variant plays).
 function generateSafariScene(previousScene) {
-  if (!previousScene || !STATE.safariVariant) {
+  if (!STATE.safariVariant) {
     STATE.safariVariant = Math.random() < 0.5 ? 'day' : 'night';
   }
   return {
@@ -11600,6 +11628,7 @@ function handleLoadGame() {
   startFadeToBlack(() => {
     STATE.score = save.score;
     if (save.rotateSeed) STATE.rotateSeed = save.rotateSeed; // this save's own order, not whatever's currently in STATE
+    STATE.safariVariant = save.safariVariant || null; // this save's own day/night pick, not a leftover from earlier in this page session
     startWave(save.wave);
     startFadeFromBlack();
   });
@@ -11625,6 +11654,8 @@ function handleRestartGame() {
   STATE.paused = false;
   resetSceneAmbience(); // a genuine fresh start, same reasoning as handleLoadGame above
   STATE.rotateSeed = newRotateSeed(); // same reasoning as startGameFromTitle's fresh-start branch
+  STATE.safariScene = null;
+  STATE.safariVariant = null; // same reasoning as startGameFromTitle's fresh-start branch
   startFadeToBlack(() => {
     STATE.score = 0;
     startWave(1);

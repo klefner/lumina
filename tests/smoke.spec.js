@@ -7317,6 +7317,68 @@ test("Safari's day/night background stays the same across every wave of one bloc
   expect(errors).toEqual([]);
 });
 
+test('Safari\'s day/night pick rides along with a saved game across a reload (review catch, PR #91 -- same class of bug as rotateSeed\'s own PR #87 fix: without this, reloading mid-Safari-block had a coin-flip chance of switching day<->night before that block\'s waves were actually done), and a genuinely new game reseeds it', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const savedVariant = await page.evaluate(() => {
+    // Fixed, so every wave below is guaranteed to actually be Safari --
+    // persisted via saveSceneSetting (SCENE_KEY), not SAVE_KEY, so it
+    // must be set this way to survive the reload below, same as if the
+    // player had actually picked "Safari" from the title screen's dropdown.
+    STATE.sceneMode = 'safari';
+    saveSceneSetting('safari');
+    startWave(1);
+    STATE.wave = 2; // still mid-block (sceneWaveCount('safari') === 4) -- not the block's own last wave
+    STATE.score = 50;
+    saveGame();
+    return STATE.safariVariant;
+  });
+  expect(['day', 'night']).toContain(savedVariant);
+
+  await page.reload();
+  await page.waitForFunction(() => window.__lumina);
+  const variantAfterReloadNoLoad = await page.evaluate(() => STATE.safariVariant);
+  // A reload alone doesn't resume anything yet (see startGameFromTitle) --
+  // there's nothing wrong with this being null, it just shouldn't be
+  // treated as meaningful until an actual load/autoload happens below.
+  expect(variantAfterReloadNoLoad).toBeNull();
+
+  // Loading that save back must restore its own exact variant, not
+  // whatever a fresh coin flip would give.
+  await page.click('#title-load-button');
+  await page.waitForTimeout(200);
+  const variantAfterLoad = await page.evaluate(() => STATE.safariVariant);
+  expect(variantAfterLoad).toBe(savedVariant);
+
+  // Restart Current Level replays the same wave, not a new playthrough --
+  // must NOT reroll, same reasoning as rotateSeed's own retry-preserving
+  // behavior above.
+  await page.click('#pause-button');
+  await page.click('#pause-restart-level');
+  await page.waitForTimeout(1100);
+  const variantAfterRestartLevel = await page.evaluate(() => STATE.safariVariant);
+  expect(variantAfterRestartLevel).toBe(savedVariant);
+
+  // Restart Game is a genuinely new playthrough -- must NOT inherit
+  // whatever variant was still sitting in STATE from the run just ended.
+  // Plants an impossible sentinel value first (day/night is a coin flip,
+  // so merely asserting the result differs from savedVariant would be
+  // flaky -- roughly half of all genuinely-fresh rolls would legitimately
+  // match it by chance) and confirms Restart Game actually overwrote it
+  // rather than leaving it untouched.
+  await page.evaluate(() => { STATE.safariVariant = 'STALE_SENTINEL'; });
+  await page.click('#pause-button');
+  await page.click('#pause-restart-game');
+  await page.waitForTimeout(1100);
+  const variantAfterRestartGame = await page.evaluate(() => STATE.safariVariant);
+  expect(['day', 'night']).toContain(variantAfterRestartGame);
+  expect(variantAfterRestartGame).not.toBe('STALE_SENTINEL');
+
+  expect(errors).toEqual([]);
+});
+
 test('Rotate mode\'s random package order rides along with a saved game across a reload (review catch, PR #87 -- a global "current" seed would drift out of sync with an untouched save), and a genuinely new game (Start Game without autoload, or Restart Game) reseeds it', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
