@@ -1,12 +1,17 @@
 name: Deploy to itch.io
 
-# Deliberately manual-only. Established workflow: a push to main
-# auto-deploys GitHub Pages + Cloudflare Pages (see deploy-pages.yml) for
-# testing; itch.io is the storefront and only receives a build once
-# that's been played and approved there, by running this workflow by
-# hand (Actions tab -> Deploy to itch.io -> Run workflow, or triggered on
-# request).
+# Auto-deploys on every push to main, same trigger as deploy-pages.yml.
+# (Previously gated to workflow_dispatch-only by PR #78, requiring a manual
+# click in the Actions tab -- reverted because that click requires
+# `actions:write`/dispatch permission, which no session working this repo
+# has ever actually had (see SOURCE_OF_TRUTH.md's 2026-07-31 incident note
+# and PR #90's discussion), making the manual gate a dead end in practice
+# rather than a deliberate checkpoint. workflow_dispatch is kept as a
+# secondary trigger so an approved older commit can still be redeployed
+# (or a bad build rolled back) by hand when needed.)
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       ref:
@@ -19,6 +24,7 @@ permissions:
 
 jobs:
   deploy:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
