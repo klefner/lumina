@@ -7452,6 +7452,27 @@ test('Safari\'s birds and giraffes wrap to the opposite edge instead of resettin
   expect(errors).toEqual([]);
 });
 
+test("Safari's shooting star waits its actual intended delay before first spawning, regardless of the scene's starting phase (review catch, PR #92 -- nextSpawnFrame was a small absolute frame number compared directly against phase, which itself can already start anywhere from 0-2699 or be carried forward arbitrarily large, so the star spawned almost immediately on nearly every fresh scene instead of after a real delay)", async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    let immediateSpawns = 0;
+    const trials = 100;
+    for (let i = 0; i < trials; i++) {
+      STATE.safariVariant = 'night';
+      STATE.safariScene = generateSafariScene(null); // random starting phase every time, the exact condition that triggered the bug
+      updateSafariScene(); // exactly one frame in
+      if (STATE.safariScene.shootingStar.active) immediateSpawns++;
+    }
+    return { trials, immediateSpawns };
+  });
+
+  expect(result.immediateSpawns).toBe(0);
+  expect(errors).toEqual([]);
+});
+
 test('Rotate mode\'s random package order rides along with a saved game across a reload (review catch, PR #87 -- a global "current" seed would drift out of sync with an untouched save), and a genuinely new game (Start Game without autoload, or Restart Game) reseeds it', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');

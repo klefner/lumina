@@ -11407,11 +11407,15 @@ function generateSafariScene(previousScene) {
   if (!STATE.safariVariant) {
     STATE.safariVariant = Math.random() < 0.5 ? 'day' : 'night';
   }
+  // Staggers where each fresh block's pan cycle starts, so consecutive
+  // safari blocks don't all visibly begin from the exact same framing.
+  // Not reset to 0 at the start of a scene -- can already be anywhere
+  // from 0-2699 (or an arbitrarily large carried-forward value from a
+  // long-running previous wave), which matters below.
+  const phase = previousScene ? previousScene.phase : Math.floor(Math.random() * SAFARI_CONFIG.PAN_CYCLE_FRAMES);
   return {
     variant: STATE.safariVariant,
-    // Staggers where each fresh block's pan cycle starts, so consecutive
-    // safari blocks don't all visibly begin from the exact same framing.
-    phase: previousScene ? previousScene.phase : Math.floor(Math.random() * SAFARI_CONFIG.PAN_CYCLE_FRAMES),
+    phase,
     // Foreground wildlife/birds are always fresh per wave, same spirit as
     // every other scene's own decorative details (see this file's
     // "rerolled fresh every wave" comment in startWave) -- only the
@@ -11420,8 +11424,16 @@ function generateSafariScene(previousScene) {
     animals: generateSafariAnimals(),
     // Night-only occasional shooting star -- starts with nothing active
     // and a short random delay before the first one, same pattern as the
-    // event ambient sounds' own startEventAmbientLayer.
-    shootingStar: { active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, nextSpawnFrame: 200 + Math.floor(Math.random() * 400) },
+    // event ambient sounds' own startEventAmbientLayer. nextSpawnFrame is
+    // compared directly against scene.phase (an absolute, ever-growing
+    // counter, not a per-scene-relative one -- see updateSafariScene), so
+    // it has to be offset by the scene's own starting phase above, not
+    // just a small delay on its own (review catch, PR #92) -- phase can
+    // already be up to PAN_CYCLE_FRAMES on a fresh scene, or arbitrarily
+    // larger on a carried-forward one, which would otherwise make
+    // `phase >= nextSpawnFrame` true (spawning immediately) almost every
+    // time instead of after the intended delay.
+    shootingStar: { active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, nextSpawnFrame: phase + 200 + Math.floor(Math.random() * 400) },
   };
 }
 
