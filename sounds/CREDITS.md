@@ -297,3 +297,28 @@ All three synthesized/composed in Python (numpy + scipy), not in
 game.js — a one-time build step, same as the birthday balloon
 resynthesis earlier in this project's history, not something that needs
 to run again at play time.
+
+## The 'savanna' genre family's kalimba voice (interactive gameplay music)
+
+Distinct from the two entries above -- those are the Safari scene's
+*ambient* background bed (SCENE_AMBIENT_CONFIG, always playing quietly
+underneath). This entry is the *interactive* dot-connecting music engine
+(GENRE_FAMILIES/generateSong) instead -- a completely separate system,
+covered by its own `sceneOnly: 'safari'` genre family ('savanna') so the
+music a player actually triggers by connecting dots also sounds African-
+inspired while that scene is up, not a scene-blind random pick from
+spa/lofi/supperclub the way every scene but Halloween's 'eerie' family
+used to work.
+
+Like the lofi family's rhodes/lofibass/lofikit and lullaby's musicbox,
+the family's own kalimba (thumb piano) voice is synthesized in-browser
+at decode time (`synthesizeKalimbaNote`, game.js), not a recording -- no
+free-license kalimba sample set was available to source cleanly. A sine
+fundamental with a sharp pluck attack, an inharmonic upper partial
+(3.01x the fundamental, not a clean octave/fifth -- real metal tines
+don't resonate on harmonic ratios the way a plucked string does) for
+the characteristic metallic "buzz," and a very short high-passed noise
+burst at onset for the thumbnail-on-metal contact transient. The
+family's other two voices are real recordings already sourced above:
+vibraphone (pad) and doublebass (drone/bass, per the same "warm,
+rounded, not heavy sub" brief the ambient track used).

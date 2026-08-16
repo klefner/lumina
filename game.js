@@ -2068,6 +2068,84 @@ const GENRE_FAMILIES = [
       },
     ],
   },
+  // Safari's own family (sceneOnly: 'safari' -- see availableGenreFamilies
+  // and 'eerie' above, the exact precedent this follows) -- player request
+  // (2026-08-16, same request that shipped the Safari scene's ambient
+  // track): the INTERACTIVE gameplay music (this engine) is a completely
+  // separate system from that ambient bed (SCENE_AMBIENT_CONFIG's
+  // safari-song.mp3 etc.) -- every other scene draws its gameplay music
+  // from a scene-blind random pool, so Safari's dot-connecting music
+  // sounded like generic spa/lofi/supperclub material with zero
+  // relationship to an African savanna. Built against the same brief as
+  // the ambient track (95-115 BPM walking pace, warm consonant harmony,
+  // kalimba/marimba-style plucked tones, warm bass, no brass/synth
+  // leads): Mixolydian mode (a major scale with a flattened 7th) instead
+  // of every other family's plain Ionian, for a lightly modal, "worldly"
+  // color distinct from spa's straightforwardly major sound, while
+  // staying fully consonant via the same triad vocabulary. Melody/
+  // arpeggio/accent all play a new synthesized 'kalimba' voice (see
+  // SYNTHESIZED_INSTRUMENTS/synthesizeKalimbaNote) -- no real kalimba
+  // sample set was available to source cleanly, so this follows the
+  // 'lofi'/'lullaby' families' own precedent of synthesizing a genuinely
+  // new timbre rather than reassigning an existing recorded instrument
+  // and hoping it reads as different. Pad is vibraphone and drone is
+  // doublebass -- both already-sourced real recordings (see
+  // SAMPLE_MANIFEST), doublebass specifically for the brief's own "warm,
+  // rounded, not heavy sub" bass description. Deliberately does NOT use
+  // the 'drum' role kind -- that role is hardwired to a fixed kick/snare/
+  // hihat pattern shared with 'lofi' (see generateSong's own 'drum'
+  // branch), not a generic pluggable kit, so a true hand-percussion feel
+  // isn't available to this engine without changes far riskier than a
+  // new scene-locked family warrants; a light swing on the groove
+  // instead gives a looser, less machine-quantized feel without touching
+  // that shared logic.
+  {
+    name: 'savanna',
+    sceneOnly: 'safari',
+    chordVocabulary: 'triad',
+    groove: { swing: 0.15, hasDrumRole: false },
+    seeds: [
+      {
+        name: 'sunrise trail', bpm: 98, rootMidi: 60,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 10], // Mixolydian
+        chordProgression: [0, 3, 0, 4],          // I - IV - I - v (flat-7 colors the v)
+        roles: [
+          { kind: 'melody',   instrument: 'kalimba' },
+          { kind: 'arpeggio', instrument: 'kalimba' },
+          { kind: 'pad',      instrument: 'vibraphone' },
+          { kind: 'drone',    instrument: 'doublebass' },
+          { kind: 'accent',   instrument: 'kalimba' },
+          { kind: 'accent',   instrument: 'vibraphone' },
+        ],
+      },
+      {
+        name: 'acacia grove', bpm: 104, rootMidi: 57,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 10],
+        chordProgression: [0, 5, 3, 4],          // I - vi - IV - v
+        roles: [
+          { kind: 'melody',   instrument: 'kalimba' },
+          { kind: 'arpeggio', instrument: 'vibraphone' },
+          { kind: 'pad',      instrument: 'kalimba' },
+          { kind: 'drone',    instrument: 'doublebass' },
+          { kind: 'accent',   instrument: 'vibraphone' },
+          { kind: 'accent',   instrument: 'kalimba' },
+        ],
+      },
+      {
+        name: 'riverside drift', bpm: 110, rootMidi: 62,
+        scaleIntervals: [0, 2, 4, 5, 7, 9, 10],
+        chordProgression: [0, 3, 4, 0],          // I - IV - v - I
+        roles: [
+          { kind: 'melody',   instrument: 'kalimba' },
+          { kind: 'arpeggio', instrument: 'kalimba' },
+          { kind: 'pad',      instrument: 'vibraphone' },
+          { kind: 'drone',    instrument: 'doublebass' },
+          { kind: 'accent',   instrument: 'kalimba' },
+          { kind: 'accent',   instrument: 'vibraphone' },
+        ],
+      },
+    ],
+  },
 ];
 
 // Chord-tone degree offsets from the chord root, keyed by family-level
@@ -2105,6 +2183,11 @@ const SAMPLE_MANIFEST = {
   // plays gentle, mid-register lullaby melodies -- it doesn't need
   // rhodes' wider spread across a busier multi-role arrangement).
   musicbox: ['C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6'],
+  // Safari's 'savanna' genre family's melody/arpeggio/accent voice (see
+  // synthesizeKalimbaNote) -- same chromatic C3-C6 spread as marimba,
+  // since it fills the same kind of melody/arpeggio-heavy multi-role
+  // arrangement marimba does elsewhere.
+  kalimba: ['C3', 'Db3', 'D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6'],
 };
 
 // Instruments with no recorded sample files at all — their "sample
@@ -2114,7 +2197,7 @@ const SAMPLE_MANIFEST = {
 // every downstream consumer (nearestSampleNote, playbackRate pitch-shift,
 // gain compensation) works identically either way without needing to
 // know the difference.
-const SYNTHESIZED_INSTRUMENTS = new Set(['rhodes', 'lofibass', 'lofikit', 'musicbox']);
+const SYNTHESIZED_INSTRUMENTS = new Set(['rhodes', 'lofibass', 'lofikit', 'musicbox', 'kalimba']);
 
 // A kit's pieces (kick/snare/hihat) aren't different pitches of the same
 // sound the way a melody instrument's notes are -- they're intentionally
@@ -3371,6 +3454,7 @@ function synthesizeInstrumentSample(instrument, key) {
   if (instrument === 'lofibass') return synthesizeBassNote(key);
   if (instrument === 'lofikit') return synthesizeDrumHit(key);
   if (instrument === 'musicbox') return synthesizeMusicboxNote(key);
+  if (instrument === 'kalimba') return synthesizeKalimbaNote(key);
   return Promise.resolve(null);
 }
 
@@ -3446,6 +3530,63 @@ async function synthesizeMusicboxNote(noteName) {
 
   fundamental.start(0); fundamental.stop(duration);
   chime.start(0); chime.stop(0.6);
+  return ctx.startRendering();
+}
+
+// Safari's 'savanna' family melody/arpeggio/accent voice (see
+// GENRE_FAMILIES) -- an African thumb piano (kalimba/mbira): a metal tine
+// plucked by the thumb, so the shape is sharper and more percussive than
+// Rhodes' bell-like electric-piano attack (linearRampToValueAtTime(0.85,
+// 0.003) here vs. Rhodes' 0.006) and the upper partial is tuned to an
+// inharmonic ratio (3.01x, not a clean octave/fifth) -- real tines are
+// stiff metal bars, not strings, so their overtones don't line up on
+// harmonic ratios the way a plucked string's do, which is exactly what
+// gives a kalimba its distinctive metallic "buzz" rather than reading as
+// a clean bell or chime. A very short high-passed noise burst at onset
+// stands in for the audible thumbnail-on-metal contact transient real
+// recordings of this instrument have.
+async function synthesizeKalimbaNote(noteName) {
+  const freq = midiToFreq(noteNameToMidi(noteName));
+  const duration = 1.7;
+  const sr = 44100;
+  const ctx = new OfflineAudioContext(1, Math.ceil(duration * sr), sr);
+
+  const fundamental = ctx.createOscillator();
+  fundamental.type = 'sine';
+  fundamental.frequency.value = freq;
+  const fundamentalGain = ctx.createGain();
+  fundamentalGain.gain.setValueAtTime(0, 0);
+  fundamentalGain.gain.linearRampToValueAtTime(0.85, 0.003); // sharp pluck attack
+  fundamentalGain.gain.exponentialRampToValueAtTime(0.24, 0.18);
+  fundamentalGain.gain.exponentialRampToValueAtTime(0.001, duration);
+  fundamental.connect(fundamentalGain).connect(ctx.destination);
+
+  const tine = ctx.createOscillator();
+  tine.type = 'sine';
+  tine.frequency.value = freq * 3.01; // inharmonic upper partial -- the metallic "buzz"
+  const tineGain = ctx.createGain();
+  tineGain.gain.setValueAtTime(0, 0);
+  tineGain.gain.linearRampToValueAtTime(0.22, 0.002);
+  tineGain.gain.exponentialRampToValueAtTime(0.001, 0.12);
+  tine.connect(tineGain).connect(ctx.destination);
+
+  const attackDur = 0.02;
+  const noiseBuffer = ctx.createBuffer(1, Math.ceil(attackDur * sr), sr);
+  const noiseData = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < noiseData.length; i++) noiseData[i] = Math.random() * 2 - 1;
+  const noise = ctx.createBufferSource();
+  noise.buffer = noiseBuffer;
+  const noiseFilter = ctx.createBiquadFilter();
+  noiseFilter.type = 'highpass';
+  noiseFilter.frequency.value = 2500;
+  const noiseGain = ctx.createGain();
+  noiseGain.gain.setValueAtTime(0.15, 0);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, attackDur);
+  noise.connect(noiseFilter).connect(noiseGain).connect(ctx.destination);
+
+  fundamental.start(0); fundamental.stop(duration);
+  tine.start(0); tine.stop(0.15);
+  noise.start(0); noise.stop(attackDur);
   return ctx.startRendering();
 }
 
