@@ -11318,6 +11318,18 @@ const SAFARI_CONFIG = {
   PAN_CYCLE_FRAMES: 2700,
   ZOOM_MIN: 1.06,
   ZOOM_MAX: 1.22,
+  // Where the grass/horizon line actually sits in each SOURCE photo, as a
+  // fraction of its own height -- measured directly from the JPEGs (a
+  // brightness/hue profile: safari-day.jpg has a sharp sky-to-grass color
+  // shift right around 0.80; safari-night.jpg has no such sharp edge, so
+  // this is eyeballed from where the tree silhouettes sit instead). Used
+  // to place the walking-animal silhouettes ON the actual ground the
+  // photo shows, mapped through the same cover-fit/pan/zoom transform the
+  // background itself uses, rather than a fixed screen fraction that
+  // would drift off the real horizon as the pan/zoom moves.
+  HORIZON_FRAC: { day: 0.80, night: 0.87 },
+  BIRD_COUNT: 3,
+  ANIMAL_COUNT: 2,
 };
 
 const SAFARI_IMAGES = {
@@ -11349,6 +11361,48 @@ const SAFARI_IMAGES = {
 // the pan/zoom's phase keeps counting forward rather than jumping when
 // truly continuing mid-block (null just means "start the pan cycle at a
 // random point," never affects which variant plays).
+// A few small birds drifting across the day sky -- reuses the same
+// "crosses the screen, wraps around the opposite edge" technique as the
+// beach's boat/Halloween's bats, just higher up and smaller. Generated
+// (and drawn) for both variants, same as animals below, but birds only
+// actually get drawn for 'day' -- see drawSafariScene.
+function generateSafariBirds() {
+  const birds = [];
+  for (let i = 0; i < SAFARI_CONFIG.BIRD_COUNT; i++) {
+    birds.push({
+      xFrac: Math.random(),
+      yFrac: 0.12 + Math.random() * 0.35, // upper sky, well above the horizon
+      direction: Math.random() < 0.5 ? 1 : -1,
+      speed: 0.00007 + Math.random() * 0.00006,
+      sizeFrac: 0.012 + Math.random() * 0.008,
+      wingPhase: Math.random() * Math.PI * 2,
+      wingSpeed: 0.12 + Math.random() * 0.05,
+    });
+  }
+  return birds;
+}
+
+// A couple of giraffe silhouettes walking along the actual grass line --
+// same horizon-crossing technique as the birds above, just slower and
+// anchored to SAFARI_CONFIG.HORIZON_FRAC instead of drifting through open
+// sky. Ties the scene to "Animal Kingdom" directly, and to the ambient
+// wildlife event layer's elephant rumble (SCENE_AMBIENT_CONFIG.safari) --
+// distinct animals, same idea: this scene actually has wildlife in it,
+// not just a savanna backdrop.
+function generateSafariAnimals() {
+  const animals = [];
+  for (let i = 0; i < SAFARI_CONFIG.ANIMAL_COUNT; i++) {
+    animals.push({
+      xFrac: Math.random(),
+      direction: Math.random() < 0.5 ? 1 : -1,
+      speed: 0.000035 + Math.random() * 0.00003,
+      sizeFrac: 0.05 + Math.random() * 0.02,
+      legPhase: Math.random() * Math.PI * 2,
+    });
+  }
+  return animals;
+}
+
 function generateSafariScene(previousScene) {
   if (!STATE.safariVariant) {
     STATE.safariVariant = Math.random() < 0.5 ? 'day' : 'night';
@@ -11358,12 +11412,172 @@ function generateSafariScene(previousScene) {
     // Staggers where each fresh block's pan cycle starts, so consecutive
     // safari blocks don't all visibly begin from the exact same framing.
     phase: previousScene ? previousScene.phase : Math.floor(Math.random() * SAFARI_CONFIG.PAN_CYCLE_FRAMES),
+    // Foreground wildlife/birds are always fresh per wave, same spirit as
+    // every other scene's own decorative details (see this file's
+    // "rerolled fresh every wave" comment in startWave) -- only the
+    // day/night photo itself has to hold steady across a block.
+    birds: generateSafariBirds(),
+    animals: generateSafariAnimals(),
+    // Night-only occasional shooting star -- starts with nothing active
+    // and a short random delay before the first one, same pattern as the
+    // event ambient sounds' own startEventAmbientLayer.
+    shootingStar: { active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, nextSpawnFrame: 200 + Math.floor(Math.random() * 400) },
   };
 }
 
 function updateSafariScene() {
   if (STATE.scene !== 'safari' || !STATE.safariScene) return;
-  STATE.safariScene.phase += 1;
+  const scene = STATE.safariScene;
+  scene.phase += 1;
+
+  for (const bird of scene.birds) {
+    bird.xFrac += bird.speed * bird.direction;
+    if (bird.xFrac > 1.08) bird.xFrac = -0.08;
+    else if (bird.xFrac < -0.08) bird.xFrac = 1.08;
+    bird.wingPhase += bird.wingSpeed;
+  }
+
+  for (const animal of scene.animals) {
+    animal.xFrac += animal.speed * animal.direction;
+    if (animal.xFrac > 1.1) animal.xFrac = -0.1;
+    else if (animal.xFrac < -0.1) animal.xFrac = 1.1;
+    animal.legPhase += 0.05 * (animal.speed / 0.00005); // faster stride reads as faster walking, not just sliding
+  }
+
+  if (scene.variant === 'night') {
+    const star = scene.shootingStar;
+    if (star.active) {
+      star.x += star.vx;
+      star.y += star.vy;
+      star.life--;
+      if (star.life <= 0) {
+        star.active = false;
+        star.nextSpawnFrame = scene.phase + 480 + Math.floor(Math.random() * 900); // roughly 8-23s at 60fps
+      }
+    } else if (scene.phase >= star.nextSpawnFrame) {
+      star.active = true;
+      star.x = 0.1 + Math.random() * 0.6;
+      star.y = 0.05 + Math.random() * 0.3;
+      const angle = (Math.PI / 5) + Math.random() * (Math.PI / 6); // shallow downward diagonal
+      const speed = 0.006 + Math.random() * 0.004;
+      star.vx = Math.cos(angle) * speed;
+      star.vy = Math.sin(angle) * speed;
+      star.maxLife = 22 + Math.floor(Math.random() * 14);
+      star.life = star.maxLife;
+    }
+  }
+}
+
+// Small dark double-arc silhouette, the classic "distant bird" shape --
+// wingSpan flexes with wingPhase so it actually flaps rather than
+// gliding rigidly.
+function drawSafariBird(x, y, size, wingPhase) {
+  const flap = Math.sin(wingPhase) * size * 0.7;
+  ctx.strokeStyle = 'rgba(20, 22, 26, 0.75)';
+  ctx.lineWidth = Math.max(1, size * 0.18);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x - size, y + flap * 0.3);
+  ctx.quadraticCurveTo(x - size * 0.4, y - flap, x, y);
+  ctx.quadraticCurveTo(x + size * 0.4, y - flap, x + size, y + flap * 0.3);
+  ctx.stroke();
+}
+
+// A simplified giraffe silhouette (long legs + very long neck + tiny head
+// relative to a short body is what actually reads as "giraffe" even
+// tiny and pure-black -- a giraffe's legs and neck are each roughly as
+// long as its whole body is tall, real proportions, not a stylization).
+// Walking, not standing, via a four-legged stride animation. `size` is
+// the animal's total height, ground to the top of its head. Drawn
+// facing its direction of travel.
+function drawSafariGiraffe(x, groundY, size, direction, legPhase) {
+  ctx.fillStyle = 'rgba(12, 12, 15, 0.82)';
+  ctx.strokeStyle = 'rgba(12, 12, 15, 0.82)';
+  ctx.lineCap = 'round';
+
+  const legsH = size * 0.4;
+  const bodyH = size * 0.15;
+  const bodyW = size * 0.5;
+  const bodyBottomY = groundY - legsH;
+  const bodyCenterY = bodyBottomY - bodyH / 2;
+
+  // Four legs (two diagonal pairs alternating, the way a real walking
+  // gait actually splits) rather than two -- reads as an animal standing
+  // on the ground, not perched on a single pair of sticks.
+  ctx.lineWidth = Math.max(1.5, size * 0.035);
+  const strideA = Math.sin(legPhase) * size * 0.07;
+  const strideB = Math.sin(legPhase + Math.PI) * size * 0.07;
+  const legXOffsets = [-0.32, -0.12, 0.12, 0.32];
+  const legStrides = [strideA, strideB, strideB, strideA];
+  for (let i = 0; i < 4; i++) {
+    const lx = x + legXOffsets[i] * bodyW;
+    ctx.beginPath();
+    ctx.moveTo(lx, bodyBottomY);
+    ctx.lineTo(lx + legStrides[i], groundY);
+    ctx.stroke();
+  }
+
+  // Body -- short and shallow relative to the legs/neck, real proportions.
+  ctx.beginPath();
+  ctx.ellipse(x, bodyCenterY, bodyW / 2, bodyH / 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Neck -- the giraffe's whole visual signature: long, tapered,
+  // leaning forward in the direction of travel from the shoulder (the
+  // front of the body) up to a tiny head. Roughly as long as the legs.
+  const neckBaseX = x + direction * bodyW * 0.36;
+  const neckBaseY = bodyCenterY - bodyH * 0.3;
+  const headX = neckBaseX + direction * size * 0.16;
+  const headY = groundY - size;
+  const neckBaseHalfW = size * 0.05;
+  const neckTopHalfW = size * 0.025;
+  const perpX = direction * neckTopHalfW * 0.4; // slight taper direction, not a true perpendicular (cheap approximation, fine at this scale)
+  ctx.beginPath();
+  ctx.moveTo(neckBaseX - neckBaseHalfW, neckBaseY);
+  ctx.lineTo(headX - neckTopHalfW + perpX, headY + size * 0.06);
+  ctx.lineTo(headX + neckTopHalfW + perpX, headY + size * 0.06);
+  ctx.lineTo(neckBaseX + neckBaseHalfW, neckBaseY);
+  ctx.closePath();
+  ctx.fill();
+
+  // Small head + two short ossicones (the pair of knobs on a giraffe's
+  // head) -- the one extra detail that keeps this from reading as just
+  // "some animal with a long neck" at a glance.
+  ctx.beginPath();
+  ctx.ellipse(headX, headY, size * 0.055, size * 0.04, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.lineWidth = Math.max(1, size * 0.02);
+  ctx.beginPath();
+  ctx.moveTo(headX - size * 0.02, headY - size * 0.03);
+  ctx.lineTo(headX - size * 0.02, headY - size * 0.065);
+  ctx.moveTo(headX + size * 0.02, headY - size * 0.03);
+  ctx.lineTo(headX + size * 0.02, headY - size * 0.065);
+  ctx.stroke();
+
+  // Tail, trailing off the back (opposite the direction of travel).
+  ctx.lineWidth = Math.max(1, size * 0.02);
+  ctx.beginPath();
+  ctx.moveTo(x - direction * bodyW * 0.5, bodyCenterY);
+  ctx.lineTo(x - direction * bodyW * 0.62, bodyCenterY + size * 0.16);
+  ctx.stroke();
+}
+
+function drawSafariShootingStar(star, w, h) {
+  if (!star.active) return;
+  const alpha = star.life / star.maxLife;
+  const x = star.x * w, y = star.y * h;
+  const tailX = x - star.vx * w * 4;
+  const tailY = y - star.vy * h * 4;
+  const grad = ctx.createLinearGradient(tailX, tailY, x, y);
+  grad.addColorStop(0, 'rgba(255,255,255,0)');
+  grad.addColorStop(1, `rgba(255,255,255,${(alpha * 0.9).toFixed(3)})`);
+  ctx.strokeStyle = grad;
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(tailX, tailY);
+  ctx.lineTo(x, y);
+  ctx.stroke();
 }
 
 function drawSafariScene() {
@@ -11403,6 +11617,25 @@ function drawSafariScene() {
   const panX = (drawW - w) * t;
   const panY = (drawH - h) * (0.5 + 0.3 * Math.sin(cycle * Math.PI * 2));
   ctx.drawImage(img, -panX, -panY, drawW, drawH);
+
+  // Foreground wildlife/sky decoration, mapped into the SAME cover-fit/
+  // pan/zoom space the photo itself just used -- specifically the
+  // giraffes' ground line (SAFARI_CONFIG.HORIZON_FRAC), so they stay on
+  // the actual grass the photo shows instead of drifting off it as the
+  // pan/zoom moves. Drawn before the vignette below so they pick up the
+  // same edge-darkening the photo does, not sitting artificially crisp
+  // on top of it.
+  const horizonY = -panY + cfg.HORIZON_FRAC[scene.variant] * drawH;
+  for (const animal of scene.animals) {
+    drawSafariGiraffe(animal.xFrac * w, horizonY, animal.sizeFrac * h, animal.direction, animal.legPhase);
+  }
+  if (scene.variant === 'day') {
+    for (const bird of scene.birds) {
+      drawSafariBird(bird.xFrac * w, bird.yFrac * h, bird.sizeFrac * h, bird.wingPhase);
+    }
+  } else {
+    drawSafariShootingStar(scene.shootingStar, w, h);
+  }
 
   // A real photo has arbitrary local contrast a hand-drawn scene never
   // does -- a uniform radial dim (clear center, where the board mostly

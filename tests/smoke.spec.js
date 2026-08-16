@@ -7379,6 +7379,79 @@ test('Safari\'s day/night pick rides along with a saved game across a reload (re
   expect(errors).toEqual([]);
 });
 
+test('Safari\'s foreground wildlife (birds, giraffes, night shooting stars) generates and draws without error for both variants', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    const out = {};
+    for (const variant of ['day', 'night']) {
+      STATE.scene = 'safari';
+      STATE.safariVariant = variant;
+      STATE.safariScene = generateSafariScene(null);
+      for (let i = 0; i < 30; i++) updateSafariScene(); // enough frames for a shooting star to plausibly spawn
+      drawSafariScene(); // throws if anything in the draw path is broken
+      out[variant] = {
+        birdCount: STATE.safariScene.birds.length,
+        animalCount: STATE.safariScene.animals.length,
+        phaseAdvanced: STATE.safariScene.phase > 0,
+        hasShootingStarState: typeof STATE.safariScene.shootingStar === 'object',
+      };
+    }
+    return out;
+  });
+
+  for (const variant of ['day', 'night']) {
+    expect(result[variant].birdCount).toBeGreaterThan(0);
+    expect(result[variant].animalCount).toBeGreaterThan(0);
+    expect(result[variant].phaseAdvanced).toBe(true);
+    expect(result[variant].hasShootingStarState).toBe(true);
+  }
+  expect(errors).toEqual([]);
+});
+
+test('Safari\'s birds and giraffes wrap to the opposite edge instead of resetting mid-crossing, keeping their direction -- same technique as the Beach boat', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.scene = 'safari';
+    STATE.safariVariant = 'day';
+    STATE.safariScene = generateSafariScene(null);
+    const bird = STATE.safariScene.birds[0];
+    bird.xFrac = 1.079;
+    bird.direction = 1;
+    bird.speed = 0.01;
+    const birdDirectionBefore = bird.direction;
+
+    const animal = STATE.safariScene.animals[0];
+    animal.xFrac = 1.099;
+    animal.direction = 1;
+    animal.speed = 0.01;
+    const animalDirectionBefore = animal.direction;
+
+    updateSafariScene();
+
+    return {
+      birdWrapped: bird.xFrac < 0,
+      birdDirectionAfter: bird.direction,
+      birdDirectionBefore,
+      animalWrapped: animal.xFrac < 0,
+      animalDirectionAfter: animal.direction,
+      animalDirectionBefore,
+    };
+  });
+
+  expect(result.birdWrapped).toBe(true);
+  expect(result.birdDirectionAfter).toBe(result.birdDirectionBefore);
+  expect(result.animalWrapped).toBe(true);
+  expect(result.animalDirectionAfter).toBe(result.animalDirectionBefore);
+  expect(errors).toEqual([]);
+});
+
 test('Rotate mode\'s random package order rides along with a saved game across a reload (review catch, PR #87 -- a global "current" seed would drift out of sync with an untouched save), and a genuinely new game (Start Game without autoload, or Restart Game) reseeds it', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
