@@ -4747,7 +4747,7 @@ test('the premium supperclub family is well-formed and only reachable while PREM
   expect(result.seedCount).toBeGreaterThanOrEqual(3);
   expect(result.usesOnlySourcedInstruments).toBe(true);
   expect(result.referencesTrumpetAndBass).toBe(true);
-  expect(result.nonPremiumNames).toEqual(['spa', 'lofi', 'lullaby', 'eerie']); // the "flag off" pool
+  expect(result.nonPremiumNames).toEqual(['spa', 'lofi', 'lullaby', 'eerie', 'savanna']); // the "flag off" pool
   expect(result.availableWhileUnlocked).toContain('supperclub'); // the "flag on" pool, exercised via the real function
   expect(errors).toEqual([]);
 });
@@ -4815,6 +4815,87 @@ test("Cockpit Mode's music picks from the generic pool even if STATE.scene is st
 
   expect(result).not.toEqual(['eerie']);
   expect(result.length).toBeGreaterThan(1);
+  expect(errors).toEqual([]);
+});
+
+test("Safari's interactive music is always the scoped savanna family, never the generic pool, savanna never turns up on any other scene, and Sleep mode's lullaby-only promise still wins even while Safari (a sleep-safe scene) is selected (player request, 2026-08-16: the dot-connecting music needs to match an African-savanna background the same way eerie already matches Halloween)", async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.difficulty = 'normal';
+    STATE.cockpitMode = false;
+
+    STATE.scene = 'safari';
+    const onSafari = availableGenreFamilies().map(f => f.name);
+
+    STATE.scene = 'forest';
+    const onForest = availableGenreFamilies().map(f => f.name);
+
+    STATE.difficulty = 'sleep';
+    STATE.scene = 'safari'; // sleep-safe (see SLEEP_SAFE_SCENES) -- reachable together with Sleep mode
+    const onSafariAsleep = availableGenreFamilies().map(f => f.name);
+    STATE.difficulty = 'normal';
+
+    const savanna = GENRE_FAMILIES.find(f => f.name === 'savanna');
+    const kalimbaIsSynthesized = SYNTHESIZED_INSTRUMENTS.has('kalimba');
+
+    return {
+      onSafari,
+      onForest,
+      onSafariAsleep,
+      seedCount: savanna.seeds.length,
+      bpmInRange: savanna.seeds.every(seed => seed.bpm >= 95 && seed.bpm <= 115),
+      // Mixolydian: a major 3rd (scale degree index 2 === 4) but a
+      // flattened (minor) 7th (index 6 === 10, not Ionian's 11) -- the
+      // interval every other family's plain-major scale doesn't have.
+      allMixolydian: savanna.seeds.every(seed =>
+        seed.scaleIntervals[2] === 4 && seed.scaleIntervals[6] === 10
+      ),
+      onlyKalimbaVibraphoneDoublebass: savanna.seeds.every(seed =>
+        seed.roles.every(r => ['kalimba', 'vibraphone', 'doublebass'].includes(r.instrument))
+      ),
+      kalimbaIsSynthesized,
+      kalimbaInManifest: Array.isArray(SAMPLE_MANIFEST.kalimba) && SAMPLE_MANIFEST.kalimba.length > 0,
+    };
+  });
+
+  expect(result.onSafari).toEqual(['savanna']);
+  expect(result.onForest).not.toContain('savanna');
+  expect(result.onSafariAsleep).toEqual(['lullaby']); // Sleep mode's own promise beats scene-scoping
+  expect(result.seedCount).toBeGreaterThanOrEqual(3);
+  expect(result.bpmInRange).toBe(true);
+  expect(result.allMixolydian).toBe(true);
+  expect(result.onlyKalimbaVibraphoneDoublebass).toBe(true);
+  expect(result.kalimbaIsSynthesized).toBe(true);
+  expect(result.kalimbaInManifest).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('synthesizeKalimbaNote renders a real, audible buffer for a range of notes without error', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    const notes = ['C3', 'E4', 'G4', 'C6'];
+    const results = [];
+    for (const note of notes) {
+      const buffer = await synthesizeKalimbaNote(note);
+      const data = buffer.getChannelData(0);
+      let peak = 0;
+      for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]));
+      results.push({ note, length: buffer.length, peak });
+    }
+    return results;
+  });
+
+  for (const r of result) {
+    expect(r.length).toBeGreaterThan(0);
+    expect(r.peak).toBeGreaterThan(0.1); // genuinely audible, not silent/near-zero
+    expect(r.peak).toBeLessThanOrEqual(1.0); // never clipping
+  }
   expect(errors).toEqual([]);
 });
 
