@@ -7235,11 +7235,19 @@ test('Rotate mode holds each package for exactly as many waves as it has ambient
       }
     }
 
+    // The very last block can be legitimately truncated by this test's own
+    // fixed 60-wave sample window -- nothing stops a block from still being
+    // mid-run when the sample ends, regardless of how many scenes are in
+    // rotation (adding a 7th, safari, shifted exactly where that cutoff
+    // lands for this seed). Every OTHER block is a complete run and must
+    // match sceneWaveCount exactly; only the trailing one is exempt.
+    const completeBlocks = blocks.slice(0, -1);
+
     return {
-      // Every package's run length must equal that scene's own real wave
-      // count (see sceneWaveCount) -- a package is never cut short or run
-      // long regardless of what order it lands in.
-      lengthsMatch: blocks.every((b) => b.length === sceneWaveCount(b.scene)),
+      // Every complete package's run length must equal that scene's own
+      // real wave count (see sceneWaveCount) -- a package is never cut
+      // short or run long regardless of what order it lands in.
+      lengthsMatch: completeBlocks.every((b) => b.length === sceneWaveCount(b.scene)),
       // Shuffled, not just "the next one in a fixed list" -- but still
       // never the exact same package twice in a row (see resolveSceneBlock).
       noImmediateRepeat: blocks.every((b, i) => i === 0 || b.scene !== blocks[i - 1].scene),
@@ -7263,6 +7271,111 @@ test('Rotate mode holds each package for exactly as many waves as it has ambient
   expect(result.blockCount).toBeGreaterThan(3);
   expect(result.sameSeedReproducible).toBe(true);
   expect(result.differsAcrossSeeds).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test("Safari's day/night background stays the same across every wave of one block, in both Rotate and fixed scene mode -- fixed mode is the important case, since resolveSceneBlock always reports blockPosition 0 there (no block boundary to key a reroll off of)", async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const fixedModeVariants = await page.evaluate(() => {
+    STATE.sceneMode = 'safari';
+    const seen = [];
+    for (let wave = 1; wave <= 8; wave++) {
+      startWave(wave);
+      seen.push(STATE.safariScene.variant);
+    }
+    return seen;
+  });
+  expect(new Set(fixedModeVariants).size).toBe(1);
+  expect(['day', 'night']).toContain(fixedModeVariants[0]);
+
+  const rotateModeLog = await page.evaluate(() => {
+    STATE.sceneMode = 'rotate';
+    STATE.rotateSeed = 555444;
+    const log = [];
+    for (let wave = 1; wave <= 60; wave++) {
+      startWave(wave);
+      log.push({ scene: STATE.scene, variant: STATE.scene === 'safari' ? STATE.safariScene.variant : null });
+    }
+    return log;
+  });
+  // Collapse into (scene, variants-seen-during-that-run) blocks the same
+  // way the package-order test above does, then check every safari block
+  // held exactly one variant for its whole run.
+  const blocks = [];
+  for (const { scene, variant } of rotateModeLog) {
+    const last = blocks[blocks.length - 1];
+    if (last && last.scene === scene) last.variants.add(variant);
+    else blocks.push({ scene, variants: new Set([variant]) });
+  }
+  const safariBlocks = blocks.filter((b) => b.scene === 'safari');
+  expect(safariBlocks.length).toBeGreaterThan(0);
+  expect(safariBlocks.every((b) => b.variants.size === 1)).toBe(true);
+
+  expect(errors).toEqual([]);
+});
+
+test('Safari\'s day/night pick rides along with a saved game across a reload (review catch, PR #91 -- same class of bug as rotateSeed\'s own PR #87 fix: without this, reloading mid-Safari-block had a coin-flip chance of switching day<->night before that block\'s waves were actually done), and a genuinely new game reseeds it', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const savedVariant = await page.evaluate(() => {
+    // Fixed, so every wave below is guaranteed to actually be Safari --
+    // persisted via saveSceneSetting (SCENE_KEY), not SAVE_KEY, so it
+    // must be set this way to survive the reload below, same as if the
+    // player had actually picked "Safari" from the title screen's dropdown.
+    STATE.sceneMode = 'safari';
+    saveSceneSetting('safari');
+    startWave(1);
+    STATE.wave = 2; // still mid-block (sceneWaveCount('safari') === 4) -- not the block's own last wave
+    STATE.score = 50;
+    saveGame();
+    return STATE.safariVariant;
+  });
+  expect(['day', 'night']).toContain(savedVariant);
+
+  await page.reload();
+  await page.waitForFunction(() => window.__lumina);
+  const variantAfterReloadNoLoad = await page.evaluate(() => STATE.safariVariant);
+  // A reload alone doesn't resume anything yet (see startGameFromTitle) --
+  // there's nothing wrong with this being null, it just shouldn't be
+  // treated as meaningful until an actual load/autoload happens below.
+  expect(variantAfterReloadNoLoad).toBeNull();
+
+  // Loading that save back must restore its own exact variant, not
+  // whatever a fresh coin flip would give.
+  await page.click('#title-load-button');
+  await page.waitForTimeout(200);
+  const variantAfterLoad = await page.evaluate(() => STATE.safariVariant);
+  expect(variantAfterLoad).toBe(savedVariant);
+
+  // Restart Current Level replays the same wave, not a new playthrough --
+  // must NOT reroll, same reasoning as rotateSeed's own retry-preserving
+  // behavior above.
+  await page.click('#pause-button');
+  await page.click('#pause-restart-level');
+  await page.waitForTimeout(1100);
+  const variantAfterRestartLevel = await page.evaluate(() => STATE.safariVariant);
+  expect(variantAfterRestartLevel).toBe(savedVariant);
+
+  // Restart Game is a genuinely new playthrough -- must NOT inherit
+  // whatever variant was still sitting in STATE from the run just ended.
+  // Plants an impossible sentinel value first (day/night is a coin flip,
+  // so merely asserting the result differs from savedVariant would be
+  // flaky -- roughly half of all genuinely-fresh rolls would legitimately
+  // match it by chance) and confirms Restart Game actually overwrote it
+  // rather than leaving it untouched.
+  await page.evaluate(() => { STATE.safariVariant = 'STALE_SENTINEL'; });
+  await page.click('#pause-button');
+  await page.click('#pause-restart-game');
+  await page.waitForTimeout(1100);
+  const variantAfterRestartGame = await page.evaluate(() => STATE.safariVariant);
+  expect(['day', 'night']).toContain(variantAfterRestartGame);
+  expect(variantAfterRestartGame).not.toBe('STALE_SENTINEL');
+
   expect(errors).toEqual([]);
 });
 
