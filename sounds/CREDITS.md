@@ -287,16 +287,53 @@ kalimba/marimba-style melody, warm bass, no brass or synth leads.
   (a few closely-spaced low sine tones with slow drift, plus low-passed
   noise for tire/road texture) — grounds the scene as "riding in a
   vehicle" without competing with the song.
-- `safari-wildlife.mp3` — the scene's one occasional event layer: a
-  soft, distant, low elephant-rumble-like sound (a few low sines with
-  light vibrato plus band-passed noise for breath, smooth attack/decay,
-  no sharp transient) — evokes Animal Kingdom without ever reading as a
-  jump-scare, matching the brief's "welcoming rather than intense" mood.
 
-All three synthesized/composed in Python (numpy + scipy), not in
-game.js — a one-time build step, same as the birthday balloon
-resynthesis earlier in this project's history, not something that needs
-to run again at play time.
+`safari-song.mp3` and `safari-engine.mp3` synthesized/composed in
+Python (numpy + scipy), not in game.js — a one-time build step, same as
+the birthday balloon resynthesis earlier in this project's history, not
+something that needs to run again at play time.
+
+### Real field recordings (player request, 2026-08-16)
+
+The rest of the scene's ambience is real recordings, not synthesized --
+matching the same real-over-synthetic preference forest/beach/halloween/
+christmas's own ambience already established (see those sections above),
+and specifically requested for Safari after the fact ("find actual
+recordings of Safari related sounds... within the same kind of variable
+ranges that we apply to other background ambiance notes" -- i.e. the
+same `AMBIENT_VARIATION` per-repeat pitch/gain/pan jitter and crossfade
+every other real-recording layer in this file already gets, no special
+handling). All three below are CC0/Public Domain, credited anyway:
+
+- `safari-wind.mp3` — "Jim Cook's wind; bluster; prairie wind," from
+  [SSE Library: WIND](https://archive.org/details/SSE_Library_WIND)
+  (same USC/Sunset Editorial collection family as the Halloween creak/
+  Forest owl/Christmas wind) — open grassland wind, not arctic or
+  forest, picked specifically over that collection's own "desert wind"
+  option since a savanna is grassland, not sand. Trimmed to a steady
+  20s stretch from the original ~72s recording.
+- `safari-insects.mp3` — "Summer cicadas," a field recording from
+  Parque Vale do Silêncio, Lisbon, Portugal, via
+  [aporee.org / Internet Archive](https://archive.org/details/aporee_20041_23336),
+  Public Domain Mark 1.0 (same source/license as the Forest wind
+  recording). Deliberately cicadas, not crickets, despite Red Library's
+  own crickets collection being the closer-to-hand option -- Forest's
+  own ambience already uses crickets as its signature night-insect
+  sound, and a daytime cicada drone reads as a distinctly different,
+  hotter, more open-country texture than Forest's chirping. Trimmed to
+  a steady 22s stretch from the original ~5m35s recording.
+- `safari-wildlife.mp3` — "Elephant trumpet," from
+  [Red Library: Animals Misc](https://archive.org/details/Red_Library_Animals_Misc)
+  (the same collection Christmas's bells/chimes and this file's earlier
+  entries come from) — replaces an earlier synthesized elephant-rumble
+  placeholder (see git history) with a real trumpet call, one single
+  clean blast trimmed out of a ~52s recording containing several.
+
+All three trimmed/faded with ffmpeg (two-pass: trim first, then fade on
+the trimmed clip's own timeline -- combining seek and `afade` in one
+pass produced silent output on this project's ffmpeg build, since the
+filter read `afade`'s start time against the untrimmed file's original
+timestamps rather than the seeked clip's own).
 
 ## The 'savanna' genre family's kalimba voice (interactive gameplay music)
 

@@ -3868,16 +3868,25 @@ const SCENE_AMBIENT_CONFIG = {
   },
   // The composed African-inspired track is the scene's floor (same
   // reasoning as every other scene's first-revealed layer), with the bus
-  // engine hum right behind it -- both continuous beds. wildlife is the
-  // one occasional event layer: a soft, distant, low elephant rumble,
-  // deliberately gentle rather than a jump-scare trumpet blast (see
-  // sounds/CREDITS.md).
+  // engine hum right behind it. wind and insects (both real field
+  // recordings -- see sounds/CREDITS.md) are the two continuous "nature"
+  // beds every other scene's ambience already leans on (forest's wind/
+  // crickets, beach's waves/wind), which this scene didn't have at
+  // first -- song and engine cover the "riding in a vehicle" half of the
+  // brief, but neither one is actually a savanna field recording.
+  // wildlife is the one occasional event layer: a real elephant trumpet
+  // call (also replaces an earlier synthesized placeholder -- see git
+  // history), matching the real-recording pattern player feedback
+  // established for forest/beach's own event layers (owl, whale) over
+  // synthesizing something built to only approximate them.
   safari: {
-    order: ['song', 'engine', 'wildlife'],
+    order: ['song', 'wind', 'insects', 'engine', 'wildlife'],
     sounds: {
       song: { file: 'safari-song.mp3', gain: 0.5, isEvent: false },
+      wind: { file: 'safari-wind.mp3', gain: 0.42, isEvent: false },
+      insects: { file: 'safari-insects.mp3', gain: 0.4, isEvent: false },
       engine: { file: 'safari-engine.mp3', gain: 0.28, isEvent: false },
-      wildlife: { file: 'safari-wildlife.mp3', gain: 0.4, isEvent: true, minGapSec: 25, maxGapSec: 55 },
+      wildlife: { file: 'safari-wildlife.mp3', gain: 0.55, isEvent: true, minGapSec: 25, maxGapSec: 55 },
     },
   },
 };
