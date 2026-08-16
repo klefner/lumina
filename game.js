@@ -2124,8 +2124,8 @@ const GENRE_FAMILIES = [
         chordProgression: [0, 5, 3, 4],          // I - vi - IV - v
         roles: [
           { kind: 'melody',   instrument: 'kalimba' },
-          { kind: 'arpeggio', instrument: 'vibraphone' },
-          { kind: 'pad',      instrument: 'kalimba' },
+          { kind: 'arpeggio', instrument: 'kalimba' },
+          { kind: 'pad',      instrument: 'vibraphone' },
           { kind: 'drone',    instrument: 'doublebass' },
           { kind: 'accent',   instrument: 'vibraphone' },
           { kind: 'accent',   instrument: 'kalimba' },
@@ -2184,10 +2184,21 @@ const SAMPLE_MANIFEST = {
   // rhodes' wider spread across a busier multi-role arrangement).
   musicbox: ['C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6'],
   // Safari's 'savanna' genre family's melody/arpeggio/accent voice (see
-  // synthesizeKalimbaNote) -- same chromatic C3-C6 spread as marimba,
-  // since it fills the same kind of melody/arpeggio-heavy multi-role
-  // arrangement marimba does elsewhere.
-  kalimba: ['C3', 'Db3', 'D3', 'Eb3', 'E3', 'F3', 'Gb3', 'G3', 'Ab3', 'A3', 'Bb3', 'B3', 'C4', 'Db4', 'D4', 'Eb4', 'E4', 'F4', 'Gb4', 'G4', 'Ab4', 'A4', 'Bb4', 'B4', 'C5', 'Db5', 'D5', 'Eb5', 'E5', 'F5', 'Gb5', 'G5', 'Ab5', 'A5', 'Bb5', 'B5', 'C6'],
+  // synthesizeKalimbaNote). Sparse (12 notes, roughly a major third
+  // apart) rather than a full C3-C6 chromatic set like marimba's -- this
+  // instrument is synthesized, not decoded from a fetched file, and
+  // decodeAllSamples() renders every manifest entry for every
+  // synthesized instrument up front for every session regardless of
+  // which scene ends up selected (review catch, PR #93: a full 37-note
+  // chromatic set would have meant 37 extra OfflineAudioContext renders,
+  // and ~11MB of retained buffers, on every single player's startup,
+  // including the vast majority who never see Safari at all). The
+  // engine's existing nearest-sample/playbackRate pitch-shift fallback
+  // (same mechanism every other instrument already relies on between
+  // its own sampled notes) covers the gaps -- same sparse-is-fine
+  // precedent as 'rhodes' (9 notes across 3 octaves for its own
+  // melody/arpeggio/pad roles in 'lofi').
+  kalimba: ['C3', 'E3', 'G3', 'Bb3', 'C4', 'E4', 'G4', 'Bb4', 'C5', 'E5', 'G5', 'C6'],
 };
 
 // Instruments with no recorded sample files at all — their "sample
