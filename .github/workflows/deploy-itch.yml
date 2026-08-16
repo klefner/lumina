@@ -22,6 +22,14 @@ on:
 permissions:
   contents: read
 
+# Non-cancelling: two pushes close together must still run one after the
+# other rather than in parallel, or the older/slower butler upload could
+# finish last and leave the promoted itch.io channel serving a stale build
+# even though the newer run already succeeded (review catch, PR #90).
+concurrency:
+  group: deploy-itch
+  cancel-in-progress: false
+
 jobs:
   deploy:
     if: github.ref == 'refs/heads/main'
