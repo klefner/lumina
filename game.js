@@ -11523,13 +11523,34 @@ const SAFARI_CONFIG = {
   // would drift off the real horizon as the pan/zoom moves.
   HORIZON_FRAC: { day: 0.80, night: 0.87 },
   BIRD_COUNT: 3,
-  ANIMAL_COUNT: 2,
+  ANIMAL_COUNT: 3,
+  TREE_COUNT: 3,
 };
 
 const SAFARI_IMAGES = {
   day: Object.assign(new Image(), { src: SAFARI_CONFIG.images.day }),
   night: Object.assign(new Image(), { src: SAFARI_CONFIG.images.night }),
 };
+
+// Real photo cutouts (background removed with rembg, sourcing + process
+// notes in art/CREDITS.md) standing in for what used to be a single
+// hand-drawn giraffe silhouette -- a small pool of real trees/animals so
+// the scene actually looks different from one wave to the next instead
+// of the same shape in the same pose every time. Every source photo was
+// shot facing right, by construction (see CREDITS.md), so a leftward
+// `direction` is realized purely as a horizontal canvas flip at draw
+// time (see drawSafariCutout) rather than needing separate art per
+// direction. Each file was also tight-cropped to its own alpha bounding
+// box before export, so the image's own bottom edge already IS the
+// subject's true base (trunk or feet) -- bottom-anchoring it at the
+// horizon (see drawSafariCutout) lines it up with the ground with no
+// further per-image calibration needed.
+const SAFARI_TREE_SOURCES = ['tree-acacia', 'tree-baobab'];
+const SAFARI_ANIMAL_SOURCES = ['animal-zebra', 'animal-giraffe', 'animal-elephant'];
+const SAFARI_CUTOUT_IMAGES = {};
+for (const name of [...SAFARI_TREE_SOURCES, ...SAFARI_ANIMAL_SOURCES]) {
+  SAFARI_CUTOUT_IMAGES[name] = Object.assign(new Image(), { src: `art/safari-cutouts/${name}.webp` });
+}
 
 // The reroll decision rests entirely on STATE.safariVariant itself, not
 // on previousScene (used below only for phase continuity) -- an earlier
@@ -11576,25 +11597,54 @@ function generateSafariBirds() {
   return birds;
 }
 
-// A couple of giraffe silhouettes walking along the actual grass line --
-// same horizon-crossing technique as the birds above, just slower and
+// A few real-photo animals walking along the actual grass line -- same
+// horizon-crossing technique as the birds above, just slower and
 // anchored to SAFARI_CONFIG.HORIZON_FRAC instead of drifting through open
 // sky. Ties the scene to "Animal Kingdom" directly, and to the ambient
-// wildlife event layer's elephant rumble (SCENE_AMBIENT_CONFIG.safari) --
+// wildlife event layer's elephant call (SCENE_AMBIENT_CONFIG.safari) --
 // distinct animals, same idea: this scene actually has wildlife in it,
-// not just a savanna backdrop.
+// not just a savanna backdrop. No walk-cycle leg articulation (a static
+// photo has no leg frames to animate) -- bobPhase instead drives a small
+// vertical bounce in drawSafariScene, enough to read as motion rather
+// than sliding.
 function generateSafariAnimals() {
   const animals = [];
   for (let i = 0; i < SAFARI_CONFIG.ANIMAL_COUNT; i++) {
     animals.push({
-      xFrac: Math.random(),
+      source: SAFARI_ANIMAL_SOURCES[Math.floor(Math.random() * SAFARI_ANIMAL_SOURCES.length)],
+      // Spread across even bands of the width (jittered within each
+      // band), same technique as generateSafariTrees -- a plain
+      // Math.random() here occasionally spawned animals stacked right on
+      // top of each other with only a couple on screen. They still walk
+      // freely and cross paths after this, so it only smooths out where
+      // they START, not a hard non-overlap guarantee.
+      xFrac: (i + 0.1 + Math.random() * 0.8) / SAFARI_CONFIG.ANIMAL_COUNT,
       direction: Math.random() < 0.5 ? 1 : -1,
       speed: 0.000035 + Math.random() * 0.00003,
-      sizeFrac: 0.05 + Math.random() * 0.02,
-      legPhase: Math.random() * Math.PI * 2,
+      sizeFrac: 0.1 + Math.random() * 0.06,
+      bobPhase: Math.random() * Math.PI * 2,
     });
   }
   return animals;
+}
+
+// A few real-photo trees scattered along the grass line -- unlike the
+// animals above these don't move, just get freshly reshuffled/repicked
+// every wave (see generateSafariScene) so the background reads as a
+// genuinely different stretch of savanna each time rather than the same
+// two trees in the same spots. Spread across even bands of the width
+// (jittered within each band) rather than pure random xFrac, so trees
+// don't clump together or overlap by chance.
+function generateSafariTrees() {
+  const trees = [];
+  for (let i = 0; i < SAFARI_CONFIG.TREE_COUNT; i++) {
+    trees.push({
+      source: SAFARI_TREE_SOURCES[Math.floor(Math.random() * SAFARI_TREE_SOURCES.length)],
+      xFrac: (i + 0.15 + Math.random() * 0.7) / SAFARI_CONFIG.TREE_COUNT,
+      sizeFrac: 0.15 + Math.random() * 0.15,
+    });
+  }
+  return trees;
 }
 
 function generateSafariScene(previousScene) {
@@ -11610,12 +11660,13 @@ function generateSafariScene(previousScene) {
   return {
     variant: STATE.safariVariant,
     phase,
-    // Foreground wildlife/birds are always fresh per wave, same spirit as
-    // every other scene's own decorative details (see this file's
-    // "rerolled fresh every wave" comment in startWave) -- only the
-    // day/night photo itself has to hold steady across a block.
+    // Foreground wildlife/birds/trees are always fresh per wave, same
+    // spirit as every other scene's own decorative details (see this
+    // file's "rerolled fresh every wave" comment in startWave) -- only
+    // the day/night photo itself has to hold steady across a block.
     birds: generateSafariBirds(),
     animals: generateSafariAnimals(),
+    trees: generateSafariTrees(),
     // Night-only occasional shooting star -- starts with nothing active
     // and a short random delay before the first one, same pattern as the
     // event ambient sounds' own startEventAmbientLayer. nextSpawnFrame is
@@ -11647,7 +11698,7 @@ function updateSafariScene() {
     animal.xFrac += animal.speed * animal.direction;
     if (animal.xFrac > 1.1) animal.xFrac = -0.1;
     else if (animal.xFrac < -0.1) animal.xFrac = 1.1;
-    animal.legPhase += 0.05 * (animal.speed / 0.00005); // faster stride reads as faster walking, not just sliding
+    animal.bobPhase += 0.05 * (animal.speed / 0.00005); // faster stride reads as faster walking, not just sliding
   }
 
   if (scene.variant === 'night') {
@@ -11689,83 +11740,31 @@ function drawSafariBird(x, y, size, wingPhase) {
   ctx.stroke();
 }
 
-// A simplified giraffe silhouette (long legs + very long neck + tiny head
-// relative to a short body is what actually reads as "giraffe" even
-// tiny and pure-black -- a giraffe's legs and neck are each roughly as
-// long as its whole body is tall, real proportions, not a stylization).
-// Walking, not standing, via a four-legged stride animation. `size` is
-// the animal's total height, ground to the top of its head. Drawn
-// facing its direction of travel.
-function drawSafariGiraffe(x, groundY, size, direction, legPhase) {
-  ctx.fillStyle = 'rgba(12, 12, 15, 0.82)';
-  ctx.strokeStyle = 'rgba(12, 12, 15, 0.82)';
-  ctx.lineCap = 'round';
-
-  const legsH = size * 0.4;
-  const bodyH = size * 0.15;
-  const bodyW = size * 0.5;
-  const bodyBottomY = groundY - legsH;
-  const bodyCenterY = bodyBottomY - bodyH / 2;
-
-  // Four legs (two diagonal pairs alternating, the way a real walking
-  // gait actually splits) rather than two -- reads as an animal standing
-  // on the ground, not perched on a single pair of sticks.
-  ctx.lineWidth = Math.max(1.5, size * 0.035);
-  const strideA = Math.sin(legPhase) * size * 0.07;
-  const strideB = Math.sin(legPhase + Math.PI) * size * 0.07;
-  const legXOffsets = [-0.32, -0.12, 0.12, 0.32];
-  const legStrides = [strideA, strideB, strideB, strideA];
-  for (let i = 0; i < 4; i++) {
-    const lx = x + legXOffsets[i] * bodyW;
-    ctx.beginPath();
-    ctx.moveTo(lx, bodyBottomY);
-    ctx.lineTo(lx + legStrides[i], groundY);
-    ctx.stroke();
-  }
-
-  // Body -- short and shallow relative to the legs/neck, real proportions.
-  ctx.beginPath();
-  ctx.ellipse(x, bodyCenterY, bodyW / 2, bodyH / 2, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Neck -- the giraffe's whole visual signature: long, tapered,
-  // leaning forward in the direction of travel from the shoulder (the
-  // front of the body) up to a tiny head. Roughly as long as the legs.
-  const neckBaseX = x + direction * bodyW * 0.36;
-  const neckBaseY = bodyCenterY - bodyH * 0.3;
-  const headX = neckBaseX + direction * size * 0.16;
-  const headY = groundY - size;
-  const neckBaseHalfW = size * 0.05;
-  const neckTopHalfW = size * 0.025;
-  const perpX = direction * neckTopHalfW * 0.4; // slight taper direction, not a true perpendicular (cheap approximation, fine at this scale)
-  ctx.beginPath();
-  ctx.moveTo(neckBaseX - neckBaseHalfW, neckBaseY);
-  ctx.lineTo(headX - neckTopHalfW + perpX, headY + size * 0.06);
-  ctx.lineTo(headX + neckTopHalfW + perpX, headY + size * 0.06);
-  ctx.lineTo(neckBaseX + neckBaseHalfW, neckBaseY);
-  ctx.closePath();
-  ctx.fill();
-
-  // Small head + two short ossicones (the pair of knobs on a giraffe's
-  // head) -- the one extra detail that keeps this from reading as just
-  // "some animal with a long neck" at a glance.
-  ctx.beginPath();
-  ctx.ellipse(headX, headY, size * 0.055, size * 0.04, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.lineWidth = Math.max(1, size * 0.02);
-  ctx.beginPath();
-  ctx.moveTo(headX - size * 0.02, headY - size * 0.03);
-  ctx.lineTo(headX - size * 0.02, headY - size * 0.065);
-  ctx.moveTo(headX + size * 0.02, headY - size * 0.03);
-  ctx.lineTo(headX + size * 0.02, headY - size * 0.065);
-  ctx.stroke();
-
-  // Tail, trailing off the back (opposite the direction of travel).
-  ctx.lineWidth = Math.max(1, size * 0.02);
-  ctx.beginPath();
-  ctx.moveTo(x - direction * bodyW * 0.5, bodyCenterY);
-  ctx.lineTo(x - direction * bodyW * 0.62, bodyCenterY + size * 0.16);
-  ctx.stroke();
+// Draws a real-photo cutout (tree or animal) bottom-anchored at
+// (xCenter, groundY) and scaled to targetHeight, preserving the source
+// image's own aspect ratio. Every cutout was tight-cropped to its own
+// alpha bounding box at export time (see CREDITS.md), so the image's
+// bottom edge already IS the subject's true base -- no per-image ground
+// offset needed. `direction` mirrors the image horizontally around its
+// own anchor for animals walking left, since every source photo faces
+// right by construction; trees always pass 1 (never flipped).
+function drawSafariCutout(source, xCenter, groundY, targetHeight, direction, nightTint) {
+  const img = SAFARI_CUTOUT_IMAGES[source];
+  if (!img.complete || img.naturalWidth === 0) return; // not loaded yet -- skip this frame rather than block or flash
+  const targetWidth = targetHeight * (img.naturalWidth / img.naturalHeight);
+  ctx.save();
+  ctx.translate(xCenter, groundY);
+  if (direction < 0) ctx.scale(-1, 1);
+  // Every cutout is a real daylight photo (see CREDITS.md) -- the night
+  // variant's own vignette is transparent at its center, so without this
+  // a tree or animal anywhere near mid-screen would render at full
+  // midday brightness against the Milky Way (review catch, PR #95).
+  // Darken and desaturate it down to a plausible moonlit silhouette
+  // instead -- the same effect drawSafariGiraffe's flat dark fill used
+  // to give the old hand-drawn animals for free.
+  if (nightTint) ctx.filter = 'brightness(0.32) saturate(0.5) contrast(1.05)';
+  ctx.drawImage(img, -targetWidth / 2, -targetHeight, targetWidth, targetHeight);
+  ctx.restore();
 }
 
 function drawSafariShootingStar(star, w, h) {
@@ -11826,14 +11825,22 @@ function drawSafariScene() {
 
   // Foreground wildlife/sky decoration, mapped into the SAME cover-fit/
   // pan/zoom space the photo itself just used -- specifically the
-  // giraffes' ground line (SAFARI_CONFIG.HORIZON_FRAC), so they stay on
-  // the actual grass the photo shows instead of drifting off it as the
-  // pan/zoom moves. Drawn before the vignette below so they pick up the
-  // same edge-darkening the photo does, not sitting artificially crisp
-  // on top of it.
+  // trees' and animals' shared ground line (SAFARI_CONFIG.HORIZON_FRAC),
+  // so they stay on the actual grass the photo shows instead of drifting
+  // off it as the pan/zoom moves. Drawn before the vignette below so
+  // they pick up the same edge-darkening the photo does, not sitting
+  // artificially crisp on top of it. Trees first (they don't move, and
+  // sit slightly further back conceptually), then animals on top.
   const horizonY = -panY + cfg.HORIZON_FRAC[scene.variant] * drawH;
+  const nightTint = scene.variant === 'night';
+  for (const tree of scene.trees) {
+    drawSafariCutout(tree.source, tree.xFrac * w, horizonY, tree.sizeFrac * h, 1, nightTint);
+  }
   for (const animal of scene.animals) {
-    drawSafariGiraffe(animal.xFrac * w, horizonY, animal.sizeFrac * h, animal.direction, animal.legPhase);
+    // A small vertical bounce in place of real leg articulation -- see
+    // generateSafariAnimals for why a static photo can't have a stride.
+    const bob = Math.sin(animal.bobPhase) * animal.sizeFrac * h * 0.025;
+    drawSafariCutout(animal.source, animal.xFrac * w, horizonY + bob, animal.sizeFrac * h, animal.direction, nightTint);
   }
   if (scene.variant === 'day') {
     for (const bird of scene.birds) {
@@ -11842,6 +11849,15 @@ function drawSafariScene() {
   } else {
     drawSafariShootingStar(scene.shootingStar, w, h);
   }
+
+  // Reward-only (see drawStars' own comment): a synthetic ambient
+  // starfield would fight the day sky and double up on the night
+  // variant's own real Milky Way, but each connection's reward halo
+  // (spawnStarsAroundDots) is live gameplay feedback for a still-
+  // connected pair, not decoration, and has to render regardless of
+  // scene -- this call was missing entirely before, so every connection
+  // halo has been invisible in Safari since it first shipped.
+  drawStars(true);
 
   // A real photo has arbitrary local contrast a hand-drawn scene never
   // does -- a uniform radial dim (clear center, where the board mostly

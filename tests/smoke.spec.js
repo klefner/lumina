@@ -7544,7 +7544,7 @@ test('Safari\'s day/night pick rides along with a saved game across a reload (re
   expect(errors).toEqual([]);
 });
 
-test('Safari\'s foreground wildlife (birds, giraffes, night shooting stars) generates and draws without error for both variants', async ({ page }) => {
+test('Safari\'s foreground wildlife (birds, real-photo trees/animals, night shooting stars) generates and draws without error for both variants', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
@@ -7557,10 +7557,24 @@ test('Safari\'s foreground wildlife (birds, giraffes, night shooting stars) gene
       STATE.safariVariant = variant;
       STATE.safariScene = generateSafariScene(null);
       for (let i = 0; i < 30; i++) updateSafariScene(); // enough frames for a shooting star to plausibly spawn
-      drawSafariScene(); // throws if anything in the draw path is broken
+      // A connection-reward star (spawnStarsAroundDots' own pairId-tagged
+      // shape) mixed in with a plain ambient one -- confirms the real draw
+      // path renders the reward halo (via drawStars(true)) without
+      // throwing, in both variants (review catch -- drawSafariScene never
+      // called drawStars() at all before, in either variant, so every
+      // connection halo was invisible in Safari since it first shipped;
+      // see the dedicated drawStars(rewardOnly) test for the exact filter).
+      STATE.stars = [
+        { x: 10, y: 10, radius: 1, alpha: 1, twinkling: false, twinklePhase: 0, twinkleSpeed: 0, pairId: undefined },
+        { x: 20, y: 20, radius: 1, alpha: 1, twinkling: false, twinklePhase: 0, twinkleSpeed: 0, pairId: 'pairA' },
+      ];
+      drawSafariScene(); // throws if anything in the draw path is broken (including the cutout images not having finished loading yet -- drawSafariCutout must tolerate that)
       out[variant] = {
         birdCount: STATE.safariScene.birds.length,
         animalCount: STATE.safariScene.animals.length,
+        treeCount: STATE.safariScene.trees.length,
+        animalSourcesValid: STATE.safariScene.animals.every((a) => SAFARI_ANIMAL_SOURCES.includes(a.source)),
+        treeSourcesValid: STATE.safariScene.trees.every((t) => SAFARI_TREE_SOURCES.includes(t.source)),
         phaseAdvanced: STATE.safariScene.phase > 0,
         hasShootingStarState: typeof STATE.safariScene.shootingStar === 'object',
       };
@@ -7571,13 +7585,89 @@ test('Safari\'s foreground wildlife (birds, giraffes, night shooting stars) gene
   for (const variant of ['day', 'night']) {
     expect(result[variant].birdCount).toBeGreaterThan(0);
     expect(result[variant].animalCount).toBeGreaterThan(0);
+    expect(result[variant].treeCount).toBeGreaterThan(0);
+    expect(result[variant].animalSourcesValid).toBe(true);
+    expect(result[variant].treeSourcesValid).toBe(true);
     expect(result[variant].phaseAdvanced).toBe(true);
     expect(result[variant].hasShootingStarState).toBe(true);
   }
   expect(errors).toEqual([]);
 });
 
-test('Safari\'s birds and giraffes wrap to the opposite edge instead of resetting mid-crossing, keeping their direction -- same technique as the Beach boat', async ({ page }) => {
+test('Safari\'s cutout image manifest actually loads every declared tree/animal source', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    // Give the browser a real chance to fetch art/safari-cutouts/*.webp
+    // over the local server rather than asserting against the very first
+    // (near-certainly still-loading) tick.
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const names = [...SAFARI_TREE_SOURCES, ...SAFARI_ANIMAL_SOURCES];
+    return names.map((name) => ({
+      name,
+      loaded: SAFARI_CUTOUT_IMAGES[name].complete && SAFARI_CUTOUT_IMAGES[name].naturalWidth > 0,
+    }));
+  });
+
+  for (const { name, loaded } of result) {
+    expect(loaded, `${name} should have loaded`).toBe(true);
+  }
+  expect(errors).toEqual([]);
+});
+
+test("Safari's tree/animal cutouts are darkened for the night variant (not left at full daylight brightness against the Milky Way) but left untouched for day (review catch, PR #95 -- every cutout is a real daylight photo, and the night variant's own vignette is transparent at its center, so without a night tint a tree or animal anywhere near mid-screen rendered at full midday brightness)", async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    await new Promise((resolve) => setTimeout(resolve, 1500)); // let the cutout WebPs actually finish loading
+
+    // Wrap drawSafariCutout itself rather than inferring from ctx.filter's
+    // side effects -- ctx.filter is reset by the function's own
+    // ctx.restore() before this could inspect it, and the background
+    // photo's own (untinted) drawImage call would otherwise pollute a
+    // ctx.drawImage-level spy. Directly recording the nightTint argument
+    // each tree/animal call actually received is both simpler and a more
+    // direct test of the fix (drawSafariScene computing/passing it
+    // correctly per variant) than the filter it produces downstream.
+    const originalCutout = drawSafariCutout;
+    const nightTintsSeen = [];
+    window.drawSafariCutout = (...args) => { nightTintsSeen.push(args[5]); return originalCutout(...args); };
+
+    STATE.scene = 'safari';
+    STATE.safariVariant = 'night';
+    STATE.safariScene = generateSafariScene(null);
+    drawSafariScene();
+    const nightTints = nightTintsSeen.slice();
+
+    nightTintsSeen.length = 0;
+    STATE.safariVariant = 'day';
+    STATE.safariScene = generateSafariScene(null);
+    drawSafariScene();
+    const dayTints = nightTintsSeen.slice();
+
+    window.drawSafariCutout = originalCutout;
+
+    return {
+      nightCallCount: nightTints.length,
+      nightAllTrue: nightTints.length > 0 && nightTints.every((t) => t === true),
+      dayCallCount: dayTints.length,
+      dayNoneTrue: dayTints.length > 0 && dayTints.every((t) => t !== true),
+    };
+  });
+
+  expect(result.nightCallCount).toBeGreaterThan(0);
+  expect(result.nightAllTrue).toBe(true);
+  expect(result.dayCallCount).toBeGreaterThan(0);
+  expect(result.dayNoneTrue).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('Safari\'s birds and animals wrap to the opposite edge instead of resetting mid-crossing, keeping their direction -- same technique as the Beach boat', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
