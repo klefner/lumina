@@ -6880,6 +6880,17 @@ function playConnectionPraiseRiff(tier) {
   if (!STATE.audioCtx || !STATE.masterBus) return;
   const instrument = STATE.sampleBuffers.vibraphone ? 'vibraphone' : 'piano';
   const root = STATE.song ? STATE.song.genre.rootMidi : 60;
+  // Sleep mode keeps the banner text (still a nice "well drawn" nudge,
+  // still not a competitive tally -- see queueAchievement's own comment
+  // on why that distinction matters) but drops the bright ascending
+  // multi-note fanfare down to one quiet note, regardless of tier. Full
+  // silence here would make a good line feel unacknowledged; the full
+  // riff is squarely the kind of "stimulus" Sleep mode exists to remove
+  // everywhere else (player request).
+  if (STATE.difficulty === 'sleep') {
+    playSample(instrument, root + 12, STATE.audioCtx.currentTime + 0.02, 0.12, STATE.masterBus);
+    return;
+  }
   const RIFFS = [
     [root + 12, root + 16],
     [root + 12, root + 16, root + 19],

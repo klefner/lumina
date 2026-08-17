@@ -8090,6 +8090,49 @@ test('Sleep mode suppresses the achievement toast (box + jingle) but not per-lin
   expect(errors).toEqual([]);
 });
 
+test('Sleep mode softens the per-line connection praise sound to a single quiet note instead of the bright multi-note riff, keeping the banner reward itself intact (player request -- full silence would make a well-drawn line feel unacknowledged)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => { navigator.vibrate = () => true; });
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.click('#start-game-button');
+  await page.waitForTimeout(800);
+
+  const result = await page.evaluate(() => {
+    STATE.audioCtx = STATE.audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    STATE.masterBus = STATE.masterBus || STATE.audioCtx.createGain();
+
+    const calls = [];
+    const originalPlaySample = playSample;
+    window.playSample = (...args) => { calls.push(args); };
+
+    STATE.difficulty = 'sleep';
+    playConnectionPraiseRiff(2); // highest tier -- normally the loudest, most note-dense riff, so the strongest possible contrast
+    const sleepCalls = calls.slice();
+    calls.length = 0;
+
+    STATE.difficulty = 'normal';
+    playConnectionPraiseRiff(2);
+    const normalCalls = calls.slice();
+
+    window.playSample = originalPlaySample;
+
+    return {
+      sleepNoteCount: sleepCalls.length,
+      sleepGain: sleepCalls[0] ? sleepCalls[0][3] : null,
+      normalNoteCount: normalCalls.length,
+      normalGain: normalCalls[0] ? normalCalls[0][3] : null,
+    };
+  });
+
+  expect(result.sleepNoteCount).toBe(1);
+  expect(result.sleepGain).not.toBeNull();
+  expect(result.sleepGain).toBeLessThan(0.2);
+  expect(result.normalNoteCount).toBeGreaterThan(1);
+  expect(result.normalGain).toBeGreaterThan(result.sleepGain);
+  expect(errors).toEqual([]);
+});
+
 test('the scene selector disables non-rotate options under Sleep mode that aren\'t sleep-safe, and re-enables them otherwise', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
