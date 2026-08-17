@@ -186,9 +186,19 @@ attribution legally required, credited anyway):
   player feedback (screenshot) called this out directly: bare crowns
   with nothing under them, sitting at the water line, read as trees
   floating in the air over the water. `drawBeachPalm` now draws a
-  simple tapered procedural trunk from the crown down to the sand (this
-  cutout is crown-only, no trunk of its own in frame) and anchors the
-  whole thing at `sandY`, not `horizonY`.
+  procedural trunk from the crown down to the sand (this cutout is
+  crown-only, no trunk of its own in frame) and anchors the whole thing
+  at `sandY`, not `horizonY`. Two further rounds of player feedback
+  (screenshots) tuned this cutout and its trunk further: the trees were
+  crowding out the dots and the score/wave text at their original size
+  (`palm.sizeFrac`, `palmOverhang.sizeFrac`, and `cruiseShip.sizeFrac`
+  are all shrunk considerably from their first-shipped values), and the
+  trunk itself -- originally one flat solid-color straight-sided
+  triangle -- read as an obviously fake cardboard cutout next to the
+  photographic crown above it. It's now a cross-trunk gradient
+  (shadow/mid/highlight, faking rounded bark catching light unevenly),
+  a slight per-tree organic lean instead of a ruler-straight taper, and
+  a few faint diagonal bark-ring notches for texture.
 - `dolphin.webp` — cropped from "View of a Dolphin Jumping above the
   Water Surface," via
   [Pexels](https://www.pexels.com/photo/view-of-a-dolphin-jumping-above-the-water-surface-17334473/).

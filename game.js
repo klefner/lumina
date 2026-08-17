@@ -9388,7 +9388,15 @@ const BEACH_CONFIG = {
   SAND_HEIGHT_FRAC: 0.07,
   SAND_COLOR: { day: '#e3c07f', night: '#4d4330' },
   BOAT_COLOR: { day: '#16324a', night: '#050a14' },
-  PALM_TRUNK_COLOR: { day: '#6b4a2f', night: '#1c130c' },
+  // Three shades per variant (shadow/mid/highlight), not one flat color --
+  // a single solid fill read as an obviously fake cardboard-cutout trunk
+  // next to the photographic crown above it (player report, screenshot).
+  // A cross-trunk gradient between these three fakes the rounded,
+  // cylindrical look of real bark catching light unevenly.
+  PALM_TRUNK_COLOR: {
+    day: { shadow: '#4a3218', mid: '#6b4a2f', highlight: '#8a6440' },
+    night: { shadow: '#0d0904', mid: '#1c130c', highlight: '#2e2013' },
+  },
   PALM_SHORE_COUNT: 2,
   DOLPHIN_COUNT: 2,
   // Not every wave -- a cruise ship crossing the horizon should read as a
@@ -9468,11 +9476,21 @@ function generateBeachScene(previousScene) {
   // drawBeachScene) -- planting each palm in the photo's own visible
   // foreground sand near the bottom of the screen, NOT at the horizon
   // (player report, screenshot: cutouts anchored bare at the horizon
-  // read as trees floating in the air, over the water).
+  // read as trees floating in the air, over the water). Sized well down
+  // from an earlier version (player report, screenshot: full-height
+  // trees were crowding out the dots and the score/wave text) -- these
+  // read as shoreline dressing along the bottom edge, not a canopy
+  // covering the whole playfield. trunkBendFrac gives the trunk a slight
+  // organic lean instead of a ruler-straight line (see drawBeachPalm).
   const palms = [];
   for (let i = 0; i < BEACH_CONFIG.PALM_SHORE_COUNT; i++) {
-    const sizeFrac = 0.16 + Math.random() * 0.08;
-    palms.push({ xFrac: 0.05 + Math.random() * 0.9, sizeFrac, trunkHeightFrac: sizeFrac * (0.9 + Math.random() * 0.5) });
+    const sizeFrac = 0.09 + Math.random() * 0.045;
+    palms.push({
+      xFrac: 0.05 + Math.random() * 0.9,
+      sizeFrac,
+      trunkHeightFrac: sizeFrac * (0.8 + Math.random() * 0.4),
+      trunkBendFrac: (Math.random() - 0.5) * 0.3,
+    });
   }
 
   // Dolphins leaping near the water's surface, wrapping across the
@@ -9495,7 +9513,10 @@ function generateBeachScene(previousScene) {
     xFrac: Math.random(),
     direction: Math.random() < 0.5 ? 1 : -1,
     speed: 0.00003 + Math.random() * 0.00002,
-    sizeFrac: 0.14 + Math.random() * 0.06,
+    // A ship this far out at sea should read as small on the horizon, not
+    // loom close to shore (player report, screenshot) -- shrunk from an
+    // earlier version sized closer to the shore-side cruise ship.
+    sizeFrac: 0.05 + Math.random() * 0.025,
   } : null;
 
   return {
@@ -9512,7 +9533,11 @@ function generateBeachScene(previousScene) {
     // drawBeachOverhang's own comment on why this cutout anchors from a
     // corner instead of the horizon). Rerolled fresh every wave, same as
     // every other decorative detail here.
-    palmOverhang: { corner: Math.random() < 0.5 ? 'left' : 'right', sizeFrac: 0.55 + Math.random() * 0.15 },
+    // Shrunk from an earlier version (player report, screenshot: it filled
+    // most of the upper half of the screen and sat right over the dots) --
+    // still a recognizable corner accent at this size, not the dominant
+    // element in frame.
+    palmOverhang: { corner: Math.random() < 0.5 ? 'left' : 'right', sizeFrac: 0.28 + Math.random() * 0.08 },
     celestialXFrac,
     celestialYFrac: 0.08 + Math.random() * 0.12,
     celestialRadiusFrac: 0.045 + Math.random() * 0.02,
@@ -9615,15 +9640,47 @@ function drawBeachCutout(source, xCenter, groundY, targetHeight, direction, nigh
 function drawBeachPalm(palm, xCenter, groundY, canvasH, nightTint) {
   const trunkHeight = palm.trunkHeightFrac * canvasH;
   const trunkBaseWidth = trunkHeight * 0.1;
-  ctx.fillStyle = BEACH_CONFIG.PALM_TRUNK_COLOR[nightTint ? 'night' : 'day'];
+  // A slight organic lean instead of a ruler-straight taper, plus a
+  // cross-trunk gradient (shadow/mid/highlight) to fake rounded bark
+  // catching light unevenly -- a single flat-color straight triangle
+  // read as an obviously fake cardboard cutout next to the photographic
+  // crown above it (player report, screenshot).
+  const bend = palm.trunkBendFrac * trunkHeight;
+  const topX = xCenter + bend;
+  const topY = groundY - trunkHeight;
+  const midX = xCenter + bend * 0.4;
+  const midY = groundY - trunkHeight * 0.5;
+  const colors = BEACH_CONFIG.PALM_TRUNK_COLOR[nightTint ? 'night' : 'day'];
+
+  const grad = ctx.createLinearGradient(xCenter - trunkBaseWidth / 2, 0, xCenter + trunkBaseWidth / 2, 0);
+  grad.addColorStop(0, colors.shadow);
+  grad.addColorStop(0.5, colors.mid);
+  grad.addColorStop(1, colors.highlight);
+  ctx.fillStyle = grad;
   ctx.beginPath();
   ctx.moveTo(xCenter - trunkBaseWidth / 2, groundY);
-  ctx.lineTo(xCenter + trunkBaseWidth / 2, groundY);
-  ctx.lineTo(xCenter + trunkBaseWidth * 0.15, groundY - trunkHeight);
-  ctx.lineTo(xCenter - trunkBaseWidth * 0.15, groundY - trunkHeight);
+  ctx.quadraticCurveTo(midX - trunkBaseWidth * 0.25, midY, topX - trunkBaseWidth * 0.15, topY);
+  ctx.lineTo(topX + trunkBaseWidth * 0.15, topY);
+  ctx.quadraticCurveTo(midX + trunkBaseWidth * 0.25, midY, xCenter + trunkBaseWidth / 2, groundY);
   ctx.closePath();
   ctx.fill();
-  drawBeachCutout('palm-shore-crown', xCenter, groundY - trunkHeight, palm.sizeFrac * canvasH, 1, nightTint);
+
+  // A few faint diagonal bark-ring notches up the trunk for texture.
+  ctx.strokeStyle = nightTint ? 'rgba(0, 0, 0, 0.4)' : 'rgba(0, 0, 0, 0.25)';
+  ctx.lineWidth = Math.max(1, trunkBaseWidth * 0.12);
+  const ringCount = 5;
+  for (let i = 1; i <= ringCount; i++) {
+    const ringT = i / (ringCount + 1);
+    const ringX = xCenter + bend * ringT * ringT;
+    const ringY = groundY - trunkHeight * ringT;
+    const ringWidth = trunkBaseWidth * (1 - ringT * 0.7) * 0.7;
+    ctx.beginPath();
+    ctx.moveTo(ringX - ringWidth / 2, ringY);
+    ctx.lineTo(ringX + ringWidth / 2, ringY - ringWidth * 0.3);
+    ctx.stroke();
+  }
+
+  drawBeachCutout('palm-shore-crown', topX, topY, palm.sizeFrac * canvasH, 1, nightTint);
 }
 
 // The overhanging corner frond -- anchored from a TOP corner of the
