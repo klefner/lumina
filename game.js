@@ -9130,7 +9130,12 @@ function drawStars(rewardOnly = false) {
 // overlay, not tied to a specific point the photo shows.
 const FOREST_CONFIG = {
   image: 'art/forest-night.jpg',
-  PAN_CYCLE_FRAMES: 2700,
+  // Player report: the pan/zoom read as moving too fast. Doubled from
+  // the original 2700 (45s per full there-and-back cycle at ~60fps) to
+  // 5400 (90s) -- background motion, not something that should ever
+  // compete for attention with the dots/lines in front of it (see
+  // Beach's own identical fix, PR #99).
+  PAN_CYCLE_FRAMES: 5400,
   ZOOM_MIN: 1.05,
   ZOOM_MAX: 1.18,
 };
@@ -11508,8 +11513,11 @@ const SAFARI_CONFIG = {
   images: { day: 'art/safari-day.jpg', night: 'art/safari-night.jpg' },
   // One full slow pan/zoom cycle, in frames at the game's ~60fps loop --
   // long and gentle on purpose, background motion, not something that
-  // competes for attention with the dots/lines in front of it.
-  PAN_CYCLE_FRAMES: 2700,
+  // competes for attention with the dots/lines in front of it. Doubled
+  // from the original 2700 (45s per full there-and-back cycle) to 5400
+  // (90s) -- player report, the pan/zoom read as moving too fast (see
+  // Beach's own identical fix, PR #99).
+  PAN_CYCLE_FRAMES: 5400,
   ZOOM_MIN: 1.06,
   ZOOM_MAX: 1.22,
   // Where the grass/horizon line actually sits in each SOURCE photo, as a
