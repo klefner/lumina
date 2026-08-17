@@ -9066,8 +9066,18 @@ function updateStars() {
   }
 }
 
-function drawStars() {
+// rewardOnly skips the plain ambient/reveal starfield (undefined pairId)
+// and draws only each connection's own halo (spawnStarsAroundDots, tagged
+// with the pair's pairId) -- for a scene whose background photo already
+// has its own real stars (Forest), so the ambient layer would just be
+// visual noise on top of it, but the connection-reward halo is still
+// live gameplay feedback (resetPairConnections relies on it existing)
+// that has to render regardless (review catch, PR #97 -- drawForestScene
+// dropping the drawStars() call entirely for that reason made every
+// connection halo invisible in Forest too, not just the ambient stars).
+function drawStars(rewardOnly = false) {
   for (const s of STATE.stars) {
+    if (rewardOnly && s.pairId === undefined) continue;
     const twinkle = s.twinkling ? 0.7 + 0.3 * Math.sin(s.twinklePhase) : 1;
     ctx.beginPath();
     ctx.fillStyle = `rgba(255,255,255,${(s.alpha * twinkle).toFixed(3)})`;
@@ -9087,13 +9097,18 @@ function drawStars() {
 // canvas art, same stylistic departure Safari made first (player
 // request) -- chosen specifically for having its own real starfield
 // already in frame, so this deliberately does NOT also layer the plain
-// Space starfield (STATE.stars/drawStars) on top the way the connection-
-// reward sparkle (spawnStarsAroundDots) still does elsewhere; two
+// ambient Space starfield (STATE.stars' untagged entries) on top; two
 // different star systems stacked on the same sky would just look like
-// visual noise. The photo's own dense treeline means no separate
-// tree-cutout library is needed here the way Safari's single-tree photo
-// needed one -- unlike Safari, this is also always night, so there's no
-// day/night variant to pick between.
+// visual noise. It DOES still render each connection's own reward halo
+// (spawnStarsAroundDots' pairId-tagged stars, via drawStars(true)) --
+// that's live gameplay feedback for a still-connected pair, not
+// decoration, and has to keep working regardless of scene (review catch,
+// PR #97 -- an earlier version dropped drawStars() entirely and made
+// every connection halo invisible in Forest along with the ambient
+// stars). The photo's own dense treeline means no separate tree-cutout
+// library is needed here the way Safari's single-tree photo needed one
+// -- unlike Safari, this is also always night, so there's no day/night
+// variant to pick between.
 //
 // Fireflies/moon are stored as fractions of canvas.width/height, not
 // absolute pixels, precisely so a mid-wave resize needs no top-up pass
@@ -9248,6 +9263,7 @@ function drawForestScene() {
   ctx.drawImage(img, -panX, -panY, drawW, drawH);
 
   drawNightMoon(scene.moonXFrac, scene.moonYFrac, scene.moonRadiusFrac);
+  drawStars(true); // reward-only -- see this section's header comment
 
   for (const f of scene.fireflies) {
     const drift = t * f.driftSpeed + f.phase;
