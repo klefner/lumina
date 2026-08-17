@@ -4644,12 +4644,13 @@ test('the postcard crop follows an off-center cluster of dots instead of the scr
     const crop = computePostcardCropRect();
     const allDotsFramed = STATE.dots.every(dot => {
       const p = worldToScreen(dot.x, dot.y);
-      return p.x >= crop.x && p.x <= crop.x + crop.size && p.y >= crop.y && p.y <= crop.y + crop.size;
+      return p.x >= crop.x && p.x <= crop.x + crop.width && p.y >= crop.y && p.y <= crop.y + crop.height;
     });
 
     return {
       scale: STATE.camera.scale,
-      cropSize: crop.size,
+      cropWidth: crop.width,
+      cropHeight: crop.height,
       fixedFractionSize,
       allDotsFramed,
     };
@@ -4657,7 +4658,68 @@ test('the postcard crop follows an off-center cluster of dots instead of the scr
 
   expect(result.scale).toBeLessThan(1); // confirms the camera really is zoomed out for this wave
   expect(result.allDotsFramed).toBe(true);
-  expect(result.cropSize).toBeLessThan(result.fixedFractionSize);
+  expect(result.cropWidth).toBeLessThan(result.fixedFractionSize);
+  expect(result.cropHeight).toBeLessThan(result.fixedFractionSize);
+  expect(errors).toEqual([]);
+});
+
+// Player report, attached screenshot: a diagonal line cut off at the top
+// edge of the postcard -- some dots/lines the player actually saw on
+// screen were missing from the celebratory photo. Root cause:
+// computePostcardCropRect used to force a SQUARE crop sized to
+// `Math.min(canvas.width, canvas.height)` at most (there's nothing to
+// zoom OUT for, the old reasoning went), but a board whose content spans
+// more than the canvas's shorter dimension along its LONGER axis (e.g. a
+// tall diagonal line on a portrait viewport, where width is the shorter
+// side) needs its crop to grow past that shorter side along that axis to
+// keep every on-screen dot framed -- the old square clamp shrank the
+// whole crop back down to the shorter side on BOTH axes and cropped
+// genuinely visible content out along the longer one. Forces exactly
+// that shape (narrow horizontally, spanning nearly the full canvas
+// vertically) and confirms every dot stays framed, with the crop's
+// height genuinely allowed past the shorter (width) dimension -- not
+// forced square, and not clipped by drawImage either (see
+// buildWavePostcard's letterboxing of this rect into its square photo
+// area, which is what makes going non-square actually safe to draw).
+test('the postcard crop is not forced square, so a board taller/wider than the canvas\'s shorter side still shows every dot', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const shorterDimension = Math.min(canvas.width, canvas.height);
+    // A narrow diagonal spanning almost the whole canvas along its LONGER
+    // axis -- on this suite's portrait viewport that's height, so this
+    // reproduces the "diagonal line cut off at the top" report directly.
+    const top = screenToWorld(canvas.width / 2 - 20, 20);
+    const bottom = screenToWorld(canvas.width / 2 + 20, canvas.height - 20);
+    STATE.dots = [
+      { x: top.x, y: top.y, pairId: 0 },
+      { x: bottom.x, y: bottom.y, pairId: 0 },
+    ];
+
+    const crop = computePostcardCropRect();
+    const allDotsFramed = STATE.dots.every(dot => {
+      const p = worldToScreen(dot.x, dot.y);
+      return p.x >= crop.x && p.x <= crop.x + crop.width && p.y >= crop.y && p.y <= crop.y + crop.height;
+    });
+
+    return {
+      shorterDimension,
+      canvasHeight: canvas.height,
+      cropWidth: crop.width,
+      cropHeight: crop.height,
+      allDotsFramed,
+    };
+  });
+
+  expect(result.allDotsFramed).toBe(true);
+  // The old bug: crop.height used to be clamped down to shorterDimension
+  // (the canvas width, on this portrait viewport) even though the
+  // content's own vertical spread needed far more room than that.
+  expect(result.cropHeight).toBeGreaterThan(result.shorterDimension);
+  // Still a real, drawable rect -- never bigger than the canvas itself.
+  expect(result.cropHeight).toBeLessThanOrEqual(result.canvasHeight);
   expect(errors).toEqual([]);
 });
 
@@ -4782,12 +4844,15 @@ test("Halloween's music is always the scoped eerie family, never the generic poo
       usesOnlySourcedInstruments: eerie.seeds.every(seed =>
         seed.roles.every(r => SAMPLE_MANIFEST[r.instrument] !== undefined)
       ),
-      // Matches the 'lullaby' family's own established precedent: flute
-      // and cello have a documented history of reading as "a horn" when
-      // sustained continuously in a pad/drone role (see that family's own
-      // comment) -- eerie keeps them out of both.
-      keepsFluteCelloOutOfSustainedRoles: eerie.seeds.every(seed =>
-        seed.roles.every(r => !(['pad', 'drone'].includes(r.kind) && ['flute', 'cello'].includes(r.instrument)))
+      // Matches the 'lullaby' family's own established precedent, taken
+      // all the way this time: flute/cello are continuously-sustained
+      // real recordings, so this engine's algorithmically-placed notes
+      // expose every awkward interval nakedly on them, in any role --
+      // an earlier version of this family only kept them out of
+      // pad/drone (player report, 2026-08-17: "sounds like a kid
+      // practicing violin" from cello/flute still in melody/accent).
+      keepsFluteCelloOutEntirely: eerie.seeds.every(seed =>
+        seed.roles.every(r => !['flute', 'cello'].includes(r.instrument))
       ),
     };
   });
@@ -4797,7 +4862,7 @@ test("Halloween's music is always the scoped eerie family, never the generic poo
   expect(result.seedCount).toBeGreaterThanOrEqual(3);
   expect(result.allHarmonicMinor).toBe(true);
   expect(result.usesOnlySourcedInstruments).toBe(true);
-  expect(result.keepsFluteCelloOutOfSustainedRoles).toBe(true);
+  expect(result.keepsFluteCelloOutEntirely).toBe(true);
   expect(errors).toEqual([]);
 });
 

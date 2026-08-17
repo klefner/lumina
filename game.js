@@ -2014,13 +2014,20 @@ const GENRE_FAMILIES = [
   // same triad/arpeggio/pad machinery every other family already uses
   // into minor i/iv chords against a major V, the classic "spooky
   // cadence" interval used across horror and Halloween-themed music, via
-  // the augmented 2nd it creates between scale degrees 6 and 7. Kept to
-  // the same real-recording instrument pool 'spa' uses (piano/flute/
-  // cello/marimba/vibraphone) rather than anything synthesized, and keeps
-  // flute/cello out of pad/drone roles -- both have a documented history
-  // of reading as "a horn" when sustained continuously there (see
-  // 'lullaby' family's own comment) -- in favor of marimba/vibraphone/
-  // piano, already proven safe in those roles.
+  // the augmented 2nd it creates between scale degrees 6 and 7.
+  //
+  // Originally kept to the same real-recording pool 'spa' uses (piano/
+  // flute/cello/marimba/vibraphone), with flute/cello only kept OUT of
+  // pad/drone roles -- a containment fix, the same shape 'lullaby'
+  // originally shipped with. Player report (2026-08-17, "sounds like a
+  // kid practicing violin... doesn't sound eerie"): containment wasn't
+  // enough here either, for exactly the reason 'lullaby's own comment
+  // already documents -- flute/cello are continuously-sustained real
+  // recordings, so this engine's algorithmically-placed melody/accent
+  // notes expose every awkward interval nakedly, in a way a decay/mallet
+  // instrument (piano/marimba/vibraphone) or plucked bass (doublebass)
+  // just absorbs. Dropped flute/cello entirely, same fix 'lullaby'
+  // already proved out.
   {
     name: 'eerie',
     sceneOnly: 'halloween',
@@ -2032,12 +2039,12 @@ const GENRE_FAMILIES = [
         scaleIntervals: [0, 2, 3, 5, 7, 8, 11], // harmonic minor
         chordProgression: [0, 3, 4, 0],          // i - iv - V - i
         roles: [
-          { kind: 'melody',   instrument: 'flute' },
-          { kind: 'arpeggio', instrument: 'piano' },
+          { kind: 'melody',   instrument: 'piano' },
+          { kind: 'arpeggio', instrument: 'marimba' },
           { kind: 'pad',      instrument: 'vibraphone' },
-          { kind: 'drone',    instrument: 'marimba' },
+          { kind: 'drone',    instrument: 'doublebass' },
           { kind: 'accent',   instrument: 'marimba' },
-          { kind: 'accent',   instrument: 'cello' },
+          { kind: 'accent',   instrument: 'vibraphone' },
         ],
       },
       {
@@ -2045,11 +2052,11 @@ const GENRE_FAMILIES = [
         scaleIntervals: [0, 2, 3, 5, 7, 8, 11],
         chordProgression: [0, 5, 3, 4],          // i - VI - iv - V
         roles: [
-          { kind: 'melody',   instrument: 'cello' },
+          { kind: 'melody',   instrument: 'vibraphone' },
           { kind: 'arpeggio', instrument: 'marimba' },
           { kind: 'pad',      instrument: 'piano' },
-          { kind: 'drone',    instrument: 'vibraphone' },
-          { kind: 'accent',   instrument: 'flute' },
+          { kind: 'drone',    instrument: 'doublebass' },
+          { kind: 'accent',   instrument: 'piano' },
           { kind: 'accent',   instrument: 'marimba' },
         ],
       },
@@ -2058,12 +2065,12 @@ const GENRE_FAMILIES = [
         scaleIntervals: [0, 2, 3, 5, 7, 8, 11],
         chordProgression: [0, 4, 5, 3],          // i - V - VI - iv
         roles: [
-          { kind: 'melody',   instrument: 'flute' },
+          { kind: 'melody',   instrument: 'piano' },
           { kind: 'arpeggio', instrument: 'vibraphone' },
           { kind: 'pad',      instrument: 'marimba' },
-          { kind: 'drone',    instrument: 'piano' },
-          { kind: 'accent',   instrument: 'cello' },
-          { kind: 'accent',   instrument: 'piano' },
+          { kind: 'drone',    instrument: 'doublebass' },
+          { kind: 'accent',   instrument: 'marimba' },
+          { kind: 'accent',   instrument: 'vibraphone' },
         ],
       },
     ],
@@ -3866,27 +3873,34 @@ const SCENE_AMBIENT_CONFIG = {
       chimes: { file: 'christmas-chimes.mp3', gain: 0.45, isEvent: true, minGapSec: 30, maxGapSec: 65 },
     },
   },
-  // The composed African-inspired track is the scene's floor (same
-  // reasoning as every other scene's first-revealed layer), with the bus
-  // engine hum right behind it. wind and insects (both real field
-  // recordings -- see sounds/CREDITS.md) are the two continuous "nature"
-  // beds every other scene's ambience already leans on (forest's wind/
-  // crickets, beach's waves/wind), which this scene didn't have at
-  // first -- song and engine cover the "riding in a vehicle" half of the
-  // brief, but neither one is actually a savanna field recording.
-  // wildlife is the one occasional event layer: a real elephant trumpet
-  // call (also replaces an earlier synthesized placeholder -- see git
-  // history), matching the real-recording pattern player feedback
-  // established for forest/beach's own event layers (owl, whale) over
-  // synthesizing something built to only approximate them.
+  // wind and insects (both real field recordings -- see
+  // sounds/CREDITS.md) are the two continuous "nature" beds every other
+  // scene's ambience already leans on (forest's wind/crickets, beach's
+  // waves/wind), with the bus engine hum covering the "riding in a
+  // vehicle" half of the original brief. wildlife is the one occasional
+  // event layer: a real elephant trumpet call (also replaces an earlier
+  // synthesized placeholder -- see git history), matching the
+  // real-recording pattern player feedback established for forest/
+  // beach's own event layers (owl, whale) over synthesizing something
+  // built to only approximate them.
+  //
+  // This scene originally also had a 'song' layer -- a composed
+  // African-inspired track playing as passive ambience. Removed (player
+  // request, 2026-08-17): the whole point of the scene-locked 'savanna'
+  // genre family (see GENRE_FAMILIES) is that the African-instrument
+  // music comes from the PLAYER's own dot-connecting, not a canned track
+  // playing regardless of what they do -- a passive song undercut that
+  // and duplicated the same job. wildlife's own gap range was also
+  // tightened way down (25-55s to 10-24s, player: "I need to hear
+  // African animal sounds way often in the distance") now that it isn't
+  // competing with a whole separate music track for attention.
   safari: {
-    order: ['song', 'wind', 'insects', 'engine', 'wildlife'],
+    order: ['wind', 'insects', 'engine', 'wildlife'],
     sounds: {
-      song: { file: 'safari-song.mp3', gain: 0.5, isEvent: false },
       wind: { file: 'safari-wind.mp3', gain: 0.42, isEvent: false },
       insects: { file: 'safari-insects.mp3', gain: 0.4, isEvent: false },
       engine: { file: 'safari-engine.mp3', gain: 0.28, isEvent: false },
-      wildlife: { file: 'safari-wildlife.mp3', gain: 0.55, isEvent: true, minGapSec: 25, maxGapSec: 55 },
+      wildlife: { file: 'safari-wildlife.mp3', gain: 0.55, isEvent: true, minGapSec: 10, maxGapSec: 24 },
     },
   },
 };
@@ -9130,7 +9144,12 @@ function drawStars(rewardOnly = false) {
 // overlay, not tied to a specific point the photo shows.
 const FOREST_CONFIG = {
   image: 'art/forest-night.jpg',
-  PAN_CYCLE_FRAMES: 2700,
+  // Player report: the pan/zoom read as moving too fast. Doubled from
+  // the original 2700 (45s per full there-and-back cycle at ~60fps) to
+  // 5400 (90s) -- background motion, not something that should ever
+  // compete for attention with the dots/lines in front of it (see
+  // Beach's own identical fix, PR #99).
+  PAN_CYCLE_FRAMES: 5400,
   ZOOM_MIN: 1.05,
   ZOOM_MAX: 1.18,
 };
@@ -11548,8 +11567,11 @@ const SAFARI_CONFIG = {
   images: { day: 'art/safari-day.jpg', night: 'art/safari-night.jpg' },
   // One full slow pan/zoom cycle, in frames at the game's ~60fps loop --
   // long and gentle on purpose, background motion, not something that
-  // competes for attention with the dots/lines in front of it.
-  PAN_CYCLE_FRAMES: 2700,
+  // competes for attention with the dots/lines in front of it. Doubled
+  // from the original 2700 (45s per full there-and-back cycle) to 5400
+  // (90s) -- player report, the pan/zoom read as moving too fast (see
+  // Beach's own identical fix, PR #99).
+  PAN_CYCLE_FRAMES: 5400,
   ZOOM_MIN: 1.06,
   ZOOM_MAX: 1.22,
   // Where the grass/horizon line actually sits in each SOURCE photo, as a
@@ -12459,11 +12481,26 @@ const POSTCARD_CONFIG = {
 // (player report, attached screenshot: "the screenshot is awful"). Falls
 // back to the old fixed centered crop when there's no board to measure
 // (e.g. buildWavePostcard called from the title screen in tests).
+//
+// Returns a rect sized to the content's own WIDTH and HEIGHT independently
+// (not forced square) -- an early version forced a square sized to
+// max(width, height), which silently cropped out on-screen dots/lines
+// whenever it was then clamped back down to the canvas's shorter
+// dimension (player report, attached screenshot: a diagonal line cut off
+// at the top), and simply removing that clamp instead asked drawImage for
+// a source rect bigger than the canvas actually has pixels for, which
+// clips the destination proportionally and squashes the board into one
+// corner of an otherwise-black photo (Codex review catch). Since the
+// canvas itself is never square, a square crop and "never clip a dot"
+// are incompatible whenever the content's own aspect ratio isn't square
+// -- buildWavePostcard letterboxes this rect into its square photo area
+// instead, so the content is always shown whole, un-squashed, just not
+// always edge-to-edge.
 function computePostcardCropRect() {
   const dots = STATE.dots;
   if (!dots || !dots.length) {
     const size = Math.min(canvas.width, canvas.height) * POSTCARD_CONFIG.CROP_FRACTION;
-    return { x: (canvas.width - size) / 2, y: (canvas.height - size) / 2, size };
+    return { x: (canvas.width - size) / 2, y: (canvas.height - size) / 2, width: size, height: size };
   }
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -12474,21 +12511,22 @@ function computePostcardCropRect() {
   }
   const pad = POSTCARD_CONFIG.CROP_PADDING_PX;
   const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-  const contentSize = Math.max(maxX - minX, maxY - minY) + pad * 2;
 
-  // Square crop, sized to the content but never larger than the shorter
-  // canvas dimension (there's nothing to zoom OUT for) and never smaller
-  // than CROP_MIN_SIZE_PX (a single close-together pair shouldn't crop in
-  // so tight it reads as an abstract close-up instead of a game board).
-  const maxSize = Math.min(canvas.width, canvas.height);
-  const size = Math.min(maxSize, Math.max(POSTCARD_CONFIG.CROP_MIN_SIZE_PX, contentSize));
+  // Never smaller than CROP_MIN_SIZE_PX (a single close-together pair
+  // shouldn't crop in so tight it reads as an abstract close-up instead
+  // of a game board), and never bigger than the canvas itself -- there's
+  // no pixels beyond it to crop. The dots themselves are always on-screen
+  // (the camera framed them to get here), so this clamp only ever eats
+  // into the padding around them, never the dots.
+  let width = Math.min(canvas.width, Math.max(POSTCARD_CONFIG.CROP_MIN_SIZE_PX, maxX - minX + pad * 2));
+  let height = Math.min(canvas.height, Math.max(POSTCARD_CONFIG.CROP_MIN_SIZE_PX, maxY - minY + pad * 2));
 
   // Centered on the content, then nudged back on-canvas if that would
   // spill past an edge (e.g. a group hugging one side of a wide world).
-  let x = cx - size / 2, y = cy - size / 2;
-  x = Math.max(0, Math.min(canvas.width - size, x));
-  y = Math.max(0, Math.min(canvas.height - size, y));
-  return { x, y, size };
+  let x = cx - width / 2, y = cy - height / 2;
+  x = Math.max(0, Math.min(canvas.width - width, x));
+  y = Math.max(0, Math.min(canvas.height - height, y));
+  return { x, y, width, height };
 }
 
 // Composites a small SUBSET of the just-completed board, framed around the
@@ -12567,7 +12605,17 @@ function buildWavePostcard() {
   const crop = computePostcardCropRect();
   pctx.fillStyle = '#000000';
   pctx.fillRect(cardX + BORDER, cardY + BORDER, photoSize, photoSize);
-  pctx.drawImage(canvas, crop.x, crop.y, crop.size, crop.size, cardX + BORDER, cardY + BORDER, photoSize, photoSize);
+  // Letterboxed (uniform scale, centered) rather than stretched to fill
+  // the square photo area -- crop.width/height aren't forced equal (see
+  // computePostcardCropRect), so filling the square outright would
+  // squash the image non-uniformly on a wide or tall board. The black
+  // fill above already covers whatever margin this leaves on the
+  // shorter axis.
+  const photoScale = Math.min(photoSize / crop.width, photoSize / crop.height);
+  const destW = crop.width * photoScale, destH = crop.height * photoScale;
+  const destX = cardX + BORDER + (photoSize - destW) / 2;
+  const destY = cardY + BORDER + (photoSize - destH) / 2;
+  pctx.drawImage(canvas, crop.x, crop.y, crop.width, crop.height, destX, destY, destW, destH);
 
   const stripCenterX = cardX + cardW / 2;
   const stripTop = cardY + BORDER + photoSize;

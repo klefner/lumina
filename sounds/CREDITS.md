@@ -257,41 +257,23 @@ projects use for exactly this reason.
 
 ## Safari ambience (sounds/ambient/safari-*.mp3)
 
-An original composition, not a recording or a found track — the
-player's own brief explicitly asked for a "music-generation or
-composition brief," not a sourced song, for a contemporary
-African-inspired world-music cue evoking a bus ride leaving Disney's
-Animal Kingdom: moderate walking-pace tempo, soft hand percussion,
-kalimba/marimba-style melody, warm bass, no brass or synth leads.
+`safari-engine.mp3` — a continuous, very quiet bus engine/road hum (a
+few closely-spaced low sine tones with slow drift, plus low-passed
+noise for tire/road texture) — grounds the scene as "riding in a
+vehicle." Synthesized in Python (numpy + scipy), not in game.js — a
+one-time build step, same as the birthday balloon resynthesis earlier
+in this project's history, not something that needs to run again at
+play time.
 
-- `safari-song.mp3` — the main melodic bed. Built at 96 BPM (comfortably
-  inside the brief's 95-115 range) as an 8-bar loop in A minor
-  pentatonic, chosen specifically so 8 bars lands on exactly 20.0
-  seconds — no fractional-bar seam for the game's own loop crossfade
-  (`AMBIENT_VARIATION.CROSSFADE_SEC`) to cross. The melodic/harmonic
-  layers reuse this project's own real sampled instruments rather than
-  synthesizing timbre from scratch: `marimba` (the ostinato — the
-  brief's own "kalimba or marimba-like wooden mallet tones"),
-  `doublebass` (root-note bass, one warm note per bar), `flute` (one
-  short, soft phrase around bar 5 — "occasional melodic color"), and
-  `cello` (very quiet sustained notes underneath, standing in for the
-  brief's "soft sustained pad"). The percussion has no equivalent
-  sample in this project, so it's synthesized: a low djembe-like tone on
-  a steady 4/4 pulse, a shekere-like filtered-noise shaker on a triplet
-  subdivision underneath it (the brief's "gentle polyrhythmic feel"),
-  and an occasional soft frame-drum tap. Mixed with a mild low-pass
-  roll-off and a short, soft algorithmic reverb (a handful of decaying
-  taps, not a real impulse response) for the brief's own "playing
-  through bus speakers" description.
-- `safari-engine.mp3` — a continuous, very quiet bus engine/road hum
-  (a few closely-spaced low sine tones with slow drift, plus low-passed
-  noise for tire/road texture) — grounds the scene as "riding in a
-  vehicle" without competing with the song.
-
-`safari-song.mp3` and `safari-engine.mp3` synthesized/composed in
-Python (numpy + scipy), not in game.js — a one-time build step, same as
-the birthday balloon resynthesis earlier in this project's history, not
-something that needs to run again at play time.
+`safari-song.mp3` — an original African-inspired melodic bed that used
+to play here as passive background ambience — was removed (player
+request, 2026-08-17): the scene-locked 'savanna' gameplay music family
+(see GENRE_FAMILIES in game.js) is meant to be the *only* source of
+African-instrument music in this scene, generated live from the
+player's own dot-connecting rather than a canned track playing
+underneath regardless of what they do. Keeping both undercut the
+gameplay music's purpose and doubled up on the same job. See git
+history for this file's own build notes if it's ever needed again.
 
 ### Real field recordings (player request, 2026-08-16)
 
