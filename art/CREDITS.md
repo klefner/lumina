@@ -29,3 +29,52 @@ anyway):
 In-game, `drawSafariScene()` (game.js) applies a slow Ken Burns-style
 pan/zoom and a radial vignette to each photo at render time — neither
 source file is pre-cropped or pre-vignetted.
+
+## Safari foreground cutouts (art/safari-cutouts/*.webp)
+
+Player request (2026-08-17): real photos of Safari trees and animals,
+randomly placed/moving over the background photo so the scene looks
+different every playthrough, rather than the same two fixed
+hand-drawn giraffes every time. Each file is a real photograph with its
+background removed (see below), not generated or procedural — sourced
+from Pexels (free to use for commercial purposes, no attribution legally
+required, credited anyway):
+
+- `tree-acacia.webp` — cropped from "Lonely Acacia Tree on a Vast Desert
+  Landscape," by Timon Cornelissen, via
+  [Pexels](https://pexels.com/photo/lonely-acacia-tree-on-a-vast-desert-landscape-33231637/).
+- `tree-baobab.webp` — cropped from "Lonely Tree on a Field," by
+  Charmain Jansen van Rensburg, via
+  [Pexels](https://pexels.com/photo/lonely-tree-on-a-field-25130454/).
+- `animal-zebra.webp` — cropped from "Zebra Standing on the Road Through
+  the Savannah," by Charl Durand, via
+  [Pexels](https://pexels.com/photo/zebra-standing-on-the-road-through-the-savannah-17153292/).
+- `animal-giraffe.webp` — cropped from "A Giraffe Standing on the
+  Grass," by Taryn Elliott, via
+  [Pexels](https://pexels.com/photo/a-giraffe-standing-on-the-grass-5213956/).
+- `animal-elephant.webp` — cropped from "Majestic African Elephant in
+  the Savannah," by Mr Sketch, via
+  [Pexels](https://www.pexels.com/photo/majestic-african-elephant-in-the-savannah-38794678/).
+
+Background removal was done with `rembg` (the `isnet-general-use`
+model specifically — the default `u2net` model was tested first and
+crushed the acacia's fine leafy canopy to near-transparent, keeping
+only the bare branch skeleton; `isnet-general-use` preserved full
+canopy color and texture with a natural wispy edge). Each cutout was
+then tight-cropped to its own alpha bounding box (thresholded at alpha
+> 15 to reject stray near-zero-alpha noise pixels far from the actual
+subject, which otherwise inflated the crop and made the subject "float"
+above its intended ground line once composited) and re-encoded as
+lossy WebP (quality 82) — a straight PNG export of the same crops ran
+4-5x larger for no visible quality gain, since WebP handles soft
+photographic alpha edges far more efficiently than PNG's lossless
+palette/deflate coding.
+
+Source photo selection turned out to matter more than any processing
+step: photos with the subject's base/legs overlapping bushes or other
+clutter produced broken cutouts (an early giraffe pick lost both front
+legs to background shrubs) regardless of model or settings — only
+switching to a cleaner source photo fixed it. Two other candidate tree
+photos were rejected after cutout testing revealed they were tight
+crops of a single bare branch, not a full tree, despite reading as
+plausible from their thumbnails.
