@@ -114,7 +114,20 @@ hardcoded night-only. Rebuilt on Safari's own day/night architecture --
 two real photos, `STATE.beachVariant` persisting across a whole block
 the same way `STATE.safariVariant` does -- both showing genuine sand and
 a real horizon, sourced from Pexels (free to use for commercial
-purposes, no attribution legally required, credited anyway):
+purposes, no attribution legally required, credited anyway).
+
+`STATE.beachVariant` is only ever rolled once per fresh playthrough (see
+`generateBeachScene`, and `startGameFromTitle`/`handleRestartGame`
+resetting it to `null`), then persists for every Beach block the rest of
+that playthrough hits -- day or night, but never flip-flopping
+mid-session. Sleep mode always forces it to `'night'` (player request),
+same as every other sleep-safe scene here defaulting to its calmest,
+dimmest look. Both the title screen's scene picker and the in-game HUD
+label just say "Beach" (`SCENE_HUD_NAMES`/index.html's `<option>`) --
+not "Beach at Night", which was a leftover hardcoded label from before
+Beach had a day variant at all, and a real player-visible bug
+(screenshot): it read "Beach at Night" even during daylight-variant
+playthroughs.
 
 - `beach-day.jpg` — "Wave on Sea Shore," via
   [Pexels](https://www.pexels.com/photo/a-beach-with-waves-and-sand-21939389/).
@@ -136,13 +149,28 @@ purposes, no attribution legally required, credited anyway):
   astrophotography grain, and re-encoded (quality 74, ~243KB).
 
 `BEACH_CONFIG.HORIZON_FRAC` is a fixed `{ day, night }` pair, one value
-per photo, each measured directly from its own JPEG the same way as
-Safari's (the sharpest brightness-gradient transition down the image's
-own vertical center column): 0.413 for the day photo, 0.672 for the
-night one. Every ground-anchored element (palms, dolphins, the cruise
-ship, the boat) is anchored to this, mapped through the same
+per photo, measured directly from its own JPEG: 0.413 for the day photo,
+0.903 for the night one. Every horizon-anchored element (dolphins, the
+cruise ship, the whale, the boat, the wave lines/glitter path -- palms
+are anchored separately, at `sandY`, see the Beach foreground cutouts
+section below) is anchored to this, mapped through the same
 cover-fit/pan/zoom transform the photo itself uses, so they sit on the
 water/sand line the photo actually shows as the Ken Burns cycle pans.
+
+night's value was originally 0.672, measured the same way as Safari's
+(the sharpest brightness-gradient transition down the image's own
+vertical center column) -- wrong for this specific photo, and a real
+player-visible bug (screenshot): the cruise ship and dolphins were
+anchored high up in the middle of the starfield, nowhere near the sand
+visible at the bottom of the photo. beach-night.jpg is a Milky Way
+night-sky shot where individual bright stars along that one column
+produce a far bigger brightness jump than the actual (much subtler,
+dark-sky-to-dark-sand) horizon transition, so the single-column scan
+locked onto a star instead of the real horizon, which sits much lower
+in frame -- this photo is roughly 88% sky. Re-measured with a full-row
+brightness AVERAGE instead (smooths out single-pixel stars, since only
+the real horizon is a jump consistent across the whole row's width):
+0.903.
 
 `drawBeachScene`'s vertical pan (`panY`) is clamped to keep that mapped
 horizon within the middle 70% of the screen (Codex review catch, PR

@@ -239,8 +239,8 @@ test('#scene-progress-display names the current background and counts its waves,
     return { total, first, second, underSleep };
   });
 
-  expect(result.first).toBe(`Beach at Night 1 of ${result.total} waves`);
-  expect(result.second).toBe(`Beach at Night 2 of ${result.total} waves`);
+  expect(result.first).toBe(`Beach 1 of ${result.total} waves`);
+  expect(result.second).toBe(`Beach 2 of ${result.total} waves`);
   expect(result.underSleep).toBe('');
   expect(errors).toEqual([]);
 });
@@ -7145,6 +7145,49 @@ test('Beach horizon (and every horizon-anchored cutout) stays on-screen across t
 
   expect(result.ys.length).toBeGreaterThan(0);
   expect(result.ys.every((y) => y >= 0 && y <= result.h)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+// Player report, screenshot: the cruise ship and dolphins were anchored
+// high up in the middle of the starfield, nowhere near the sand visible
+// at the bottom of the night photo -- HORIZON_FRAC.night was originally
+// measured with a single-column brightness scan, which locked onto a
+// bright star instead of the real (much subtler) horizon transition, far
+// lower in frame. Re-measured at 0.903 with a full-row brightness
+// average instead (see CREDITS.md). This guards the corrected value
+// directly, since a plain on-screen-bounds check (the test above) can't
+// tell "near the real horizon" apart from "anywhere on screen".
+test('Beach night horizon is measured near the bottom of the photo (where the sand actually is), not in the starfield', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const frac = await page.evaluate(() => BEACH_CONFIG.HORIZON_FRAC.night);
+  expect(frac).toBeGreaterThan(0.85);
+  expect(errors).toEqual([]);
+});
+
+// Player request: Sleep mode should always be Beach's calmest, dimmest
+// look, same as every other sleep-safe scene here defaulting to night/
+// dim rather than a coin flip. Non-sleep difficulties keep the genuine
+// day/night randomization.
+test('Beach is always the night variant under Sleep mode, not a coin flip', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const variants = await page.evaluate(() => {
+    const seen = [];
+    for (let i = 0; i < 20; i++) {
+      STATE.difficulty = 'sleep';
+      STATE.beachVariant = null;
+      generateBeachScene();
+      seen.push(STATE.beachVariant);
+    }
+    return seen;
+  });
+
+  expect(variants.every((v) => v === 'night')).toBe(true);
   expect(errors).toEqual([]);
 });
 

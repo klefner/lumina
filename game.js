@@ -4221,9 +4221,16 @@ const SCENE_DISPLAY_NAMES = {
 // Full names matching the title screen's own scene-selector option text
 // (see index.html) -- used by #scene-progress-display below, which names
 // the actual scene being played, not the shorter toast-label wording
-// SCENE_DISPLAY_NAMES uses ("Beach at Night", not just "Beach").
+// SCENE_DISPLAY_NAMES uses ("Night Forest", not just "Forest" -- Forest
+// really is always-night, unlike Beach, which is NOT hardcoded to
+// 'Beach at Night' here despite the name similarity: Beach has its own
+// randomized day/night pick (STATE.beachVariant), so a fixed "at Night"
+// label would lie half the time. Player report, screenshot: it did
+// exactly that -- the HUD read "Beach at Night" even mid-daylight-variant
+// playthroughs, because this used to be a hardcoded string left over from
+// before Beach had a day variant at all.
 const SCENE_HUD_NAMES = {
-  space: 'Space', forest: 'Night Forest', beach: 'Beach at Night',
+  space: 'Space', forest: 'Night Forest', beach: 'Beach',
   birthday: 'Birthday Party', halloween: 'Halloween', christmas: 'Christmas', safari: 'Safari',
   aurora: 'Aurora Skies', reef: 'Coral Reef Glow', cavern: 'Crystal Cave',
 };
@@ -9378,13 +9385,26 @@ const BEACH_CONFIG = {
   ZOOM_MIN: 1.05,
   ZOOM_MAX: 1.18,
   // Where the water/sand line actually sits in each SOURCE photo, as a
-  // fraction of its own height -- measured directly from the JPEGs (a
-  // brightness-gradient scan down the vertical center column), same
-  // technique as SAFARI_CONFIG.HORIZON_FRAC. Used to place every
-  // ground-anchored cutout (palms, dolphins, the cruise ship, the boat)
-  // ON the actual water/sand line the photo shows, mapped through the
-  // same cover-fit/pan/zoom transform the background itself uses.
-  HORIZON_FRAC: { day: 0.413, night: 0.672 },
+  // fraction of its own height. Used to place every horizon-anchored
+  // cutout (dolphins, the cruise ship, the whale, the boat, the wave
+  // lines/glitter path) ON the actual water/sand line the photo shows,
+  // mapped through the same cover-fit/pan/zoom transform the background
+  // itself uses.
+  //
+  // night's value was originally measured with a single-column
+  // brightness-gradient scan (same technique as SAFARI_CONFIG.HORIZON_FRAC)
+  // -- fine for Safari's photos, but wrong here: beach-night.jpg is a
+  // Milky Way night-sky shot where individual bright stars along that one
+  // column produce a far bigger brightness jump than the actual (much
+  // subtler, dark-sky-to-dark-sand) horizon transition, so the scan
+  // locked onto a star at 0.672 instead. Player report, screenshot: the
+  // cruise ship and dolphins were anchored high up in the middle of the
+  // starfield, nowhere near the sand visible at the bottom of the photo.
+  // Re-measured properly with a full-row brightness AVERAGE (smooths out
+  // single-pixel stars, since only the real horizon is a jump consistent
+  // across the whole row width) -- the actual transition is at 0.903, not
+  // 0.672.
+  HORIZON_FRAC: { day: 0.413, night: 0.903 },
   SAND_HEIGHT_FRAC: 0.07,
   SAND_COLOR: { day: '#e3c07f', night: '#4d4330' },
   BOAT_COLOR: { day: '#16324a', night: '#050a14' },
@@ -9417,7 +9437,18 @@ for (const name of BEACH_CUTOUT_SOURCES) {
 
 function generateBeachScene(previousScene) {
   if (!STATE.beachVariant) {
-    STATE.beachVariant = Math.random() < 0.5 ? 'day' : 'night';
+    // Sleep mode is always night (player request) -- consistent with
+    // every other sleep-safe scene here defaulting to its calmest, dimmest
+    // look (Forest is always-night too, Space's starfield has no "day"
+    // variant at all). Otherwise day/night is a genuine coin flip, but
+    // only ONCE: this only runs when STATE.beachVariant is still unset,
+    // which happens exactly once per fresh playthrough (see
+    // startGameFromTitle/handleRestartGame resetting it to null) -- the
+    // picked variant then rides along in STATE.beachVariant (persisted
+    // across saves/reloads, see loadResumeState) for every Beach block
+    // that comes up for the rest of that playthrough, day or night but
+    // never flip-flopping mid-session.
+    STATE.beachVariant = STATE.difficulty === 'sleep' ? 'night' : (Math.random() < 0.5 ? 'day' : 'night');
   }
   // Staggers where each fresh block's pan cycle starts, same reasoning as
   // Safari's own phase -- not reset to 0, can already be anywhere from
