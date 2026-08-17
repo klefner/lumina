@@ -9436,19 +9436,30 @@ for (const name of BEACH_CUTOUT_SOURCES) {
 }
 
 function generateBeachScene(previousScene) {
-  if (!STATE.beachVariant) {
+  if (STATE.difficulty === 'sleep') {
     // Sleep mode is always night (player request) -- consistent with
     // every other sleep-safe scene here defaulting to its calmest, dimmest
     // look (Forest is always-night too, Space's starfield has no "day"
-    // variant at all). Otherwise day/night is a genuine coin flip, but
-    // only ONCE: this only runs when STATE.beachVariant is still unset,
-    // which happens exactly once per fresh playthrough (see
-    // startGameFromTitle/handleRestartGame resetting it to null) -- the
-    // picked variant then rides along in STATE.beachVariant (persisted
-    // across saves/reloads, see loadResumeState) for every Beach block
-    // that comes up for the rest of that playthrough, day or night but
-    // never flip-flopping mid-session.
-    STATE.beachVariant = STATE.difficulty === 'sleep' ? 'night' : (Math.random() < 0.5 ? 'day' : 'night');
+    // variant at all). Checked and enforced on EVERY call, not just when
+    // STATE.beachVariant is still unset -- a save written under a
+    // different difficulty can carry a 'day' STATE.beachVariant, and
+    // loading/resuming that save while Sleep is now selected (see
+    // loadResumeState/handleLoadGame) restores that 'day' value directly,
+    // bypassing a set-once check entirely (review catch, PR #103). Once
+    // forced here it simply stays 'night' even if the player leaves Sleep
+    // mode again mid-playthrough, same as any other variant staying fixed
+    // for the rest of a playthrough once picked.
+    STATE.beachVariant = 'night';
+  } else if (!STATE.beachVariant) {
+    // Otherwise day/night is a genuine coin flip, but only ONCE: this
+    // only runs when STATE.beachVariant is still unset, which happens
+    // exactly once per fresh playthrough (see startGameFromTitle/
+    // handleRestartGame resetting it to null) -- the picked variant then
+    // rides along in STATE.beachVariant (persisted across saves/reloads,
+    // see loadResumeState) for every Beach block that comes up for the
+    // rest of that playthrough, day or night but never flip-flopping
+    // mid-session.
+    STATE.beachVariant = Math.random() < 0.5 ? 'day' : 'night';
   }
   // Staggers where each fresh block's pan cycle starts, same reasoning as
   // Safari's own phase -- not reset to 0, can already be anywhere from

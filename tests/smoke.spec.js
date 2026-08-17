@@ -7191,6 +7191,27 @@ test('Beach is always the night variant under Sleep mode, not a coin flip', asyn
   expect(errors).toEqual([]);
 });
 
+// Review catch, PR #103: a save written under a non-sleep difficulty can
+// carry a 'day' STATE.beachVariant, and loading/resuming that save while
+// Sleep is now selected restores that 'day' value directly -- a set-once
+// check (only forcing night when STATE.beachVariant was still unset)
+// would miss this entirely, since the loaded value is already non-null.
+test('Beach forces night under Sleep mode even when a loaded save already carries a day variant', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const variant = await page.evaluate(() => {
+    STATE.difficulty = 'sleep';
+    STATE.beachVariant = 'day'; // simulates a resumed/loaded save from another difficulty
+    generateBeachScene();
+    return STATE.beachVariant;
+  });
+
+  expect(variant).toBe('night');
+  expect(errors).toEqual([]);
+});
+
 test('Beach day/night pick rides along with a saved game across a reload, same pattern as Safari\'s own variant', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
