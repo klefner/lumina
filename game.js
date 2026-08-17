@@ -9388,15 +9388,6 @@ const BEACH_CONFIG = {
   SAND_HEIGHT_FRAC: 0.07,
   SAND_COLOR: { day: '#e3c07f', night: '#4d4330' },
   BOAT_COLOR: { day: '#16324a', night: '#050a14' },
-  // Three shades per variant (shadow/mid/highlight), not one flat color --
-  // a single solid fill read as an obviously fake cardboard-cutout trunk
-  // next to the photographic crown above it (player report, screenshot).
-  // A cross-trunk gradient between these three fakes the rounded,
-  // cylindrical look of real bark catching light unevenly.
-  PALM_TRUNK_COLOR: {
-    day: { shadow: '#4a3218', mid: '#6b4a2f', highlight: '#8a6440' },
-    night: { shadow: '#0d0904', mid: '#1c130c', highlight: '#2e2013' },
-  },
   PALM_SHORE_COUNT: 2,
   DOLPHIN_COUNT: 2,
   // Not every wave -- a cruise ship crossing the horizon should read as a
@@ -9410,11 +9401,15 @@ const BEACH_IMAGES = {
 
 // Real photo cutouts (background removed with rembg, sourcing + process
 // notes in art/CREDITS.md), same technique as Safari's tree/animal
-// library -- palm-shore-crown and dolphin/whale/cruise-ship are all
-// ground-anchored at the horizon (see drawBeachCutout); palm-overhang is
-// the one exception, anchored from a screen corner instead (see
-// drawBeachOverhang's own comment).
-const BEACH_CUTOUT_SOURCES = ['palm-overhang', 'palm-shore-crown', 'dolphin', 'whale', 'cruise-ship'];
+// library -- palm-full-1/2 and dolphin/whale/cruise-ship are all
+// ground-anchored at the horizon or sandY (see drawBeachCutout);
+// palm-overhang is the one exception, anchored from a screen corner
+// instead (see drawBeachOverhang's own comment). palm-full-1/2 are each
+// a SINGLE real photo showing an entire tree, trunk to crown -- not a
+// crown cutout with a procedural trunk drawn under it (an earlier
+// version did that, and player feedback -- screenshot -- called out the
+// procedural trunk as obviously fake next to the photographic crown).
+const BEACH_CUTOUT_SOURCES = ['palm-overhang', 'palm-full-1', 'palm-full-2', 'dolphin', 'whale', 'cruise-ship'];
 const BEACH_CUTOUT_IMAGES = {};
 for (const name of BEACH_CUTOUT_SOURCES) {
   BEACH_CUTOUT_IMAGES[name] = Object.assign(new Image(), { src: `art/beach-cutouts/${name}.webp` });
@@ -9470,26 +9465,26 @@ function generateBeachScene(previousScene) {
     sizeFrac: 0.03 + Math.random() * 0.015,
   };
 
-  // Palm crowns along the shoreline. The cutout itself is crown-only (no
-  // trunk in its source photo -- see CREDITS.md), so trunkHeightFrac
-  // drives a procedural trunk drawn underneath at render time (see
-  // drawBeachScene) -- planting each palm in the photo's own visible
-  // foreground sand near the bottom of the screen, NOT at the horizon
-  // (player report, screenshot: cutouts anchored bare at the horizon
-  // read as trees floating in the air, over the water). Sized well down
-  // from an earlier version (player report, screenshot: full-height
-  // trees were crowding out the dots and the score/wave text) -- these
-  // read as shoreline dressing along the bottom edge, not a canopy
-  // covering the whole playfield. trunkBendFrac gives the trunk a slight
-  // organic lean instead of a ruler-straight line (see drawBeachPalm).
+  // Palm trees along the shoreline -- each is a SINGLE real photo of an
+  // entire tree, trunk to crown (palm-full-1 or palm-full-2, picked at
+  // random per tree for visual variety), not a crown cutout with a
+  // procedural trunk drawn under it. An earlier version did draw a
+  // procedural trunk, and player feedback (screenshot) called it out as
+  // obviously fake next to the photographic crown above it -- these two
+  // source photos each show a complete tree already, so the whole thing
+  // is anchored at sandY directly, planting it in the photo's own
+  // visible foreground sand near the bottom of the screen, NOT at the
+  // horizon (an earlier-still version anchored bare crowns at the
+  // horizon, which read as trees floating in the air over the water).
+  // Sized as shoreline dressing along the bottom edge (another round of
+  // player feedback, screenshot: full-height trees were crowding out the
+  // dots and the score/wave text), not a canopy covering the playfield.
   const palms = [];
   for (let i = 0; i < BEACH_CONFIG.PALM_SHORE_COUNT; i++) {
-    const sizeFrac = 0.09 + Math.random() * 0.045;
     palms.push({
       xFrac: 0.05 + Math.random() * 0.9,
-      sizeFrac,
-      trunkHeightFrac: sizeFrac * (0.8 + Math.random() * 0.4),
-      trunkBendFrac: (Math.random() - 0.5) * 0.3,
+      source: Math.random() < 0.5 ? 'palm-full-1' : 'palm-full-2',
+      sizeFrac: 0.22 + Math.random() * 0.08,
     });
   }
 
@@ -9632,57 +9627,6 @@ function drawBeachCutout(source, xCenter, groundY, targetHeight, direction, nigh
   ctx.restore();
 }
 
-// A ground-anchored shore palm: a simple tapered procedural trunk (the
-// cutout itself is crown-only, see CREDITS.md) closing the visual gap
-// between the crown and groundY, then the crown cutout on top. Player
-// report, screenshot: a bare crown cutout anchored directly at a ground
-// point with nothing under it read as a tree floating in the air.
-function drawBeachPalm(palm, xCenter, groundY, canvasH, nightTint) {
-  const trunkHeight = palm.trunkHeightFrac * canvasH;
-  const trunkBaseWidth = trunkHeight * 0.1;
-  // A slight organic lean instead of a ruler-straight taper, plus a
-  // cross-trunk gradient (shadow/mid/highlight) to fake rounded bark
-  // catching light unevenly -- a single flat-color straight triangle
-  // read as an obviously fake cardboard cutout next to the photographic
-  // crown above it (player report, screenshot).
-  const bend = palm.trunkBendFrac * trunkHeight;
-  const topX = xCenter + bend;
-  const topY = groundY - trunkHeight;
-  const midX = xCenter + bend * 0.4;
-  const midY = groundY - trunkHeight * 0.5;
-  const colors = BEACH_CONFIG.PALM_TRUNK_COLOR[nightTint ? 'night' : 'day'];
-
-  const grad = ctx.createLinearGradient(xCenter - trunkBaseWidth / 2, 0, xCenter + trunkBaseWidth / 2, 0);
-  grad.addColorStop(0, colors.shadow);
-  grad.addColorStop(0.5, colors.mid);
-  grad.addColorStop(1, colors.highlight);
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.moveTo(xCenter - trunkBaseWidth / 2, groundY);
-  ctx.quadraticCurveTo(midX - trunkBaseWidth * 0.25, midY, topX - trunkBaseWidth * 0.15, topY);
-  ctx.lineTo(topX + trunkBaseWidth * 0.15, topY);
-  ctx.quadraticCurveTo(midX + trunkBaseWidth * 0.25, midY, xCenter + trunkBaseWidth / 2, groundY);
-  ctx.closePath();
-  ctx.fill();
-
-  // A few faint diagonal bark-ring notches up the trunk for texture.
-  ctx.strokeStyle = nightTint ? 'rgba(0, 0, 0, 0.4)' : 'rgba(0, 0, 0, 0.25)';
-  ctx.lineWidth = Math.max(1, trunkBaseWidth * 0.12);
-  const ringCount = 5;
-  for (let i = 1; i <= ringCount; i++) {
-    const ringT = i / (ringCount + 1);
-    const ringX = xCenter + bend * ringT * ringT;
-    const ringY = groundY - trunkHeight * ringT;
-    const ringWidth = trunkBaseWidth * (1 - ringT * 0.7) * 0.7;
-    ctx.beginPath();
-    ctx.moveTo(ringX - ringWidth / 2, ringY);
-    ctx.lineTo(ringX + ringWidth / 2, ringY - ringWidth * 0.3);
-    ctx.stroke();
-  }
-
-  drawBeachCutout('palm-shore-crown', topX, topY, palm.sizeFrac * canvasH, 1, nightTint);
-}
-
 // The overhanging corner frond -- anchored from a TOP corner of the
 // screen instead of the horizon. Its source photo is a real palm leaning
 // out over open water, cropped tight to its own alpha bounding box (see
@@ -9812,7 +9756,7 @@ function drawBeachScene() {
   // floating over the water. sandY sits within the photo's own visible
   // foreground sand, so a palm planted there always reads as on land.
   for (const palm of scene.palms) {
-    drawBeachPalm(palm, palm.xFrac * w, sandY, h, nightTint);
+    drawBeachCutout(palm.source, palm.xFrac * w, sandY, palm.sizeFrac * h, 1, nightTint);
   }
   if (scene.cruiseShip) {
     const ship = scene.cruiseShip;
