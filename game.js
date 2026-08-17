@@ -9077,8 +9077,18 @@ function updateStars() {
   }
 }
 
-function drawStars() {
+// rewardOnly skips the plain ambient/reveal starfield (undefined pairId)
+// and draws only each connection's own halo (spawnStarsAroundDots, tagged
+// with the pair's pairId) -- for a scene whose background photo already
+// has its own real stars (Forest), so the ambient layer would just be
+// visual noise on top of it, but the connection-reward halo is still
+// live gameplay feedback (resetPairConnections relies on it existing)
+// that has to render regardless (review catch, PR #97 -- drawForestScene
+// dropping the drawStars() call entirely for that reason made every
+// connection halo invisible in Forest too, not just the ambient stars).
+function drawStars(rewardOnly = false) {
   for (const s of STATE.stars) {
+    if (rewardOnly && s.pairId === undefined) continue;
     const twinkle = s.twinkling ? 0.7 + 0.3 * Math.sin(s.twinklePhase) : 1;
     ctx.beginPath();
     ctx.fillStyle = `rgba(255,255,255,${(s.alpha * twinkle).toFixed(3)})`;
@@ -9093,22 +9103,38 @@ function drawStars() {
 // Space's alternate scene (see SCENE_LIST/resolveSceneForWave): a still,
 // dark tree line under a moonlit sky, built to read as calm rather than
 // eventful — no drifting asteroids/comets, no wave-complete-only reveal,
-// just a steady scene with faint tree sway and drifting fireflies. Reuses
-// the plain Space starfield (STATE.stars/drawStars) for the sky rather
-// than inventing a second star system, so the connection-reward sparkle
-// (spawnStarsAroundDots) reads identically regardless of scene.
+// just a steady scene with a slow Ken Burns pan/zoom and drifting
+// fireflies. A real photo (see art/CREDITS.md) rather than hand-drawn
+// canvas art, same stylistic departure Safari made first (player
+// request) -- chosen specifically for having its own real starfield
+// already in frame, so this deliberately does NOT also layer the plain
+// ambient Space starfield (STATE.stars' untagged entries) on top; two
+// different star systems stacked on the same sky would just look like
+// visual noise. It DOES still render each connection's own reward halo
+// (spawnStarsAroundDots' pairId-tagged stars, via drawStars(true)) --
+// that's live gameplay feedback for a still-connected pair, not
+// decoration, and has to keep working regardless of scene (review catch,
+// PR #97 -- an earlier version dropped drawStars() entirely and made
+// every connection halo invisible in Forest along with the ambient
+// stars). The photo's own dense treeline means no separate tree-cutout
+// library is needed here the way Safari's single-tree photo needed one
+// -- unlike Safari, this is also always night, so there's no day/night
+// variant to pick between.
 //
-// Trees/fireflies/moon are stored as fractions of canvas.width/height,
-// not absolute pixels, precisely so a mid-wave resize needs no top-up
-// pass the way the starfield does — draw time just multiplies by
-// whatever the canvas size is right now.
+// Fireflies/moon are stored as fractions of canvas.width/height, not
+// absolute pixels, precisely so a mid-wave resize needs no top-up pass
+// the way the starfield does — draw time just multiplies by whatever the
+// canvas size is right now. They're deliberately NOT mapped through the
+// photo's own pan/zoom transform (contrast Safari's ground-anchored
+// animals) -- same as Safari's shooting star, they're an independent sky
+// overlay, not tied to a specific point the photo shows.
 const FOREST_CONFIG = {
-  SKY_TOP: '#0c1024',
-  SKY_MID: '#232149',
-  SKY_HORIZON: '#4a3a5c',
-  TREE_COLOR: '#0a0812',
-  GROUND_COLOR: '#07060d',
+  image: 'art/forest-night.jpg',
+  PAN_CYCLE_FRAMES: 2700,
+  ZOOM_MIN: 1.05,
+  ZOOM_MAX: 1.18,
 };
+const FOREST_IMAGE = Object.assign(new Image(), { src: FOREST_CONFIG.image });
 
 // Lazily-created, reused offscreen canvas the moon composites onto before
 // being drawn into the main scene -- see drawNightMoon's own comment on
@@ -9178,19 +9204,6 @@ function drawNightMoon(moonXFrac, moonYFrac, moonRadiusFrac) {
 }
 
 function generateForestScene() {
-  const treeCount = 7 + Math.floor(Math.random() * 5);
-  const trees = [];
-  for (let i = 0; i < treeCount; i++) {
-    trees.push({
-      xFrac: Math.random(),
-      heightFrac: 0.26 + Math.random() * 0.22,
-      widthFrac: 0.09 + Math.random() * 0.08,
-      swayPhase: Math.random() * Math.PI * 2,
-      swaySpeed: 0.0006 + Math.random() * 0.0006,
-      swayAmount: 3 + Math.random() * 5,
-    });
-  }
-
   const fireflyCount = 10 + Math.floor(Math.random() * 8);
   const fireflies = [];
   for (let i = 0; i < fireflyCount; i++) {
@@ -9206,12 +9219,17 @@ function generateForestScene() {
   }
 
   return {
-    trees,
     fireflies,
     moonXFrac: 0.15 + Math.random() * 0.7,
     moonYFrac: 0.08 + Math.random() * 0.14,
     moonRadiusFrac: 0.045 + Math.random() * 0.02,
-    phase: 0, // frame accumulator driving sway/drift/pulse below -- see updateForestScene
+    // Frame accumulator driving both the firefly drift/pulse below (see
+    // updateForestScene) and the photo's Ken Burns pan/zoom (see
+    // drawForestScene) -- started at a random point in the pan cycle
+    // rather than always 0, so consecutive waves don't all visibly begin
+    // from the same framing (every wave regenerates this scene fresh,
+    // unlike Safari's block-persisted variant).
+    phase: Math.floor(Math.random() * FOREST_CONFIG.PAN_CYCLE_FRAMES),
   };
 }
 
@@ -9224,16 +9242,39 @@ function drawForestScene() {
   const scene = STATE.forestScene;
   if (!scene) return;
   const w = canvas.width, h = canvas.height, t = scene.phase;
+  const img = FOREST_IMAGE;
 
-  const sky = ctx.createLinearGradient(0, 0, 0, h);
-  sky.addColorStop(0, FOREST_CONFIG.SKY_TOP);
-  sky.addColorStop(0.55, FOREST_CONFIG.SKY_MID);
-  sky.addColorStop(1, FOREST_CONFIG.SKY_HORIZON);
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, w, h);
+  // Still loading (first time this session needs it) -- a flat fill
+  // close to the photo's own dominant tone beats a blank/white flash
+  // while it finishes downloading (same technique as Safari).
+  if (!img.complete || img.naturalWidth === 0) {
+    ctx.fillStyle = '#0a0d18';
+    ctx.fillRect(0, 0, w, h);
+    return;
+  }
+
+  const cfg = FOREST_CONFIG;
+  const cycle = (t % cfg.PAN_CYCLE_FRAMES) / cfg.PAN_CYCLE_FRAMES; // 0..1, wraps
+  const easedT = 0.5 - 0.5 * Math.cos(cycle * Math.PI * 2); // smooth back-and-forth, not a jump-cut loop
+  const zoom = cfg.ZOOM_MIN + (cfg.ZOOM_MAX - cfg.ZOOM_MIN) * easedT;
+
+  // Cover-fit (like CSS object-fit: cover), same as drawSafariScene.
+  const imgAspect = img.naturalWidth / img.naturalHeight;
+  const canvasAspect = w / h;
+  let drawW, drawH;
+  if (imgAspect > canvasAspect) {
+    drawH = h * zoom;
+    drawW = drawH * imgAspect;
+  } else {
+    drawW = w * zoom;
+    drawH = drawW / imgAspect;
+  }
+  const panX = (drawW - w) * easedT;
+  const panY = (drawH - h) * (0.5 + 0.3 * Math.sin(cycle * Math.PI * 2));
+  ctx.drawImage(img, -panX, -panY, drawW, drawH);
 
   drawNightMoon(scene.moonXFrac, scene.moonYFrac, scene.moonRadiusFrac);
-  drawStars(); // same twinkling starfield Space uses -- see this section's header comment
+  drawStars(true); // reward-only -- see this section's header comment
 
   for (const f of scene.fireflies) {
     const drift = t * f.driftSpeed + f.phase;
@@ -9249,25 +9290,6 @@ function drawForestScene() {
     ctx.arc(fx, fy, r, 0, Math.PI * 2);
     ctx.fill();
   }
-
-  for (const tr of scene.trees) {
-    const baseX = tr.xFrac * w;
-    const treeH = tr.heightFrac * h;
-    const treeW = tr.widthFrac * w;
-    const baseY = h;
-    const topY = baseY - treeH;
-    const sway = Math.sin(t * tr.swaySpeed + tr.swayPhase) * tr.swayAmount;
-    ctx.beginPath();
-    ctx.moveTo(baseX - treeW / 2, baseY);
-    ctx.quadraticCurveTo(baseX - treeW * 0.3 + sway * 0.5, baseY - treeH * 0.55, baseX + sway, topY);
-    ctx.quadraticCurveTo(baseX + treeW * 0.3 + sway * 0.5, baseY - treeH * 0.55, baseX + treeW / 2, baseY);
-    ctx.closePath();
-    ctx.fillStyle = FOREST_CONFIG.TREE_COLOR;
-    ctx.fill();
-  }
-
-  ctx.fillStyle = FOREST_CONFIG.GROUND_COLOR;
-  ctx.fillRect(0, h - 6, w, 6);
 }
 
 // ============================================================
@@ -11827,6 +11849,15 @@ function drawSafariScene() {
   } else {
     drawSafariShootingStar(scene.shootingStar, w, h);
   }
+
+  // Reward-only (see drawStars' own comment): a synthetic ambient
+  // starfield would fight the day sky and double up on the night
+  // variant's own real Milky Way, but each connection's reward halo
+  // (spawnStarsAroundDots) is live gameplay feedback for a still-
+  // connected pair, not decoration, and has to render regardless of
+  // scene -- this call was missing entirely before, so every connection
+  // halo has been invisible in Safari since it first shipped.
+  drawStars(true);
 
   // A real photo has arbitrary local contrast a hand-drawn scene never
   // does -- a uniform radial dim (clear center, where the board mostly
