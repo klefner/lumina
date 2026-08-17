@@ -29,3 +29,27 @@ anyway):
 In-game, `drawSafariScene()` (game.js) applies a slow Ken Burns-style
 pan/zoom and a radial vignette to each photo at render time — neither
 source file is pre-cropped or pre-vignetted.
+
+## Forest scene (forest-night.jpg)
+
+Player request (2026-08-17): extend Safari's real-photo treatment to
+the other scenes' hand-drawn canvas art, starting with Forest. A real
+photograph, sourced from Pexels (free to use for commercial purposes,
+no attribution legally required, credited anyway):
+
+- `forest-night.jpg` — "Silhouettes of Trees at Night," by Troy Olson,
+  via
+  [Pexels](https://www.pexels.com/photo/silhouettes-of-trees-at-night-25953506/).
+  Re-encoded for web delivery; otherwise unedited. Chosen specifically
+  for having its own real starfield already in frame (so `drawStars()`
+  is deliberately NOT layered on top, same reasoning as Safari's night
+  variant) but no moon of its own (so the existing procedural
+  `drawNightMoon()` still has a real, unobstructed sky to sit in).
+
+Unlike Safari, Forest doesn't need a separate day/night pick or a
+foreground tree-cutout library: it was always a night-only scene, and
+the photo's own dense treeline already provides the trees Safari's
+Ken-Burns-panned single-tree photo didn't. `drawForestScene()` (game.js)
+applies the same Ken Burns pan/zoom technique as Safari, with the
+existing moon/starfield-adjacent glow and firefly layers drawn on top
+unchanged.
