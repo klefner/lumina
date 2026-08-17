@@ -6769,6 +6769,43 @@ test('each ambient layer repeat gets a fresh, in-range randomized playback rate,
   expect(errors).toEqual([]);
 });
 
+test('the Night Forest scene (real photo + Ken Burns pan/zoom) generates and draws without error, and its background photo actually loads', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'forest';
+    STATE.forestScene = generateForestScene();
+    const phaseBefore = STATE.forestScene.phase;
+    for (let i = 0; i < 5; i++) updateForestScene();
+    // Snapshot right after the manual updates, not after the wait below --
+    // the game's own render loop may also be advancing STATE.forestScene
+    // (it's already been switched to 'forest') during that 1.5s gap.
+    const phaseAdvanced = STATE.forestScene.phase === phaseBefore + 5;
+    drawForestScene(); // throws if anything in the draw path is broken, including before the photo has finished loading
+
+    await new Promise((resolve) => setTimeout(resolve, 1500)); // give art/forest-night.jpg a real chance to load over the local server
+    drawForestScene(); // and again once it plausibly has, same guard either way
+
+    return {
+      hasFireflies: STATE.forestScene.fireflies.length > 0,
+      phaseAdvanced,
+      phaseStartedRandomized: phaseBefore >= 0 && phaseBefore < FOREST_CONFIG.PAN_CYCLE_FRAMES,
+      imageLoaded: FOREST_IMAGE.complete && FOREST_IMAGE.naturalWidth > 0,
+      moonHelperShared: typeof drawNightMoon === 'function',
+    };
+  });
+
+  expect(result.hasFireflies).toBe(true);
+  expect(result.phaseAdvanced).toBe(true);
+  expect(result.phaseStartedRandomized).toBe(true);
+  expect(result.imageLoaded).toBe(true);
+  expect(result.moonHelperShared).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 test('the Beach at Night scene generates and draws without error, sharing the moon with Night Forest', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
