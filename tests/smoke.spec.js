@@ -7557,6 +7557,17 @@ test('Safari\'s foreground wildlife (birds, giraffes, night shooting stars) gene
       STATE.safariVariant = variant;
       STATE.safariScene = generateSafariScene(null);
       for (let i = 0; i < 30; i++) updateSafariScene(); // enough frames for a shooting star to plausibly spawn
+      // A connection-reward star (spawnStarsAroundDots' own pairId-tagged
+      // shape) mixed in with a plain ambient one -- confirms the real draw
+      // path renders the reward halo (via drawStars(true)) without
+      // throwing, in both variants (review catch -- drawSafariScene never
+      // called drawStars() at all before, in either variant, so every
+      // connection halo was invisible in Safari since it first shipped;
+      // see the dedicated drawStars(rewardOnly) test for the exact filter).
+      STATE.stars = [
+        { x: 10, y: 10, radius: 1, alpha: 1, twinkling: false, twinklePhase: 0, twinkleSpeed: 0, pairId: undefined },
+        { x: 20, y: 20, radius: 1, alpha: 1, twinkling: false, twinklePhase: 0, twinkleSpeed: 0, pairId: 'pairA' },
+      ];
       drawSafariScene(); // throws if anything in the draw path is broken
       out[variant] = {
         birdCount: STATE.safariScene.birds.length,
@@ -7574,6 +7585,43 @@ test('Safari\'s foreground wildlife (birds, giraffes, night shooting stars) gene
     expect(result[variant].phaseAdvanced).toBe(true);
     expect(result[variant].hasShootingStarState).toBe(true);
   }
+  expect(errors).toEqual([]);
+});
+
+test("drawStars(rewardOnly) only renders each connection's own reward halo (pairId-tagged stars) when true, leaving the plain ambient/reveal starfield (untagged) out -- the default (no argument) call still renders everything, unchanged for every scene but Safari (review catch: Safari's real photo background left no room for a synthetic ambient starfield, but spawnStarsAroundDots' reward halo is live gameplay feedback for a still-connected pair and has to keep rendering regardless of scene)", async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.stars = [
+      { x: 10, y: 10, radius: 1, alpha: 1, twinkling: false, twinklePhase: 0, twinkleSpeed: 0, pairId: undefined },
+      { x: 20, y: 20, radius: 1, alpha: 1, twinkling: false, twinklePhase: 0, twinkleSpeed: 0, pairId: undefined },
+      { x: 30, y: 30, radius: 1, alpha: 1, twinkling: false, twinklePhase: 0, twinkleSpeed: 0, pairId: 'pairA' },
+    ];
+    const originalArc = ctx.arc.bind(ctx);
+    let arcCalls = 0;
+    ctx.arc = (...args) => { arcCalls++; return originalArc(...args); };
+
+    drawStars(true);
+    const rewardOnlyCount = arcCalls;
+
+    arcCalls = 0;
+    drawStars();
+    const defaultCount = arcCalls;
+
+    arcCalls = 0;
+    drawStars(false);
+    const explicitFalseCount = arcCalls;
+
+    ctx.arc = originalArc;
+    return { rewardOnlyCount, defaultCount, explicitFalseCount };
+  });
+
+  expect(result.rewardOnlyCount).toBe(1);
+  expect(result.defaultCount).toBe(3);
+  expect(result.explicitFalseCount).toBe(3);
   expect(errors).toEqual([]);
 });
 

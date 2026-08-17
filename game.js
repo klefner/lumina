@@ -9079,13 +9079,16 @@ function updateStars() {
 
 // rewardOnly skips the plain ambient/reveal starfield (undefined pairId)
 // and draws only each connection's own halo (spawnStarsAroundDots, tagged
-// with the pair's pairId) -- for a scene whose background photo already
-// has its own real stars (Forest), so the ambient layer would just be
-// visual noise on top of it, but the connection-reward halo is still
-// live gameplay feedback (resetPairConnections relies on it existing)
-// that has to render regardless (review catch, PR #97 -- drawForestScene
-// dropping the drawStars() call entirely for that reason made every
-// connection halo invisible in Forest too, not just the ambient stars).
+// with the pair's pairId) -- for a scene whose background is a real photo
+// (Forest, Safari) that either already has its own real stars or has no
+// room for a synthetic starfield at all, so the ambient layer would just
+// be visual noise, but the connection-reward halo is still live gameplay
+// feedback (resetPairConnections relies on it existing) that has to
+// render regardless of scene. Both drawForestScene and drawSafariScene
+// used to skip drawStars() entirely for that reason, which made every
+// connection halo invisible in both scenes too, not just the ambient
+// stars (review catch, PR #97; the identical bug in Safari, PR #98,
+// predated both and had been there since Safari first shipped).
 function drawStars(rewardOnly = false) {
   for (const s of STATE.stars) {
     if (rewardOnly && s.pairId === undefined) continue;
@@ -11842,6 +11845,15 @@ function drawSafariScene() {
   } else {
     drawSafariShootingStar(scene.shootingStar, w, h);
   }
+
+  // Reward-only (see drawStars' own comment): a synthetic ambient
+  // starfield would fight the day sky and double up on the night
+  // variant's own real Milky Way, but each connection's reward halo
+  // (spawnStarsAroundDots) is live gameplay feedback for a still-
+  // connected pair, not decoration, and has to render regardless of
+  // scene -- this call was missing entirely before, so every connection
+  // halo has been invisible in Safari since it first shipped.
+  drawStars(true);
 
   // A real photo has arbitrary local contrast a hand-drawn scene never
   // does -- a uniform radial dim (clear center, where the board mostly
