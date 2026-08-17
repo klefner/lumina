@@ -172,6 +172,29 @@ brightness AVERAGE instead (smooths out single-pixel stars, since only
 the real horizon is a jump consistent across the whole row's width):
 0.903.
 
+Fixing that measurement wasn't the end of it, though (player report,
+screenshot): with horizonY correctly at the real shoreline, everything
+from horizonY down to sandY is real photographed SAND (that's what a
+correct measurement means), while everything above horizonY is the
+Milky Way sky -- and at night, real open water in near-total darkness is
+visually indistinguishable from that sky, both just uniform black. The
+cruise ship, dolphins, and whale still read as floating in empty air,
+just now near the sand instead of up in the stars. The day photo doesn't
+have this problem (a real, obviously blue-green sea fills a huge share
+of that frame between horizonY and sandY), so this is night-only:
+`drawBeachScene` now paints a soft tinted gradient (`rgba(8, 26, 42, …)`,
+fading from a low floor alpha up to 0.6) across a synthetic "water" band
+just ABOVE horizonY (`waterTopY`/`waterBottomY`, sized to 16% of canvas
+height), and moves the glitter path/wave lines into that band instead of
+the real-sand strip below horizonY. The cruise ship, dolphins, whale, and
+boat anchor at `waterFarY` -- a point a quarter of the way down into that
+band from its far (most transparent) edge, not right at its hard top
+edge, where the gradient is at its most transparent and would have
+undercut the whole point of adding it. Day doesn't use any of this:
+`waterFarY`/`waterTopY`/`waterBottomY` all just equal `horizonY`/`sandY`
+there, same as before this fix, since the real photo already provides a
+visible sea to anchor to.
+
 `drawBeachScene`'s vertical pan (`panY`) is clamped to keep that mapped
 horizon within the middle 70% of the screen (Codex review catch, PR
 #101): the night photo's portrait aspect (1600x2000) means `drawH` ends

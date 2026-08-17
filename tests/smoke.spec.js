@@ -7167,6 +7167,76 @@ test('Beach night horizon is measured near the bottom of the photo (where the sa
   expect(errors).toEqual([]);
 });
 
+// Player report, screenshot: even after fixing HORIZON_FRAC.night (the
+// test above), the cruise ship/dolphins/whale still read as floating in
+// empty sky, not water -- because at night this specific photo shows
+// almost no distinguishable water texture (near-total darkness merges
+// visually with the sky above it), and the correctly-measured horizonY
+// is now the NEAR shoreline, not open water. Fixed by anchoring these at
+// waterFarY (the far edge of a synthetic tinted "water" band drawn just
+// above the real shoreline) instead of horizonY directly -- this guards
+// that they land meaningfully ABOVE horizonY for night (out over the
+// water band, not planted right at the shore), while staying exactly AT
+// horizonY for day (where the real photographed sea already fills that
+// space, so no synthetic band is needed).
+test('Beach cruise ship sits out over the (synthetic, night-only) water band, not right at the shoreline', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    const out = {};
+    for (const variant of ['day', 'night']) {
+      canvas.width = 500; canvas.height = 900;
+      STATE.scene = 'beach';
+      STATE.beachVariant = variant;
+      STATE.beachScene = generateBeachScene();
+      STATE.beachScene.cruiseShip = { xFrac: 0.5, direction: 1, speed: 0, sizeFrac: 0.08 };
+      await new Promise((r) => setTimeout(r, 200));
+
+      const original = drawBeachCutout;
+      let shipY = null;
+      window.drawBeachCutout = (source, xCenter, groundY, ...rest) => {
+        if (source === 'cruise-ship') shipY = groundY;
+        return original(source, xCenter, groundY, ...rest);
+      };
+      drawBeachScene();
+      window.drawBeachCutout = original;
+
+      // Recompute horizonY the same way drawBeachScene does, to compare against.
+      const cfg = BEACH_CONFIG;
+      const img = BEACH_IMAGES[variant];
+      const t = STATE.beachScene.phase;
+      const cycle = (t % cfg.PAN_CYCLE_FRAMES) / cfg.PAN_CYCLE_FRAMES;
+      const easedT = 0.5 - 0.5 * Math.cos(cycle * Math.PI * 2);
+      const zoom = cfg.ZOOM_MIN + (cfg.ZOOM_MAX - cfg.ZOOM_MIN) * easedT;
+      const imgAspect = img.naturalWidth / img.naturalHeight;
+      const canvasAspect = canvas.width / canvas.height;
+      let drawW, drawH;
+      if (imgAspect > canvasAspect) { drawH = canvas.height * zoom; drawW = drawH * imgAspect; }
+      else { drawW = canvas.width * zoom; drawH = drawW / imgAspect; }
+      let panY = (drawH - canvas.height) * (0.5 + 0.3 * Math.sin(cycle * Math.PI * 2));
+      const desiredHorizonY = cfg.HORIZON_FRAC[variant] * drawH;
+      const minPanY = desiredHorizonY - canvas.height * 0.85;
+      const maxPanY = desiredHorizonY - canvas.height * 0.15;
+      panY = Math.min(maxPanY, Math.max(minPanY, panY));
+      panY = Math.min(Math.max(panY, 0), Math.max(0, drawH - canvas.height));
+      const horizonY = -panY + cfg.HORIZON_FRAC[variant] * drawH;
+
+      out[variant] = { shipY, horizonY };
+    }
+    return out;
+  });
+
+  // Night: the ship sits meaningfully ABOVE (a smaller y than) the real
+  // shoreline -- out over the synthetic water band, not planted at the sand.
+  expect(result.night.shipY).toBeLessThan(result.night.horizonY - 5);
+  // Day: no synthetic band needed, so the ship stays exactly at the real
+  // photographed horizon, same as always.
+  expect(Math.abs(result.day.shipY - result.day.horizonY)).toBeLessThan(1);
+  expect(errors).toEqual([]);
+});
+
 // Player request: Sleep mode should always be Beach's calmest, dimmest
 // look, same as every other sleep-safe scene here defaulting to night/
 // dim rather than a coin flip. Non-sleep difficulties keep the genuine
