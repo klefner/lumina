@@ -6769,6 +6769,90 @@ test('each ambient layer repeat gets a fresh, in-range randomized playback rate,
   expect(errors).toEqual([]);
 });
 
+test("drawStars(rewardOnly) only renders each connection's own reward halo (pairId-tagged stars) when true, leaving the plain ambient/reveal starfield (untagged) out -- the default (no argument) call still renders everything, unchanged for every scene but Forest (review catch, PR #97 -- Forest's real photo made the ambient starfield redundant, but spawnStarsAroundDots' reward halo is live gameplay feedback for a still-connected pair and has to keep rendering regardless of scene)", async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.stars = [
+      { x: 10, y: 10, radius: 1, alpha: 1, twinkling: false, twinklePhase: 0, twinkleSpeed: 0, pairId: undefined },
+      { x: 20, y: 20, radius: 1, alpha: 1, twinkling: false, twinklePhase: 0, twinkleSpeed: 0, pairId: undefined },
+      { x: 30, y: 30, radius: 1, alpha: 1, twinkling: false, twinklePhase: 0, twinkleSpeed: 0, pairId: 'pairA' },
+    ];
+    const originalArc = ctx.arc.bind(ctx);
+    let arcCalls = 0;
+    ctx.arc = (...args) => { arcCalls++; return originalArc(...args); };
+
+    drawStars(true);
+    const rewardOnlyCount = arcCalls;
+
+    arcCalls = 0;
+    drawStars();
+    const defaultCount = arcCalls;
+
+    arcCalls = 0;
+    drawStars(false);
+    const explicitFalseCount = arcCalls;
+
+    ctx.arc = originalArc;
+    return { rewardOnlyCount, defaultCount, explicitFalseCount };
+  });
+
+  expect(result.rewardOnlyCount).toBe(1);
+  expect(result.defaultCount).toBe(3);
+  expect(result.explicitFalseCount).toBe(3);
+  expect(errors).toEqual([]);
+});
+
+test('the Night Forest scene (real photo + Ken Burns pan/zoom) generates and draws without error, and its background photo actually loads', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'forest';
+    STATE.forestScene = generateForestScene();
+    const phaseBefore = STATE.forestScene.phase;
+    for (let i = 0; i < 5; i++) updateForestScene();
+    // Snapshot right after the manual updates, not after the wait below --
+    // the game's own render loop may also be advancing STATE.forestScene
+    // (it's already been switched to 'forest') during that 1.5s gap.
+    const phaseAdvanced = STATE.forestScene.phase === phaseBefore + 5;
+
+    // A connection-reward star (spawnStarsAroundDots' own pairId-tagged
+    // shape) mixed in with a plain ambient one -- confirms the real draw
+    // path still renders the reward halo (via drawStars(true)) without
+    // throwing, not just that drawStars() itself can filter in isolation
+    // (see the dedicated drawStars(rewardOnly) test above this one).
+    STATE.stars = [
+      { x: 10, y: 10, radius: 1, alpha: 1, twinkling: false, twinklePhase: 0, twinkleSpeed: 0, pairId: undefined },
+      { x: 20, y: 20, radius: 1, alpha: 1, twinkling: false, twinklePhase: 0, twinkleSpeed: 0, pairId: 'pairA' },
+    ];
+    drawForestScene(); // throws if anything in the draw path is broken, including before the photo has finished loading
+
+    await new Promise((resolve) => setTimeout(resolve, 1500)); // give art/forest-night.jpg a real chance to load over the local server
+    drawForestScene(); // and again once it plausibly has, same guard either way
+
+    return {
+      hasFireflies: STATE.forestScene.fireflies.length > 0,
+      phaseAdvanced,
+      phaseStartedRandomized: phaseBefore >= 0 && phaseBefore < FOREST_CONFIG.PAN_CYCLE_FRAMES,
+      imageLoaded: FOREST_IMAGE.complete && FOREST_IMAGE.naturalWidth > 0,
+      moonHelperShared: typeof drawNightMoon === 'function',
+    };
+  });
+
+  expect(result.hasFireflies).toBe(true);
+  expect(result.phaseAdvanced).toBe(true);
+  expect(result.phaseStartedRandomized).toBe(true);
+  expect(result.imageLoaded).toBe(true);
+  expect(result.moonHelperShared).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 test('the Beach at Night scene generates and draws without error, sharing the moon with Night Forest', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
