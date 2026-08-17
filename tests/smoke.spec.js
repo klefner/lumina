@@ -6853,22 +6853,33 @@ test('the Night Forest scene (real photo + Ken Burns pan/zoom) generates and dra
   expect(errors).toEqual([]);
 });
 
-test('the Beach at Night scene generates and draws without error, sharing the moon with Night Forest', async ({ page }) => {
+test('the Beach at Night scene (real photo + Ken Burns pan/zoom) generates and draws without error, sharing the moon with Night Forest, and its background photo actually loads', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
 
-  const result = await page.evaluate(() => {
+  const result = await page.evaluate(async () => {
     canvas.width = 500; canvas.height = 900;
     STATE.scene = 'beach';
     STATE.beachScene = generateBeachScene();
+    const phaseBefore = STATE.beachScene.phase;
     updateBeachScene();
-    drawBeachScene(); // throws if anything in the draw path is broken
+    // Snapshot right after the manual update, not after the wait below --
+    // the game's own render loop may also be advancing STATE.beachScene
+    // (it's already been switched to 'beach') during that 1.5s gap.
+    const phaseAdvanced = STATE.beachScene.phase === phaseBefore + 1;
+    drawBeachScene(); // throws if anything in the draw path is broken, including before the photo has finished loading
+
+    await new Promise((resolve) => setTimeout(resolve, 1500)); // give art/beach-night.jpg a real chance to load over the local server
+    drawBeachScene(); // and again once it plausibly has, same guard either way
+
     return {
       hasWaveLines: STATE.beachScene.waveLines.length > 0,
       hasGlitterDots: STATE.beachScene.glitterDots.length > 0,
       hasBoat: !!STATE.beachScene.boat,
-      phaseAdvanced: STATE.beachScene.phase === 1,
+      phaseAdvanced,
+      phaseStartedRandomized: phaseBefore >= 0 && phaseBefore < BEACH_CONFIG.PAN_CYCLE_FRAMES,
+      imageLoaded: BEACH_IMAGE.complete && BEACH_IMAGE.naturalWidth > 0,
       moonHelperShared: typeof drawNightMoon === 'function',
     };
   });
@@ -6877,6 +6888,8 @@ test('the Beach at Night scene generates and draws without error, sharing the mo
   expect(result.hasGlitterDots).toBe(true);
   expect(result.hasBoat).toBe(true);
   expect(result.phaseAdvanced).toBe(true);
+  expect(result.phaseStartedRandomized).toBe(true);
+  expect(result.imageLoaded).toBe(true);
   expect(result.moonHelperShared).toBe(true);
   expect(errors).toEqual([]);
 });

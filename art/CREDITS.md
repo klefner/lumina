@@ -102,3 +102,51 @@ Ken-Burns-panned single-tree photo didn't. `drawForestScene()` (game.js)
 applies the same Ken Burns pan/zoom technique as Safari, with the
 existing moon/starfield-adjacent glow and firefly layers drawn on top
 unchanged.
+
+## Beach scene (beach-night.jpg)
+
+Player request (2026-08-17): continue the real-photo redesign with
+Beach next. A real photograph, sourced from Pexels (free to use for
+commercial purposes, no attribution legally required, credited
+anyway):
+
+- `beach-night.jpg` — "A serene night view of the calm sea and starry
+  sky at Leba Beach, Poland," by Marek Piwnicki, via
+  [Pexels](https://pexels.com/photo/blue-sky-and-white-clouds-during-sunset-5933300/)
+  (the page's own auto-generated title/URL slug is wrong -- the photo
+  and its actual description are a calm night seascape, not a sunset).
+  Re-encoded for web delivery; otherwise unedited (already a lean
+  ~42KB, no denoise pass needed).
+
+A first candidate -- "A Motion of Waves at Night" by Allan Carvalho,
+also via Pexels -- was sourced, processed, and wired up first, and
+looked great in isolation (a dramatic crashing wave in the same cool
+blue-teal grade `BEACH_CONFIG`'s old palette already used), but failed
+in context: a screenshot showed the boat sitting right at the crest of
+the wave and the procedural surf lines reading as stray artifacts drawn
+over the photo's own much richer wave texture, since the shot's close,
+energetic framing left no calm, open horizon for those procedural
+elements (built for a distant, glassy sea) to sit on believably.
+Swapped for the current photo's genuinely calm, glassy water instead.
+
+Unlike Forest, Beach keeps its moon, moon-reflection glitter path,
+surf lines, and boat all procedural and drawn on top of the photo,
+unchanged -- only the sky/water/sand gradient fills were replaced,
+with the same Ken Burns pan/zoom technique. The glitter path especially
+has to stay procedural: it's dynamically anchored to the moon's own
+(randomized every wave) x-position, which a static photo can't follow.
+Two things did change from the old procedural version, though:
+
+- The photo has its own faint real stars, so `drawStars(true)`
+  (reward-only, see that function's own comment) replaced the old plain
+  `drawStars()` call -- same reasoning as Forest/Safari, layering a
+  synthetic ambient starfield on top of real stars would just be noise.
+- `BEACH_CONFIG.HORIZON_FRAC` is now a single fixed value (0.688)
+  measured directly from this photo (the sharpest brightness drop down
+  its own vertical center column, i.e. where the sky actually meets the
+  water), rather than randomized fresh each wave the way it used to be
+  -- same reasoning as Safari's own per-image `HORIZON_FRAC`: the
+  glitter path/boat/surf lines have to sit on the water the photo
+  actually shows, not float in open sky or sink below the visible
+  shoreline the way a leftover random range would on a real photo whose
+  horizon doesn't happen to fall where the range assumed.

@@ -9296,32 +9296,48 @@ function drawForestScene() {
 // SECTION 7F: BEACH AT NIGHT BACKGROUND
 // ============================================================
 // Space's second alternate scene (see SCENE_LIST/resolveSceneForWave),
-// built the same way the Night Forest above is: a moonlit sky (sharing
-// drawNightMoon and drawStars with the forest scene), a dark ocean with a
-// glittering moon-reflection path and a few gently undulating surf lines
-// standing in for waves, a single distant sailboat drifting across the
-// horizon (the signature per-scene animation -- same spirit as Forest's
-// fireflies/Birthday's balloons/Halloween's bats/Christmas's chimney
-// smoke), and a sand strip at the very bottom -- the forest's tree line
-// and ground, reimagined.
+// built the same way the Night Forest above is, now with a real photo
+// (see art/CREDITS.md) driving a slow Ken Burns pan/zoom instead of a
+// hand-drawn sky/water gradient (player request, continuing the
+// real-photo redesign Safari/Forest started). A moonlit sky (sharing
+// drawNightMoon with Forest/Safari), a glittering moon-reflection path
+// and a few gently undulating surf lines standing in for waves, a single
+// distant sailboat drifting across the horizon (the signature per-scene
+// animation -- same spirit as Forest's fireflies/Birthday's balloons/
+// Halloween's bats/Christmas's chimney smoke), and a sand strip at the
+// very bottom are all still drawn on top of the photo, unchanged.
+//
+// Unlike the sky/water fill, HORIZON_FRAC is NOT randomized per wave
+// anymore -- it's measured directly from this specific photo (a sharp
+// brightness drop at 68.8% down its own height) the same way Safari
+// measures its own HORIZON_FRAC per source image, so the glitter path/
+// boat/surf lines actually sit on the water the photo shows instead of
+// drifting into open sky or hidden below the visible shoreline the way
+// a leftover random 0.40-0.46 range would on a photo whose real horizon
+// sits further down. The photo does have its own faint real stars (see
+// CREDITS.md), so drawStars(true) (reward-only, see that function's own
+// comment) replaces the old plain drawStars() call -- same reasoning as
+// Forest/Safari, a synthetic ambient starfield on top of real ones would
+// just be visual noise.
 //
 // Wave lines/glitter dots/boat/moon are stored as fractions of
 // canvas.width/height, not absolute pixels, same reasoning as the
 // forest's trees.
-//
-// Water/sand player feedback: the previous teal-black water and
-// brown-black sand were dark enough to read as no particular color at
-// all. Muted for nighttime, same as before, but now unmistakably ocean
-// blue and warm sand rather than a desaturated smear of either.
 const BEACH_CONFIG = {
-  SKY_TOP: '#050b17',
-  SKY_MID: '#12253d',
-  SKY_HORIZON: '#2f4f5f',
-  WATER_HORIZON: '#2a5170',
-  WATER_COLOR: '#0d2844',
+  image: 'art/beach-night.jpg',
+  // Player report: the pan/zoom read as moving too fast. Doubled from
+  // Safari's original 2700 (45s per full there-and-back cycle at ~60fps)
+  // to 5400 (90s) -- background motion, not something that should ever
+  // compete for attention with the dots/lines in front of it.
+  PAN_CYCLE_FRAMES: 5400,
+  ZOOM_MIN: 1.05,
+  ZOOM_MAX: 1.18,
+  HORIZON_FRAC: 0.688,
+  SAND_HEIGHT_FRAC: 0.07,
   SAND_COLOR: '#4d4330',
   BOAT_COLOR: '#050a14',
 };
+const BEACH_IMAGE = Object.assign(new Image(), { src: BEACH_CONFIG.image });
 
 function generateBeachScene() {
   const waveLineCount = 4 + Math.floor(Math.random() * 3);
@@ -9369,12 +9385,16 @@ function generateBeachScene() {
     waveLines,
     glitterDots,
     boat,
-    horizonYFrac: 0.4 + Math.random() * 0.06,
-    sandHeightFrac: 0.08 + Math.random() * 0.03,
     moonXFrac,
     moonYFrac: 0.08 + Math.random() * 0.12,
     moonRadiusFrac: 0.045 + Math.random() * 0.02,
-    phase: 0, // frame accumulator driving the surf/glitter/boat animation below -- see updateBeachScene
+    // Frame accumulator driving the surf/glitter/boat animation below
+    // (see updateBeachScene) and the photo's Ken Burns pan/zoom (see
+    // drawBeachScene) -- started at a random point in the pan cycle
+    // rather than always 0, so consecutive waves don't all visibly begin
+    // from the same framing (every wave regenerates this scene fresh,
+    // same as Forest).
+    phase: Math.floor(Math.random() * BEACH_CONFIG.PAN_CYCLE_FRAMES),
   };
 }
 
@@ -9396,29 +9416,49 @@ function drawBeachScene() {
   const scene = STATE.beachScene;
   if (!scene) return;
   const w = canvas.width, h = canvas.height, t = scene.phase;
+  const img = BEACH_IMAGE;
 
-  const sky = ctx.createLinearGradient(0, 0, 0, h);
-  sky.addColorStop(0, BEACH_CONFIG.SKY_TOP);
-  sky.addColorStop(0.55, BEACH_CONFIG.SKY_MID);
-  sky.addColorStop(1, BEACH_CONFIG.SKY_HORIZON);
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, w, h);
+  // Still loading (first time this session needs it) -- a flat fill
+  // close to the photo's own dominant tone beats a blank/white flash
+  // while it finishes downloading (same technique as Safari/Forest).
+  if (!img.complete || img.naturalWidth === 0) {
+    ctx.fillStyle = '#0a1420';
+    ctx.fillRect(0, 0, w, h);
+    return;
+  }
+
+  const cfg = BEACH_CONFIG;
+  const cycle = (t % cfg.PAN_CYCLE_FRAMES) / cfg.PAN_CYCLE_FRAMES; // 0..1, wraps
+  const easedT = 0.5 - 0.5 * Math.cos(cycle * Math.PI * 2); // smooth back-and-forth, not a jump-cut loop
+  const zoom = cfg.ZOOM_MIN + (cfg.ZOOM_MAX - cfg.ZOOM_MIN) * easedT;
+
+  // Cover-fit (like CSS object-fit: cover), same as drawSafariScene/drawForestScene.
+  const imgAspect = img.naturalWidth / img.naturalHeight;
+  const canvasAspect = w / h;
+  let drawW, drawH;
+  if (imgAspect > canvasAspect) {
+    drawH = h * zoom;
+    drawW = drawH * imgAspect;
+  } else {
+    drawW = w * zoom;
+    drawH = drawW / imgAspect;
+  }
+  const panX = (drawW - w) * easedT;
+  const panY = (drawH - h) * (0.5 + 0.3 * Math.sin(cycle * Math.PI * 2));
+  ctx.drawImage(img, -panX, -panY, drawW, drawH);
+
+  // Mapped through the SAME pan/zoom space the photo itself just used
+  // (see drawSafariScene's own animals for the same technique) -- a
+  // plain screen-fraction horizon would drift away from the photo's own
+  // actual horizon as panY shifts the image underneath it. The sand
+  // strip stays plain screen-space on purpose: it's a decorative accent
+  // at the visible bottom edge, not tied to any specific content the
+  // photo shows.
+  const horizonY = -panY + cfg.HORIZON_FRAC * drawH;
+  const sandY = h - cfg.SAND_HEIGHT_FRAC * h;
 
   drawNightMoon(scene.moonXFrac, scene.moonYFrac, scene.moonRadiusFrac);
-  drawStars(); // same twinkling starfield Space/Forest use -- see this section's header comment
-
-  const horizonY = scene.horizonYFrac * h;
-  const sandY = h - scene.sandHeightFrac * h;
-
-  // Water -- a flat, dark fill from the horizon down to the sand, its own
-  // gradient so it reads darker/denser than the sky rather than looking
-  // like a continuation of it. Drawn after the stars specifically so it
-  // covers up any that would otherwise appear to twinkle underwater.
-  const water = ctx.createLinearGradient(0, horizonY, 0, sandY);
-  water.addColorStop(0, BEACH_CONFIG.WATER_HORIZON);
-  water.addColorStop(1, BEACH_CONFIG.WATER_COLOR);
-  ctx.fillStyle = water;
-  ctx.fillRect(0, horizonY, w, sandY - horizonY);
+  drawStars(true); // reward-only -- see this section's header comment
 
   for (const d of scene.glitterDots) {
     const twinkle = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * d.twinkleSpeed + d.phase));
