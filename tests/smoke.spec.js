@@ -6834,6 +6834,63 @@ test('each ambient layer repeat gets a fresh, in-range randomized playback rate,
   expect(errors).toEqual([]);
 });
 
+// Player request: "waves of different sizes and different ways of
+// crashing." SCENE_AMBIENT_CONFIG.beach's own `waves` layer overrides the
+// shared default rate range (AMBIENT_VARIATION.RATE_RANGE, deliberately
+// subtle at [0.94, 1.06]) with a much wider one. Verified two ways: (1) a
+// real repeat's actual playbackRate stays within the configured wide
+// bounds, not the old narrow default -- proves startLoopingAmbientLayer's
+// rateRange parameter is really wired through, not just sitting unused in
+// config; (2) Math.random pinned to its two extremes proves randRange
+// actually maps this config's own [0.65, 1.45] end to end, rather than
+// relying on enough real (necessarily few, in a short test window) random
+// repeats happening to land outside some subrange by chance.
+test("Beach's waves layer gets a much wider playback-rate spread than every other ambient layer, so repeats genuinely read as different-sized waves", async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.addInitScript(() => {
+    navigator.vibrate = () => true;
+    window.__waveRates = [];
+    const origStart = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function (...args) {
+      if (typeof STATE !== 'undefined' && STATE.ambientBuffers && STATE.ambientBuffers.beach &&
+          this.buffer === STATE.ambientBuffers.beach.waves) {
+        window.__waveRates.push(this.playbackRate.value);
+      }
+      return origStart.apply(this, args);
+    };
+  });
+  await injectSceneWaveSetup(page);
+  await page.goto('/index.html');
+  await page.click('#start-game-button');
+  await page.waitForTimeout(500);
+
+  const result = await page.evaluate(async () => {
+    await STATE.ambientBuffersReadyPromise;
+    setUpCompletableSceneWave('beach');
+    for (let i = 0; i < 6; i++) {
+      checkWaveComplete();
+      await new Promise((r) => setTimeout(r, 30));
+    }
+
+    const configRateRange = SCENE_AMBIENT_CONFIG.beach.sounds.waves.rateRange;
+    const originalRandom = Math.random;
+    Math.random = () => 0;
+    const rateAtMin = randRange(configRateRange);
+    Math.random = () => 0.999999;
+    const rateAtMax = randRange(configRateRange);
+    Math.random = originalRandom;
+
+    return { configRateRange, rates: window.__waveRates, rateAtMin, rateAtMax };
+  });
+
+  expect(result.configRateRange).toEqual([0.65, 1.45]);
+  expect(result.rateAtMin).toBeCloseTo(0.65, 5);
+  expect(result.rateAtMax).toBeCloseTo(1.45, 4);
+  expect(result.rates.length).toBeGreaterThan(0);
+  expect(result.rates.every((r) => r >= 0.65 - 1e-9 && r <= 1.45 + 1e-9)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 test("drawStars(rewardOnly) only renders each connection's own reward halo (pairId-tagged stars) when true, leaving the plain ambient/reveal starfield (untagged) out -- the default (no argument) call still renders everything, unchanged for every scene but Forest (review catch, PR #97 -- Forest's real photo made the ambient starfield redundant, but spawnStarsAroundDots' reward halo is live gameplay feedback for a still-connected pair and has to keep rendering regardless of scene)", async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
@@ -6918,7 +6975,102 @@ test('the Night Forest scene (real photo + Ken Burns pan/zoom) generates and dra
   expect(errors).toEqual([]);
 });
 
-test('the Beach at Night scene (real photo + Ken Burns pan/zoom) generates and draws without error, sharing the moon with Night Forest, and its background photo actually loads', async ({ page }) => {
+// Player feedback (2026-08-17): the old single beach-night.jpg was an
+// open-ocean/starry-sky photo with no actual sand/shoreline in frame, and
+// the scene was hardcoded night-only. Rebuilt on Safari's own day/night
+// architecture (two real photos, STATE.beachVariant persisting across a
+// block the same way STATE.safariVariant does) plus a real-photo cutout
+// library (palms/dolphins/whale/cruise ship). Covers both variants in one
+// test, same pattern as Safari's own equivalent test.
+for (const variant of ['day', 'night']) {
+  test(`the Beach scene's ${variant} variant (real photo + Ken Burns pan/zoom + cutouts) generates and draws without error, and its background photo actually loads`, async ({ page }) => {
+    const errors = trackErrors(page);
+    await page.goto('/index.html');
+    await page.waitForFunction(() => window.__lumina);
+
+    const result = await page.evaluate(async (variant) => {
+      canvas.width = 500; canvas.height = 900;
+      STATE.scene = 'beach';
+      STATE.beachVariant = variant;
+      STATE.beachScene = generateBeachScene();
+      const phaseBefore = STATE.beachScene.phase;
+      updateBeachScene();
+      // Snapshot right after the manual update, not after the wait below --
+      // the game's own render loop may also be advancing STATE.beachScene
+      // (it's already been switched to 'beach') during that 1.5s gap.
+      const phaseAdvanced = STATE.beachScene.phase === phaseBefore + 1;
+      drawBeachScene(); // throws if anything in the draw path is broken, including before the photo has finished loading
+
+      await new Promise((resolve) => setTimeout(resolve, 1500)); // give the real photo a chance to load over the local server
+      drawBeachScene(); // and again once it plausibly has, same guard either way
+
+      const img = BEACH_IMAGES[variant];
+      return {
+        variantMatches: STATE.beachScene.variant === variant,
+        hasWaveLines: STATE.beachScene.waveLines.length > 0,
+        hasGlitterDots: STATE.beachScene.glitterDots.length > 0,
+        hasBoat: !!STATE.beachScene.boat,
+        hasPalms: STATE.beachScene.palms.length > 0,
+        hasDolphins: STATE.beachScene.dolphins.length > 0,
+        hasPalmOverhang: !!STATE.beachScene.palmOverhang,
+        hasWhale: !!STATE.beachScene.whale,
+        phaseAdvanced,
+        phaseStartedRandomized: phaseBefore >= 0 && phaseBefore < BEACH_CONFIG.PAN_CYCLE_FRAMES,
+        imageLoaded: img.complete && img.naturalWidth > 0,
+        moonHelperShared: typeof drawNightMoon === 'function',
+      };
+    }, variant);
+
+    expect(result.variantMatches).toBe(true);
+    expect(result.hasWaveLines).toBe(true);
+    expect(result.hasGlitterDots).toBe(true);
+    expect(result.hasBoat).toBe(true);
+    expect(result.hasPalms).toBe(true);
+    expect(result.hasDolphins).toBe(true);
+    expect(result.hasPalmOverhang).toBe(true);
+    expect(result.hasWhale).toBe(true);
+    expect(result.phaseAdvanced).toBe(true);
+    expect(result.phaseStartedRandomized).toBe(true);
+    expect(result.imageLoaded).toBe(true);
+    expect(result.moonHelperShared).toBe(true);
+    expect(errors).toEqual([]);
+  });
+}
+
+test('Beach cutouts are darkened for the night variant but left untouched for day (same nightTint technique as Safari)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const nightTintsSeen = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    const originalCutout = drawBeachCutout;
+    const seen = [];
+    window.drawBeachCutout = (...args) => { seen.push(args[5]); return originalCutout(...args); };
+
+    for (const variant of ['day', 'night']) {
+      STATE.scene = 'beach';
+      STATE.beachVariant = variant;
+      STATE.beachScene = generateBeachScene();
+      await new Promise((r) => setTimeout(r, 200));
+      drawBeachScene();
+    }
+    window.drawBeachCutout = originalCutout;
+    return seen;
+  });
+
+  expect(nightTintsSeen.length).toBeGreaterThan(0);
+  expect(nightTintsSeen.some((v) => v === true)).toBe(true);
+  expect(nightTintsSeen.some((v) => v === false)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+// Player report, screenshot: shore palms anchored bare at the horizon
+// (the water/sky line) with no trunk under them read as trees floating
+// in the air, over the water. drawBeachPalm now anchors at sandY (well
+// within the photo's own visible foreground sand) with a procedural
+// trunk closing the gap, not horizonY.
+test('Beach palms are planted in the sand (anchored at sandY, well below the water-line horizon), not floating at the horizon', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
@@ -6926,36 +7078,112 @@ test('the Beach at Night scene (real photo + Ken Burns pan/zoom) generates and d
   const result = await page.evaluate(async () => {
     canvas.width = 500; canvas.height = 900;
     STATE.scene = 'beach';
+    STATE.beachVariant = 'day';
     STATE.beachScene = generateBeachScene();
-    const phaseBefore = STATE.beachScene.phase;
-    updateBeachScene();
-    // Snapshot right after the manual update, not after the wait below --
-    // the game's own render loop may also be advancing STATE.beachScene
-    // (it's already been switched to 'beach') during that 1.5s gap.
-    const phaseAdvanced = STATE.beachScene.phase === phaseBefore + 1;
-    drawBeachScene(); // throws if anything in the draw path is broken, including before the photo has finished loading
+    await new Promise((r) => setTimeout(r, 300));
 
-    await new Promise((resolve) => setTimeout(resolve, 1500)); // give art/beach-night.jpg a real chance to load over the local server
-    drawBeachScene(); // and again once it plausibly has, same guard either way
-
-    return {
-      hasWaveLines: STATE.beachScene.waveLines.length > 0,
-      hasGlitterDots: STATE.beachScene.glitterDots.length > 0,
-      hasBoat: !!STATE.beachScene.boat,
-      phaseAdvanced,
-      phaseStartedRandomized: phaseBefore >= 0 && phaseBefore < BEACH_CONFIG.PAN_CYCLE_FRAMES,
-      imageLoaded: BEACH_IMAGE.complete && BEACH_IMAGE.naturalWidth > 0,
-      moonHelperShared: typeof drawNightMoon === 'function',
+    const original = drawBeachCutout;
+    const palmGroundYs = [];
+    window.drawBeachCutout = (source, xCenter, groundY, ...rest) => {
+      if (source === 'palm-shore-crown') palmGroundYs.push(groundY);
+      return original(source, xCenter, groundY, ...rest);
     };
+    drawBeachScene();
+    window.drawBeachCutout = original;
+
+    const cfg = BEACH_CONFIG;
+    const sandY = canvas.height - cfg.SAND_HEIGHT_FRAC * canvas.height;
+    // The crown itself is anchored ABOVE sandY by its own procedural
+    // trunk's height (see drawBeachPalm) -- the trunk's own BASE, not
+    // the crown, is what's actually planted at sandY.
+    const expectedCrownYs = STATE.beachScene.palms.map((p) => sandY - p.trunkHeightFrac * canvas.height);
+    return { palmGroundYs, expectedCrownYs, sandY };
   });
 
-  expect(result.hasWaveLines).toBe(true);
-  expect(result.hasGlitterDots).toBe(true);
-  expect(result.hasBoat).toBe(true);
-  expect(result.phaseAdvanced).toBe(true);
-  expect(result.phaseStartedRandomized).toBe(true);
-  expect(result.imageLoaded).toBe(true);
-  expect(result.moonHelperShared).toBe(true);
+  expect(result.palmGroundYs.length).toBeGreaterThan(0);
+  expect(result.palmGroundYs.length).toBe(result.expectedCrownYs.length);
+  // Each crown sits exactly at sandY minus its own trunk height -- i.e.
+  // the trunk's base (the tree's actual anchor point) is planted right
+  // at sandY, not scattered up near the horizon the way the old (buggy)
+  // version anchored the bare crown itself.
+  const allMatch = result.palmGroundYs.every((y, i) => Math.abs(y - result.expectedCrownYs[i]) < 1);
+  expect(allMatch).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+// Codex review catch, PR #101: on a wide/landscape canvas, the night
+// photo's portrait aspect (1600x2000) makes drawH end up far taller than
+// the canvas once cover-fit by width, and the pan cycle's plain sine
+// wave could swing far enough that the mapped horizon -- and every
+// horizon-anchored cutout -- landed off the bottom of the screen for a
+// real stretch of the 90-second cycle. panY is now clamped to keep the
+// horizon on-screen regardless of canvas shape.
+test('Beach horizon (and every horizon-anchored cutout) stays on-screen across the full pan cycle, even on a wide landscape canvas', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 1920; canvas.height = 1080;
+    STATE.scene = 'beach';
+    STATE.beachVariant = 'night'; // the portrait-photo variant Codex's math was about
+    STATE.beachScene = generateBeachScene();
+    await new Promise((r) => setTimeout(r, 500));
+
+    const original = drawBeachCutout;
+    const ys = [];
+    window.drawBeachCutout = (source, xCenter, groundY, ...rest) => {
+      ys.push(groundY);
+      return original(source, xCenter, groundY, ...rest);
+    };
+    const cfg = BEACH_CONFIG;
+    // Sample densely across the whole pan cycle (not just the exact
+    // cycle=0.75 point Codex's own math used).
+    for (let frac = 0; frac < 1; frac += 0.02) {
+      STATE.beachScene.phase = Math.round(frac * cfg.PAN_CYCLE_FRAMES);
+      drawBeachScene();
+    }
+    window.drawBeachCutout = original;
+    return { ys, h: canvas.height };
+  });
+
+  expect(result.ys.length).toBeGreaterThan(0);
+  expect(result.ys.every((y) => y >= 0 && y <= result.h)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+test('Beach day/night pick rides along with a saved game across a reload, same pattern as Safari\'s own variant', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const savedVariant = await page.evaluate(() => {
+    // Fixed, so every wave below is guaranteed to actually be Beach --
+    // persisted via saveSceneSetting (SCENE_KEY), not SAVE_KEY, same as
+    // Safari's own equivalent test.
+    STATE.sceneMode = 'beach';
+    saveSceneSetting('beach');
+    startWave(1);
+    STATE.wave = 2; // still mid-block -- not the block's own last wave
+    STATE.score = 50;
+    saveGame();
+    return STATE.beachVariant;
+  });
+  expect(['day', 'night']).toContain(savedVariant);
+
+  await page.reload();
+  await page.waitForFunction(() => window.__lumina);
+  const variantAfterReloadNoLoad = await page.evaluate(() => STATE.beachVariant);
+  // A reload alone doesn't resume anything yet -- there's nothing wrong
+  // with this being null, it just shouldn't be treated as meaningful
+  // until an actual load/autoload happens below.
+  expect(variantAfterReloadNoLoad).toBeNull();
+
+  await page.click('#title-load-button');
+  await page.waitForTimeout(200);
+  const restoredVariant = await page.evaluate(() => STATE.beachVariant);
+
+  expect(restoredVariant).toBe(savedVariant);
   expect(errors).toEqual([]);
 });
 

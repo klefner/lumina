@@ -259,11 +259,12 @@ function saveGame() {
     // would get silently overwritten the moment a fresh game starts
     // without touching this save, so loading the save back afterward
     // would resolve its already-played waves against the wrong seed,
-    // possibly changing which package they'd shown. safariVariant rides
-    // along for the exact same reason (review catch, PR #91): without it,
-    // reloading mid-Safari-block would have a coin-flip chance of
-    // switching day<->night before that block's waves were actually done.
-    localStorage.setItem(SAVE_KEY, JSON.stringify({ wave: STATE.wave, score: STATE.score, rotateSeed: STATE.rotateSeed, safariVariant: STATE.safariVariant }));
+    // possibly changing which package they'd shown. safariVariant/
+    // beachVariant ride along for the exact same reason (review catch, PR
+    // #91): without it, reloading mid-Safari-or-Beach-block would have a
+    // coin-flip chance of switching day<->night before that block's waves
+    // were actually done.
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ wave: STATE.wave, score: STATE.score, rotateSeed: STATE.rotateSeed, safariVariant: STATE.safariVariant, beachVariant: STATE.beachVariant }));
     return true;
   } catch (e) { return false; }
 }
@@ -273,12 +274,13 @@ function loadSave() {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed.wave || parsed.wave < 1) return null;
-    // rotateSeed/safariVariant are missing on a save written before those
-    // fields existed -- every call site falls back to STATE's own current
-    // value (rotateSeed) or lets generateSafariScene reroll fresh
-    // (safariVariant) when this is null (see
+    // rotateSeed/safariVariant/beachVariant are missing on a save written
+    // before those fields existed -- every call site falls back to
+    // STATE's own current value (rotateSeed) or lets
+    // generateSafariScene/generateBeachScene reroll fresh (safariVariant/
+    // beachVariant) when this is null (see
     // handleLoadGameFromTitle/handleLoadGame/startGameFromTitle).
-    return { wave: parsed.wave, score: parsed.score || 0, rotateSeed: parsed.rotateSeed || null, safariVariant: parsed.safariVariant || null };
+    return { wave: parsed.wave, score: parsed.score || 0, rotateSeed: parsed.rotateSeed || null, safariVariant: parsed.safariVariant || null, beachVariant: parsed.beachVariant || null };
   } catch (e) { return null; }
 }
 function clearSave() {
@@ -2671,6 +2673,7 @@ function handleLoadGameFromTitle() {
   STATE.score = resume.score;
   if (resume.rotateSeed) STATE.rotateSeed = resume.rotateSeed; // this save's own order, not whatever's currently in STATE
   STATE.safariVariant = resume.safariVariant || null; // this save's own day/night pick, not a leftover from earlier in this page session
+  STATE.beachVariant = resume.beachVariant || null; // same reasoning, Beach's own day/night pick
   startWave(resume.wave);
 }
 
@@ -2694,6 +2697,7 @@ function startGameFromTitle() {
     STATE.score = resume.score;
     if (resume.rotateSeed) STATE.rotateSeed = resume.rotateSeed; // this save's own order, not whatever's currently in STATE
     STATE.safariVariant = resume.safariVariant || null; // this save's own day/night pick, not a leftover from earlier in this page session
+    STATE.beachVariant = resume.beachVariant || null; // same reasoning, Beach's own day/night pick
     startWave(resume.wave);
   } else {
     STATE.pendingResume = null;
@@ -2701,11 +2705,14 @@ function startGameFromTitle() {
     // Same reasoning as rotateSeed just above: a genuinely new playthrough
     // must not inherit whatever day/night pick (or mid-pan phase) was
     // still sitting in STATE from earlier in this page session -- without
-    // this, a fresh Start Game landing on Safari again would silently
-    // treat itself as "still the same block" (see generateSafariScene's
-    // previousScene check) and keep the old variant instead of rerolling.
+    // this, a fresh Start Game landing on Safari (or Beach) again would
+    // silently treat itself as "still the same block" (see
+    // generateSafariScene/generateBeachScene's previousScene check) and
+    // keep the old variant instead of rerolling.
     STATE.safariScene = null;
     STATE.safariVariant = null;
+    STATE.beachScene = null;
+    STATE.beachVariant = null;
     startWave(1);
   }
 }
@@ -2933,8 +2940,12 @@ const STATE = {
                          // what render() actually draws, independent of sceneMode
   forestScene: null,    // { trees, fireflies, moonXFrac, ... } for the current wave when
                          // scene === 'forest' (see generateForestScene); null otherwise
-  beachScene: null,      // { waveLines, glitterDots, moonXFrac, ... } for the current wave when
+  beachScene: null,      // { variant, waveLines, glitterDots, moonXFrac, palmOverhang, palms,
+                          // dolphins, whale, cruiseShip, boat, ... } for the current wave when
                           // scene === 'beach' (see generateBeachScene); null otherwise
+  beachVariant: null,    // 'day' or 'night', persists across a whole beach block once rolled,
+                          // same pattern as safariVariant (see its own comment below and
+                          // generateBeachScene) -- rides along with SAVE_KEY the same way
   birthdayScene: null,    // { confetti, lights, cakeXFrac, celebrating, celebrationBalloons, ... } for the current wave
                            // when scene === 'birthday' (see generateBirthdayScene); null otherwise
   halloweenScene: null,   // { pumpkins, bats, trees, fogBands, ... } for the current wave when
@@ -3807,7 +3818,16 @@ const SCENE_AMBIENT_CONFIG = {
     // it ran a bit hot relative to everything else in the scene.
     order: ['waves', 'wind', 'shorebirds', 'whale'],
     sounds: {
-      waves: { file: 'beach-waves.mp3', gain: 0.6, isEvent: false },
+      // Player request: "waves of different sizes and different ways of
+      // crashing." A pitch/speed-shifted repeat of the same recording
+      // reads as a genuinely different-sized wave the same way it already
+      // reads as a different animal call for wildlife/owl/shorebirds
+      // elsewhere in this file -- rateRange overrides the shared default
+      // (AMBIENT_VARIATION.RATE_RANGE, [0.94, 1.06], tuned to be
+      // unnoticeable) with a much wider spread: slowed and deepened
+      // toward 0.65 reads as a bigger, heavier swell; sped up and
+      // brightened toward 1.45 reads as a smaller, quicker chop.
+      waves: { file: 'beach-waves.mp3', gain: 0.6, isEvent: false, rateRange: [0.65, 1.45] },
       wind: { file: 'beach-wind.mp3', gain: 0.4, isEvent: false },
       shorebirds: { file: 'beach-shorebirds.mp3', gain: 0.56, isEvent: true, minGapSec: 12, maxGapSec: 32 },
       whale: { file: 'beach-whale.mp3', gain: 0.55, isEvent: true, minGapSec: 30, maxGapSec: 65 },
@@ -3911,7 +3931,10 @@ const SCENE_AMBIENT_CONFIG = {
 // read as an obviously exact, identical loop. Shared across every scene
 // above rather than tuned per scene.
 const AMBIENT_VARIATION = {
-  RATE_RANGE: [0.94, 1.06], // playbackRate -- pitch and speed together, same technique the pitched instrument samples use
+  RATE_RANGE: [0.94, 1.06], // playbackRate -- pitch and speed together, same technique the pitched instrument samples use.
+                             // Default for every layer; an individual sound in SCENE_AMBIENT_CONFIG can override
+                             // this with its own `rateRange` when a subtler range doesn't read as varied enough
+                             // (see beach's own `waves` -- player request, "waves of different sizes").
   GAIN_RANGE: [0.85, 1.15], // multiplies each sound's own base gain above
   PAN_RANGE: [-0.3, 0.3],
   CROSSFADE_SEC: 1.5, // overlap between an outgoing loop instance and the next
@@ -4010,7 +4033,7 @@ function trackAmbientSource(source, gain) {
 // repeat (the currently-playing instance is left to fade out on its own
 // schedule, or gets force-stopped by resetSceneAmbience if that's what
 // actually called stop()).
-function startLoopingAmbientLayer(buffer, baseGain) {
+function startLoopingAmbientLayer(buffer, baseGain, rateRange) {
   let stopped = false;
   let timer = null;
   const cfg = AMBIENT_VARIATION;
@@ -4021,7 +4044,7 @@ function startLoopingAmbientLayer(buffer, baseGain) {
     const now = ctx.currentTime;
     const source = ctx.createBufferSource();
     source.buffer = buffer;
-    source.playbackRate.value = randRange(cfg.RATE_RANGE);
+    source.playbackRate.value = randRange(rateRange || cfg.RATE_RANGE);
 
     const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
     if (panner) panner.pan.value = randRange(cfg.PAN_RANGE);
@@ -4063,7 +4086,7 @@ function startLoopingAmbientLayer(buffer, baseGain) {
 // a beat after first being revealed). Same per-repeat pitch/gain/pan
 // variation as the looping layers above, plus a short fade-in so the
 // sound eases in rather than snapping straight to full volume.
-function startEventAmbientLayer(buffer, baseGain, minGapSec, maxGapSec) {
+function startEventAmbientLayer(buffer, baseGain, minGapSec, maxGapSec, rateRange) {
   let stopped = false;
   let timer = null;
   const cfg = AMBIENT_VARIATION;
@@ -4074,7 +4097,7 @@ function startEventAmbientLayer(buffer, baseGain, minGapSec, maxGapSec) {
     const now = ctx.currentTime;
     const source = ctx.createBufferSource();
     source.buffer = buffer;
-    source.playbackRate.value = randRange(cfg.RATE_RANGE);
+    source.playbackRate.value = randRange(rateRange || cfg.RATE_RANGE);
 
     const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
     if (panner) panner.pan.value = randRange(cfg.PAN_RANGE);
@@ -4113,8 +4136,8 @@ async function startSceneAmbienceLayer(scene, name) {
 
   const cfg = SCENE_AMBIENT_CONFIG[scene].sounds[name];
   STATE.ambienceLayers[name] = cfg.isEvent
-    ? startEventAmbientLayer(buffer, cfg.gain, cfg.minGapSec, cfg.maxGapSec)
-    : startLoopingAmbientLayer(buffer, cfg.gain);
+    ? startEventAmbientLayer(buffer, cfg.gain, cfg.minGapSec, cfg.maxGapSec, cfg.rateRange)
+    : startLoopingAmbientLayer(buffer, cfg.gain, cfg.rateRange);
 }
 
 // Stops every scene ambience layer -- both future repeats (each layer's
@@ -7928,7 +7951,10 @@ function startWave(waveNumber) {
   // spirit as a new wave's own starfield/celestial-body reveal.
   STATE.scene = resolveSceneForWave(waveNumber);
   STATE.forestScene = STATE.scene === 'forest' ? generateForestScene() : null;
-  STATE.beachScene = STATE.scene === 'beach' ? generateBeachScene() : null;
+  // Beach's own day/night pick has to survive every wave of its block
+  // unchanged, same reasoning (and same OUTGOING-STATE-passed-as-
+  // previousScene technique) as Safari's below.
+  STATE.beachScene = STATE.scene === 'beach' ? generateBeachScene(STATE.beachScene) : null;
   STATE.birthdayScene = STATE.scene === 'birthday' ? generateBirthdayScene() : null;
   STATE.halloweenScene = STATE.scene === 'halloween' ? generateHalloweenScene() : null;
   STATE.christmasScene = STATE.scene === 'christmas' ? generateChristmasScene() : null;
@@ -9343,7 +9369,7 @@ function drawForestScene() {
 // canvas.width/height, not absolute pixels, same reasoning as the
 // forest's trees.
 const BEACH_CONFIG = {
-  image: 'art/beach-night.jpg',
+  images: { day: 'art/beach-day.jpg', night: 'art/beach-night.jpg' },
   // Player report: the pan/zoom read as moving too fast. Doubled from
   // Safari's original 2700 (45s per full there-and-back cycle at ~60fps)
   // to 5400 (90s) -- background motion, not something that should ever
@@ -9351,14 +9377,50 @@ const BEACH_CONFIG = {
   PAN_CYCLE_FRAMES: 5400,
   ZOOM_MIN: 1.05,
   ZOOM_MAX: 1.18,
-  HORIZON_FRAC: 0.688,
+  // Where the water/sand line actually sits in each SOURCE photo, as a
+  // fraction of its own height -- measured directly from the JPEGs (a
+  // brightness-gradient scan down the vertical center column), same
+  // technique as SAFARI_CONFIG.HORIZON_FRAC. Used to place every
+  // ground-anchored cutout (palms, dolphins, the cruise ship, the boat)
+  // ON the actual water/sand line the photo shows, mapped through the
+  // same cover-fit/pan/zoom transform the background itself uses.
+  HORIZON_FRAC: { day: 0.413, night: 0.672 },
   SAND_HEIGHT_FRAC: 0.07,
-  SAND_COLOR: '#4d4330',
-  BOAT_COLOR: '#050a14',
+  SAND_COLOR: { day: '#e3c07f', night: '#4d4330' },
+  BOAT_COLOR: { day: '#16324a', night: '#050a14' },
+  PALM_TRUNK_COLOR: { day: '#6b4a2f', night: '#1c130c' },
+  PALM_SHORE_COUNT: 2,
+  DOLPHIN_COUNT: 2,
+  // Not every wave -- a cruise ship crossing the horizon should read as a
+  // rarer sight than the everyday sailboat, not a second boat every time.
+  CRUISE_SHIP_CHANCE: 0.6,
 };
-const BEACH_IMAGE = Object.assign(new Image(), { src: BEACH_CONFIG.image });
+const BEACH_IMAGES = {
+  day: Object.assign(new Image(), { src: BEACH_CONFIG.images.day }),
+  night: Object.assign(new Image(), { src: BEACH_CONFIG.images.night }),
+};
 
-function generateBeachScene() {
+// Real photo cutouts (background removed with rembg, sourcing + process
+// notes in art/CREDITS.md), same technique as Safari's tree/animal
+// library -- palm-shore-crown and dolphin/whale/cruise-ship are all
+// ground-anchored at the horizon (see drawBeachCutout); palm-overhang is
+// the one exception, anchored from a screen corner instead (see
+// drawBeachOverhang's own comment).
+const BEACH_CUTOUT_SOURCES = ['palm-overhang', 'palm-shore-crown', 'dolphin', 'whale', 'cruise-ship'];
+const BEACH_CUTOUT_IMAGES = {};
+for (const name of BEACH_CUTOUT_SOURCES) {
+  BEACH_CUTOUT_IMAGES[name] = Object.assign(new Image(), { src: `art/beach-cutouts/${name}.webp` });
+}
+
+function generateBeachScene(previousScene) {
+  if (!STATE.beachVariant) {
+    STATE.beachVariant = Math.random() < 0.5 ? 'day' : 'night';
+  }
+  // Staggers where each fresh block's pan cycle starts, same reasoning as
+  // Safari's own phase -- not reset to 0, can already be anywhere from
+  // 0-5399 (or an arbitrarily large carried-forward value).
+  const phase = previousScene ? previousScene.phase : Math.floor(Math.random() * BEACH_CONFIG.PAN_CYCLE_FRAMES);
+
   const waveLineCount = 4 + Math.floor(Math.random() * 3);
   const waveLines = [];
   for (let i = 0; i < waveLineCount; i++) {
@@ -9371,16 +9433,16 @@ function generateBeachScene() {
     });
   }
 
-  const moonXFrac = 0.15 + Math.random() * 0.7;
-  // The moon's reflection on the water: a loose vertical scatter of dots
-  // under the moon's own x position, widening as it nears the shore --
-  // the same "glitter path" a real moon casts on open water.
+  const celestialXFrac = 0.15 + Math.random() * 0.7;
+  // The moon/sun's reflection on the water: a loose vertical scatter of
+  // dots under its own x position, widening as it nears the shore -- the
+  // same "glitter path" real open water shows under either.
   const glitterCount = 14 + Math.floor(Math.random() * 8);
   const glitterDots = [];
   for (let i = 0; i < glitterCount; i++) {
     const depth = i / glitterCount; // 0 near the horizon, 1 near the shore
     glitterDots.push({
-      xFrac: moonXFrac + (Math.random() - 0.5) * (0.03 + depth * 0.12),
+      xFrac: celestialXFrac + (Math.random() - 0.5) * (0.03 + depth * 0.12),
       yFrac: depth,
       phase: Math.random() * Math.PI * 2,
       twinkleSpeed: 0.003 + Math.random() * 0.004,
@@ -9400,20 +9462,67 @@ function generateBeachScene() {
     sizeFrac: 0.03 + Math.random() * 0.015,
   };
 
+  // Palm crowns along the shoreline. The cutout itself is crown-only (no
+  // trunk in its source photo -- see CREDITS.md), so trunkHeightFrac
+  // drives a procedural trunk drawn underneath at render time (see
+  // drawBeachScene) -- planting each palm in the photo's own visible
+  // foreground sand near the bottom of the screen, NOT at the horizon
+  // (player report, screenshot: cutouts anchored bare at the horizon
+  // read as trees floating in the air, over the water).
+  const palms = [];
+  for (let i = 0; i < BEACH_CONFIG.PALM_SHORE_COUNT; i++) {
+    const sizeFrac = 0.16 + Math.random() * 0.08;
+    palms.push({ xFrac: 0.05 + Math.random() * 0.9, sizeFrac, trunkHeightFrac: sizeFrac * (0.9 + Math.random() * 0.5) });
+  }
+
+  // Dolphins leaping near the water's surface, wrapping across the
+  // screen the same way Safari's animals do.
+  const dolphins = [];
+  for (let i = 0; i < BEACH_CONFIG.DOLPHIN_COUNT; i++) {
+    dolphins.push({
+      xFrac: Math.random(),
+      direction: Math.random() < 0.5 ? 1 : -1,
+      speed: 0.0004 + Math.random() * 0.0004,
+      bobPhase: Math.random() * Math.PI * 2,
+      sizeFrac: 0.05 + Math.random() * 0.02,
+    });
+  }
+
+  // A much bigger, much slower vessel than the sailboat -- not every
+  // block gets one (CRUISE_SHIP_CHANCE), so spotting it feels like an
+  // occasional sight rather than routine scenery.
+  const cruiseShip = Math.random() < BEACH_CONFIG.CRUISE_SHIP_CHANCE ? {
+    xFrac: Math.random(),
+    direction: Math.random() < 0.5 ? 1 : -1,
+    speed: 0.00003 + Math.random() * 0.00002,
+    sizeFrac: 0.14 + Math.random() * 0.06,
+  } : null;
+
   return {
+    variant: STATE.beachVariant,
+    phase,
     waveLines,
     glitterDots,
     boat,
-    moonXFrac,
-    moonYFrac: 0.08 + Math.random() * 0.12,
-    moonRadiusFrac: 0.045 + Math.random() * 0.02,
-    // Frame accumulator driving the surf/glitter/boat animation below
-    // (see updateBeachScene) and the photo's Ken Burns pan/zoom (see
-    // drawBeachScene) -- started at a random point in the pan cycle
-    // rather than always 0, so consecutive waves don't all visibly begin
-    // from the same framing (every wave regenerates this scene fresh,
-    // same as Forest).
-    phase: Math.floor(Math.random() * BEACH_CONFIG.PAN_CYCLE_FRAMES),
+    palms,
+    dolphins,
+    cruiseShip,
+    // One dramatic overhanging palm frond in a screen corner -- a real
+    // travel-photo composition trope, not ground-anchored at all (see
+    // drawBeachOverhang's own comment on why this cutout anchors from a
+    // corner instead of the horizon). Rerolled fresh every wave, same as
+    // every other decorative detail here.
+    palmOverhang: { corner: Math.random() < 0.5 ? 'left' : 'right', sizeFrac: 0.55 + Math.random() * 0.15 },
+    celestialXFrac,
+    celestialYFrac: 0.08 + Math.random() * 0.12,
+    celestialRadiusFrac: 0.045 + Math.random() * 0.02,
+    // Occasional whale-tail sighting, same active/life/nextSpawnFrame
+    // pattern as Safari's shooting star -- nextSpawnFrame is offset by
+    // this scene's own starting phase for the same reason Safari's is
+    // (review catch, PR #92): phase can already be large on a fresh
+    // scene, so a small fixed delay alone could spawn one almost
+    // immediately.
+    whale: { active: false, xFrac: 0.5, sizeFrac: 0.06, life: 0, maxLife: 1, nextSpawnFrame: phase + 300 + Math.floor(Math.random() * 600) },
   };
 }
 
@@ -9421,6 +9530,7 @@ function updateBeachScene() {
   if (STATE.scene !== 'beach' || !STATE.beachScene) return;
   const scene = STATE.beachScene;
   scene.phase += 1;
+
   const boat = scene.boat;
   boat.xFrac += boat.speed * boat.direction;
   // Wrapped rather than recycled from a random edge -- same technique as
@@ -9429,19 +9539,127 @@ function updateBeachScene() {
   // mid-frame.
   if (boat.xFrac > 1.08) { boat.xFrac = -0.08; }
   else if (boat.xFrac < -0.08) { boat.xFrac = 1.08; }
+
+  if (scene.cruiseShip) {
+    const ship = scene.cruiseShip;
+    ship.xFrac += ship.speed * ship.direction;
+    if (ship.xFrac > 1.1) ship.xFrac = -0.1;
+    else if (ship.xFrac < -0.1) ship.xFrac = 1.1;
+  }
+
+  for (const dolphin of scene.dolphins) {
+    dolphin.xFrac += dolphin.speed * dolphin.direction;
+    if (dolphin.xFrac > 1.08) dolphin.xFrac = -0.08;
+    else if (dolphin.xFrac < -0.08) dolphin.xFrac = 1.08;
+  }
+
+  const whale = scene.whale;
+  if (whale.active) {
+    whale.life--;
+    if (whale.life <= 0) {
+      whale.active = false;
+      whale.nextSpawnFrame = scene.phase + 600 + Math.floor(Math.random() * 1200); // roughly 10-30s at 60fps -- a rare sighting
+    }
+  } else if (scene.phase >= whale.nextSpawnFrame) {
+    whale.active = true;
+    whale.xFrac = 0.1 + Math.random() * 0.8;
+    whale.maxLife = 90 + Math.floor(Math.random() * 60); // ~1.5-2.5s, long enough to actually notice
+    whale.life = whale.maxLife;
+  }
+}
+
+// Sun -- a flat warm disc with a soft glow, the day variant's counterpart
+// to drawNightMoon. No crescent bite (nothing to phase), so this needs
+// none of that function's offscreen-layer destination-out trickery --
+// just two direct radial-gradient fills on the main canvas.
+function drawBeachSun(sunXFrac, sunYFrac, sunRadiusFrac) {
+  const w = canvas.width, h = canvas.height;
+  const sx = sunXFrac * w, sy = sunYFrac * h;
+  const sr = sunRadiusFrac * Math.min(w, h);
+  const glow = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr * 3.2);
+  glow.addColorStop(0, 'rgba(255, 244, 214, 0.35)');
+  glow.addColorStop(1, 'rgba(255, 244, 214, 0)');
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(sx, sy, sr * 3.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#fff6df';
+  ctx.beginPath();
+  ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// Draws a real-photo cutout bottom-anchored at (xCenter, groundY) and
+// scaled to targetHeight, preserving the source image's own aspect ratio
+// -- same technique as drawSafariCutout, including the night-tint filter
+// for the same reason (every cutout is a real daylight photo, so the
+// night variant needs it darkened to a plausible moonlit silhouette
+// rather than reading at full midday brightness against the Milky Way).
+function drawBeachCutout(source, xCenter, groundY, targetHeight, direction, nightTint) {
+  const img = BEACH_CUTOUT_IMAGES[source];
+  if (!img.complete || img.naturalWidth === 0) return;
+  const targetWidth = targetHeight * (img.naturalWidth / img.naturalHeight);
+  ctx.save();
+  ctx.translate(xCenter, groundY);
+  if (direction < 0) ctx.scale(-1, 1);
+  if (nightTint) ctx.filter = 'brightness(0.4) saturate(0.55) contrast(1.05)';
+  ctx.drawImage(img, -targetWidth / 2, -targetHeight, targetWidth, targetHeight);
+  ctx.restore();
+}
+
+// A ground-anchored shore palm: a simple tapered procedural trunk (the
+// cutout itself is crown-only, see CREDITS.md) closing the visual gap
+// between the crown and groundY, then the crown cutout on top. Player
+// report, screenshot: a bare crown cutout anchored directly at a ground
+// point with nothing under it read as a tree floating in the air.
+function drawBeachPalm(palm, xCenter, groundY, canvasH, nightTint) {
+  const trunkHeight = palm.trunkHeightFrac * canvasH;
+  const trunkBaseWidth = trunkHeight * 0.1;
+  ctx.fillStyle = BEACH_CONFIG.PALM_TRUNK_COLOR[nightTint ? 'night' : 'day'];
+  ctx.beginPath();
+  ctx.moveTo(xCenter - trunkBaseWidth / 2, groundY);
+  ctx.lineTo(xCenter + trunkBaseWidth / 2, groundY);
+  ctx.lineTo(xCenter + trunkBaseWidth * 0.15, groundY - trunkHeight);
+  ctx.lineTo(xCenter - trunkBaseWidth * 0.15, groundY - trunkHeight);
+  ctx.closePath();
+  ctx.fill();
+  drawBeachCutout('palm-shore-crown', xCenter, groundY - trunkHeight, palm.sizeFrac * canvasH, 1, nightTint);
+}
+
+// The overhanging corner frond -- anchored from a TOP corner of the
+// screen instead of the horizon. Its source photo is a real palm leaning
+// out over open water, cropped tight to its own alpha bounding box (see
+// CREDITS.md); the trunk exits the photo's own right edge rather than
+// ever reaching a visible base, so there's no real "ground" to
+// bottom-anchor it to the way every other cutout here is. A palm frond
+// hanging into frame from a corner is itself a common, recognizable
+// beach-photo composition on its own terms, not a workaround.
+function drawBeachOverhang(overhang, w, h, nightTint) {
+  const img = BEACH_CUTOUT_IMAGES['palm-overhang'];
+  if (!img.complete || img.naturalWidth === 0) return;
+  const targetHeight = overhang.sizeFrac * h;
+  const targetWidth = targetHeight * (img.naturalWidth / img.naturalHeight);
+  ctx.save();
+  if (overhang.corner === 'right') {
+    ctx.translate(w, 0);
+    ctx.scale(-1, 1);
+  }
+  if (nightTint) ctx.filter = 'brightness(0.4) saturate(0.55) contrast(1.05)';
+  ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+  ctx.restore();
 }
 
 function drawBeachScene() {
   const scene = STATE.beachScene;
   if (!scene) return;
   const w = canvas.width, h = canvas.height, t = scene.phase;
-  const img = BEACH_IMAGE;
+  const img = BEACH_IMAGES[scene.variant];
 
   // Still loading (first time this session needs it) -- a flat fill
-  // close to the photo's own dominant tone beats a blank/white flash
-  // while it finishes downloading (same technique as Safari/Forest).
+  // matching the variant's own mood beats a blank/white flash while the
+  // photo finishes downloading (same technique as Safari/Forest).
   if (!img.complete || img.naturalWidth === 0) {
-    ctx.fillStyle = '#0a1420';
+    ctx.fillStyle = scene.variant === 'day' ? '#bcd9ea' : '#0a1420';
     ctx.fillRect(0, 0, w, h);
     return;
   }
@@ -9463,7 +9681,22 @@ function drawBeachScene() {
     drawH = drawW / imgAspect;
   }
   const panX = (drawW - w) * easedT;
-  const panY = (drawH - h) * (0.5 + 0.3 * Math.sin(cycle * Math.PI * 2));
+  let panY = (drawH - h) * (0.5 + 0.3 * Math.sin(cycle * Math.PI * 2));
+  // Clamped so the horizon -- and every horizon-anchored element (palms,
+  // dolphins, the cruise ship, the boat) -- never drifts off-screen
+  // (Codex review catch, PR #101): the night photo's portrait aspect
+  // (1600x2000) makes drawH end up FAR taller than a typical wide/
+  // landscape canvas once cover-fit by width, and the plain sine-wave
+  // panY above could then swing far enough that horizonY (see below)
+  // lands below the bottom of the screen for a real stretch of the pan
+  // cycle. Keeps the horizon within the middle 70% of the screen instead
+  // of letting the pan's own math push it arbitrarily off either edge.
+  const desiredHorizonY = cfg.HORIZON_FRAC[scene.variant] * drawH;
+  const minPanY = desiredHorizonY - h * 0.85;
+  const maxPanY = desiredHorizonY - h * 0.15;
+  panY = Math.min(maxPanY, Math.max(minPanY, panY));
+  // Still a valid crop of the actual image -- never reveal area outside it.
+  panY = Math.min(Math.max(panY, 0), Math.max(0, drawH - h));
   ctx.drawImage(img, -panX, -panY, drawW, drawH);
 
   // Mapped through the SAME pan/zoom space the photo itself just used
@@ -9473,17 +9706,24 @@ function drawBeachScene() {
   // strip stays plain screen-space on purpose: it's a decorative accent
   // at the visible bottom edge, not tied to any specific content the
   // photo shows.
-  const horizonY = -panY + cfg.HORIZON_FRAC * drawH;
+  const horizonY = -panY + cfg.HORIZON_FRAC[scene.variant] * drawH;
   const sandY = h - cfg.SAND_HEIGHT_FRAC * h;
+  const nightTint = scene.variant === 'night';
 
-  drawNightMoon(scene.moonXFrac, scene.moonYFrac, scene.moonRadiusFrac);
-  drawStars(true); // reward-only -- see this section's header comment
+  if (nightTint) {
+    drawNightMoon(scene.celestialXFrac, scene.celestialYFrac, scene.celestialRadiusFrac);
+    drawStars(true); // reward-only -- see this section's header comment
+  } else {
+    drawBeachSun(scene.celestialXFrac, scene.celestialYFrac, scene.celestialRadiusFrac);
+  }
 
   for (const d of scene.glitterDots) {
     const twinkle = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * d.twinkleSpeed + d.phase));
     const gx = d.xFrac * w;
     const gy = horizonY + d.yFrac * (sandY - horizonY);
-    ctx.fillStyle = `rgba(255, 250, 230, ${(d.alpha * twinkle).toFixed(3)})`;
+    ctx.fillStyle = nightTint
+      ? `rgba(255, 250, 230, ${(d.alpha * twinkle).toFixed(3)})`
+      : `rgba(255, 255, 255, ${(d.alpha * twinkle * 0.8).toFixed(3)})`;
     ctx.fillRect(gx - d.size / 2, gy - d.size / 2, d.size, d.size);
   }
 
@@ -9499,22 +9739,58 @@ function drawBeachScene() {
       const wobble = Math.sin(t * wl.speed + wl.phase + i * 0.9) * wl.amplitude;
       ctx.lineTo(x, ly + wobble);
     }
-    ctx.strokeStyle = `rgba(210, 230, 235, ${wl.opacity})`;
+    ctx.strokeStyle = nightTint ? `rgba(210, 230, 235, ${wl.opacity})` : `rgba(255, 255, 255, ${wl.opacity * 1.3})`;
     ctx.lineWidth = 1.5;
     ctx.stroke();
   }
 
+  // Foreground cutouts, mapped into the same pan/zoom space as the
+  // background/horizon above -- palms and the cruise ship first (they
+  // don't move fast, sit slightly further back conceptually), then the
+  // more active dolphins/whale/boat on top. Drawn before the vignette
+  // below so they pick up the same edge-darkening the photo does.
+  // Anchored at sandY (the top edge of the flat sand-color strip below),
+  // NOT horizonY -- horizonY is the water/sky line, which is exactly
+  // where the previous version wrongly anchored these and read as trees
+  // floating over the water. sandY sits within the photo's own visible
+  // foreground sand, so a palm planted there always reads as on land.
+  for (const palm of scene.palms) {
+    drawBeachPalm(palm, palm.xFrac * w, sandY, h, nightTint);
+  }
+  if (scene.cruiseShip) {
+    const ship = scene.cruiseShip;
+    drawBeachCutout('cruise-ship', ship.xFrac * w, horizonY, ship.sizeFrac * h, ship.direction, nightTint);
+  }
+  for (const dolphin of scene.dolphins) {
+    // A small vertical bounce in place of real swim animation -- same
+    // spirit as Safari's animal bob, since a static photo has no
+    // leap-cycle frames to animate.
+    const bob = Math.sin(t * 0.04 + dolphin.bobPhase) * dolphin.sizeFrac * h * 0.15;
+    drawBeachCutout('dolphin', dolphin.xFrac * w, horizonY + bob, dolphin.sizeFrac * h, dolphin.direction, nightTint);
+  }
+  if (scene.whale.active) {
+    // Fades in/out over its short life rather than popping, so a "spot
+    // the whale" moment reads as a real sighting, not a flashed sprite.
+    const fadeFrames = 15;
+    const alpha = Math.min(1, Math.min(scene.whale.maxLife - scene.whale.life, scene.whale.life, fadeFrames) / fadeFrames);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    drawBeachCutout('whale', scene.whale.xFrac * w, horizonY, scene.whale.sizeFrac * h, 1, nightTint);
+    ctx.restore();
+  }
+  drawBeachOverhang(scene.palmOverhang, w, h, nightTint);
+
   // Boat -- a simple hull-and-sail silhouette riding right at the horizon
   // line, bobbing gently (see updateBeachScene for its slow horizontal
-  // drift). The one point of warm color in an otherwise cool, dark scene
-  // is its masthead light -- what actually makes a real distant boat
-  // readable against a night horizon.
+  // drift). The one point of warm color otherwise is its masthead light
+  // -- what actually makes a real distant boat readable against a dim
+  // horizon (day or night).
   const boat = scene.boat;
   const boatX = boat.xFrac * w;
   const bob = Math.sin(t * boat.bobSpeed + boat.bobPhase) * 1.5;
   const boatY = horizonY + (sandY - horizonY) * 0.04 + bob;
   const br = boat.sizeFrac * w;
-  ctx.fillStyle = BEACH_CONFIG.BOAT_COLOR;
+  ctx.fillStyle = BEACH_CONFIG.BOAT_COLOR[scene.variant];
   ctx.beginPath();
   ctx.moveTo(boatX - br * 0.55, boatY);
   ctx.quadraticCurveTo(boatX, boatY + br * 0.28, boatX + br * 0.55, boatY);
@@ -9535,8 +9811,17 @@ function drawBeachScene() {
   ctx.fillStyle = 'rgba(255, 210, 140, 0.9)';
   ctx.fill();
 
-  ctx.fillStyle = BEACH_CONFIG.SAND_COLOR;
+  ctx.fillStyle = BEACH_CONFIG.SAND_COLOR[scene.variant];
   ctx.fillRect(0, sandY, w, h - sandY);
+
+  // Same reasoning as Safari's own vignette: a real photo has arbitrary
+  // local contrast a hand-drawn scene never does, and the day variant in
+  // particular is otherwise far brighter than anything else in SCENE_LIST.
+  const vignette = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.25, w / 2, h / 2, Math.max(w, h) * 0.72);
+  vignette.addColorStop(0, 'rgba(0,0,0,0)');
+  vignette.addColorStop(1, nightTint ? 'rgba(0,0,0,0.5)' : 'rgba(10,14,8,0.4)');
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, w, h);
 }
 
 // ============================================================
@@ -12146,6 +12431,7 @@ function handleLoadGame() {
     STATE.score = save.score;
     if (save.rotateSeed) STATE.rotateSeed = save.rotateSeed; // this save's own order, not whatever's currently in STATE
     STATE.safariVariant = save.safariVariant || null; // this save's own day/night pick, not a leftover from earlier in this page session
+    STATE.beachVariant = save.beachVariant || null; // same reasoning, Beach's own day/night pick
     startWave(save.wave);
     startFadeFromBlack();
   });
@@ -12173,6 +12459,8 @@ function handleRestartGame() {
   STATE.rotateSeed = newRotateSeed(); // same reasoning as startGameFromTitle's fresh-start branch
   STATE.safariScene = null;
   STATE.safariVariant = null; // same reasoning as startGameFromTitle's fresh-start branch
+  STATE.beachScene = null;
+  STATE.beachVariant = null; // same reasoning, Beach's own day/night pick
   startFadeToBlack(() => {
     STATE.score = 0;
     startWave(1);
