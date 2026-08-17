@@ -11715,13 +11715,21 @@ function drawSafariBird(x, y, size, wingPhase) {
 // offset needed. `direction` mirrors the image horizontally around its
 // own anchor for animals walking left, since every source photo faces
 // right by construction; trees always pass 1 (never flipped).
-function drawSafariCutout(source, xCenter, groundY, targetHeight, direction) {
+function drawSafariCutout(source, xCenter, groundY, targetHeight, direction, nightTint) {
   const img = SAFARI_CUTOUT_IMAGES[source];
   if (!img.complete || img.naturalWidth === 0) return; // not loaded yet -- skip this frame rather than block or flash
   const targetWidth = targetHeight * (img.naturalWidth / img.naturalHeight);
   ctx.save();
   ctx.translate(xCenter, groundY);
   if (direction < 0) ctx.scale(-1, 1);
+  // Every cutout is a real daylight photo (see CREDITS.md) -- the night
+  // variant's own vignette is transparent at its center, so without this
+  // a tree or animal anywhere near mid-screen would render at full
+  // midday brightness against the Milky Way (review catch, PR #95).
+  // Darken and desaturate it down to a plausible moonlit silhouette
+  // instead -- the same effect drawSafariGiraffe's flat dark fill used
+  // to give the old hand-drawn animals for free.
+  if (nightTint) ctx.filter = 'brightness(0.32) saturate(0.5) contrast(1.05)';
   ctx.drawImage(img, -targetWidth / 2, -targetHeight, targetWidth, targetHeight);
   ctx.restore();
 }
@@ -11791,14 +11799,15 @@ function drawSafariScene() {
   // artificially crisp on top of it. Trees first (they don't move, and
   // sit slightly further back conceptually), then animals on top.
   const horizonY = -panY + cfg.HORIZON_FRAC[scene.variant] * drawH;
+  const nightTint = scene.variant === 'night';
   for (const tree of scene.trees) {
-    drawSafariCutout(tree.source, tree.xFrac * w, horizonY, tree.sizeFrac * h, 1);
+    drawSafariCutout(tree.source, tree.xFrac * w, horizonY, tree.sizeFrac * h, 1, nightTint);
   }
   for (const animal of scene.animals) {
     // A small vertical bounce in place of real leg articulation -- see
     // generateSafariAnimals for why a static photo can't have a stride.
     const bob = Math.sin(animal.bobPhase) * animal.sizeFrac * h * 0.025;
-    drawSafariCutout(animal.source, animal.xFrac * w, horizonY + bob, animal.sizeFrac * h, animal.direction);
+    drawSafariCutout(animal.source, animal.xFrac * w, horizonY + bob, animal.sizeFrac * h, animal.direction, nightTint);
   }
   if (scene.variant === 'day') {
     for (const bird of scene.birds) {

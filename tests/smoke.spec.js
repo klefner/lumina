@@ -7522,6 +7522,56 @@ test('Safari\'s cutout image manifest actually loads every declared tree/animal 
   expect(errors).toEqual([]);
 });
 
+test("Safari's tree/animal cutouts are darkened for the night variant (not left at full daylight brightness against the Milky Way) but left untouched for day (review catch, PR #95 -- every cutout is a real daylight photo, and the night variant's own vignette is transparent at its center, so without a night tint a tree or animal anywhere near mid-screen rendered at full midday brightness)", async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    await new Promise((resolve) => setTimeout(resolve, 1500)); // let the cutout WebPs actually finish loading
+
+    // Wrap drawSafariCutout itself rather than inferring from ctx.filter's
+    // side effects -- ctx.filter is reset by the function's own
+    // ctx.restore() before this could inspect it, and the background
+    // photo's own (untinted) drawImage call would otherwise pollute a
+    // ctx.drawImage-level spy. Directly recording the nightTint argument
+    // each tree/animal call actually received is both simpler and a more
+    // direct test of the fix (drawSafariScene computing/passing it
+    // correctly per variant) than the filter it produces downstream.
+    const originalCutout = drawSafariCutout;
+    const nightTintsSeen = [];
+    window.drawSafariCutout = (...args) => { nightTintsSeen.push(args[5]); return originalCutout(...args); };
+
+    STATE.scene = 'safari';
+    STATE.safariVariant = 'night';
+    STATE.safariScene = generateSafariScene(null);
+    drawSafariScene();
+    const nightTints = nightTintsSeen.slice();
+
+    nightTintsSeen.length = 0;
+    STATE.safariVariant = 'day';
+    STATE.safariScene = generateSafariScene(null);
+    drawSafariScene();
+    const dayTints = nightTintsSeen.slice();
+
+    window.drawSafariCutout = originalCutout;
+
+    return {
+      nightCallCount: nightTints.length,
+      nightAllTrue: nightTints.length > 0 && nightTints.every((t) => t === true),
+      dayCallCount: dayTints.length,
+      dayNoneTrue: dayTints.length > 0 && dayTints.every((t) => t !== true),
+    };
+  });
+
+  expect(result.nightCallCount).toBeGreaterThan(0);
+  expect(result.nightAllTrue).toBe(true);
+  expect(result.dayCallCount).toBeGreaterThan(0);
+  expect(result.dayNoneTrue).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 test('Safari\'s birds and animals wrap to the opposite edge instead of resetting mid-crossing, keeping their direction -- same technique as the Beach boat', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
