@@ -9066,8 +9066,19 @@ function updateStars() {
   }
 }
 
-function drawStars() {
+// rewardOnly skips the plain ambient/reveal starfield (undefined pairId)
+// and draws only each connection's own halo (spawnStarsAroundDots,
+// tagged with the pair's pairId) -- for Safari, whose real photo
+// background (day sky or the night variant's own Milky Way) has no room
+// for a synthetic ambient starfield the way Space/Forest/Beach/
+// Halloween/Christmas do, but the connection-reward halo is still live
+// gameplay feedback (resetPairConnections relies on it existing) that
+// has to render regardless of scene -- drawSafariScene never called
+// drawStars() at all, in either variant, so every connection halo has
+// been invisible in Safari since it first shipped.
+function drawStars(rewardOnly = false) {
   for (const s of STATE.stars) {
+    if (rewardOnly && s.pairId === undefined) continue;
     const twinkle = s.twinkling ? 0.7 + 0.3 * Math.sin(s.twinklePhase) : 1;
     ctx.beginPath();
     ctx.fillStyle = `rgba(255,255,255,${(s.alpha * twinkle).toFixed(3)})`;
@@ -11809,6 +11820,15 @@ function drawSafariScene() {
   } else {
     drawSafariShootingStar(scene.shootingStar, w, h);
   }
+
+  // Reward-only (see drawStars' own comment): a synthetic ambient
+  // starfield would fight the day sky and double up on the night
+  // variant's own real Milky Way, but each connection's reward halo
+  // (spawnStarsAroundDots) is live gameplay feedback for a still-
+  // connected pair, not decoration, and has to render regardless of
+  // scene -- this call was missing entirely before, so every connection
+  // halo has been invisible in Safari since it first shipped.
+  drawStars(true);
 
   // A real photo has arbitrary local contrast a hand-drawn scene never
   // does -- a uniform radial dim (clear center, where the board mostly
