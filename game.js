@@ -12441,11 +12441,26 @@ const POSTCARD_CONFIG = {
 // (player report, attached screenshot: "the screenshot is awful"). Falls
 // back to the old fixed centered crop when there's no board to measure
 // (e.g. buildWavePostcard called from the title screen in tests).
+//
+// Returns a rect sized to the content's own WIDTH and HEIGHT independently
+// (not forced square) -- an early version forced a square sized to
+// max(width, height), which silently cropped out on-screen dots/lines
+// whenever it was then clamped back down to the canvas's shorter
+// dimension (player report, attached screenshot: a diagonal line cut off
+// at the top), and simply removing that clamp instead asked drawImage for
+// a source rect bigger than the canvas actually has pixels for, which
+// clips the destination proportionally and squashes the board into one
+// corner of an otherwise-black photo (Codex review catch). Since the
+// canvas itself is never square, a square crop and "never clip a dot"
+// are incompatible whenever the content's own aspect ratio isn't square
+// -- buildWavePostcard letterboxes this rect into its square photo area
+// instead, so the content is always shown whole, un-squashed, just not
+// always edge-to-edge.
 function computePostcardCropRect() {
   const dots = STATE.dots;
   if (!dots || !dots.length) {
     const size = Math.min(canvas.width, canvas.height) * POSTCARD_CONFIG.CROP_FRACTION;
-    return { x: (canvas.width - size) / 2, y: (canvas.height - size) / 2, size };
+    return { x: (canvas.width - size) / 2, y: (canvas.height - size) / 2, width: size, height: size };
   }
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -12456,29 +12471,22 @@ function computePostcardCropRect() {
   }
   const pad = POSTCARD_CONFIG.CROP_PADDING_PX;
   const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-  const contentSize = Math.max(maxX - minX, maxY - minY) + pad * 2;
 
-  // Square crop, sized to the content and never smaller than
-  // CROP_MIN_SIZE_PX (a single close-together pair shouldn't crop in so
-  // tight it reads as an abstract close-up instead of a game board).
-  // Deliberately NOT clamped to the shorter canvas dimension (player
-  // report, attached screenshot: a wide/zoomed-out board's dots spread
-  // wider than the canvas's shorter side, and that old upper clamp
-  // silently cropped genuinely on-canvas dots/lines out of the postcard
-  // -- players should see their whole design, not a slice of it). The
-  // drawImage call below handles a source rect this large gracefully: a
-  // source rectangle that overhangs the actual canvas is clipped to it,
-  // with the destination clipped in the same proportion, so any true
-  // overflow just shows the photo rect's own black fill rather than
-  // distorting or erroring.
-  const size = Math.max(POSTCARD_CONFIG.CROP_MIN_SIZE_PX, contentSize);
+  // Never smaller than CROP_MIN_SIZE_PX (a single close-together pair
+  // shouldn't crop in so tight it reads as an abstract close-up instead
+  // of a game board), and never bigger than the canvas itself -- there's
+  // no pixels beyond it to crop. The dots themselves are always on-screen
+  // (the camera framed them to get here), so this clamp only ever eats
+  // into the padding around them, never the dots.
+  let width = Math.min(canvas.width, Math.max(POSTCARD_CONFIG.CROP_MIN_SIZE_PX, maxX - minX + pad * 2));
+  let height = Math.min(canvas.height, Math.max(POSTCARD_CONFIG.CROP_MIN_SIZE_PX, maxY - minY + pad * 2));
 
   // Centered on the content, then nudged back on-canvas if that would
   // spill past an edge (e.g. a group hugging one side of a wide world).
-  let x = cx - size / 2, y = cy - size / 2;
-  x = Math.max(0, Math.min(canvas.width - size, x));
-  y = Math.max(0, Math.min(canvas.height - size, y));
-  return { x, y, size };
+  let x = cx - width / 2, y = cy - height / 2;
+  x = Math.max(0, Math.min(canvas.width - width, x));
+  y = Math.max(0, Math.min(canvas.height - height, y));
+  return { x, y, width, height };
 }
 
 // Composites a small SUBSET of the just-completed board, framed around the
@@ -12557,7 +12565,17 @@ function buildWavePostcard() {
   const crop = computePostcardCropRect();
   pctx.fillStyle = '#000000';
   pctx.fillRect(cardX + BORDER, cardY + BORDER, photoSize, photoSize);
-  pctx.drawImage(canvas, crop.x, crop.y, crop.size, crop.size, cardX + BORDER, cardY + BORDER, photoSize, photoSize);
+  // Letterboxed (uniform scale, centered) rather than stretched to fill
+  // the square photo area -- crop.width/height aren't forced equal (see
+  // computePostcardCropRect), so filling the square outright would
+  // squash the image non-uniformly on a wide or tall board. The black
+  // fill above already covers whatever margin this leaves on the
+  // shorter axis.
+  const photoScale = Math.min(photoSize / crop.width, photoSize / crop.height);
+  const destW = crop.width * photoScale, destH = crop.height * photoScale;
+  const destX = cardX + BORDER + (photoSize - destW) / 2;
+  const destY = cardY + BORDER + (photoSize - destH) / 2;
+  pctx.drawImage(canvas, crop.x, crop.y, crop.width, crop.height, destX, destY, destW, destH);
 
   const stripCenterX = cardX + cardW / 2;
   const stripTop = cardY + BORDER + photoSize;

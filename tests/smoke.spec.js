@@ -4644,12 +4644,13 @@ test('the postcard crop follows an off-center cluster of dots instead of the scr
     const crop = computePostcardCropRect();
     const allDotsFramed = STATE.dots.every(dot => {
       const p = worldToScreen(dot.x, dot.y);
-      return p.x >= crop.x && p.x <= crop.x + crop.size && p.y >= crop.y && p.y <= crop.y + crop.size;
+      return p.x >= crop.x && p.x <= crop.x + crop.width && p.y >= crop.y && p.y <= crop.y + crop.height;
     });
 
     return {
       scale: STATE.camera.scale,
-      cropSize: crop.size,
+      cropWidth: crop.width,
+      cropHeight: crop.height,
       fixedFractionSize,
       allDotsFramed,
     };
@@ -4657,29 +4658,36 @@ test('the postcard crop follows an off-center cluster of dots instead of the scr
 
   expect(result.scale).toBeLessThan(1); // confirms the camera really is zoomed out for this wave
   expect(result.allDotsFramed).toBe(true);
-  expect(result.cropSize).toBeLessThan(result.fixedFractionSize);
+  expect(result.cropWidth).toBeLessThan(result.fixedFractionSize);
+  expect(result.cropHeight).toBeLessThan(result.fixedFractionSize);
   expect(errors).toEqual([]);
 });
 
 // Player report, attached screenshot: a diagonal line cut off at the top
 // edge of the postcard -- some dots/lines the player actually saw on
 // screen were missing from the celebratory photo. Root cause:
-// computePostcardCropRect used to clamp its square crop's size to
-// `Math.min(canvas.width, canvas.height)` (there's nothing to zoom OUT
-// for, the old reasoning went), but a board whose content spans MORE than
-// the canvas's shorter dimension (e.g. a tall diagonal line on a portrait
-// viewport, where width is the shorter side) legitimately needs a crop
-// bigger than that to keep every on-screen dot framed -- the old clamp
-// shrank the crop back down and cropped genuinely visible content out.
-// Forces exactly that shape (narrow horizontally, spanning nearly the
-// full canvas vertically) and confirms every dot stays framed.
-test('the postcard crop is not clamped to the canvas\'s shorter dimension, so a board taller/wider than that still shows every dot', async ({ page }) => {
+// computePostcardCropRect used to force a SQUARE crop sized to
+// `Math.min(canvas.width, canvas.height)` at most (there's nothing to
+// zoom OUT for, the old reasoning went), but a board whose content spans
+// more than the canvas's shorter dimension along its LONGER axis (e.g. a
+// tall diagonal line on a portrait viewport, where width is the shorter
+// side) needs its crop to grow past that shorter side along that axis to
+// keep every on-screen dot framed -- the old square clamp shrank the
+// whole crop back down to the shorter side on BOTH axes and cropped
+// genuinely visible content out along the longer one. Forces exactly
+// that shape (narrow horizontally, spanning nearly the full canvas
+// vertically) and confirms every dot stays framed, with the crop's
+// height genuinely allowed past the shorter (width) dimension -- not
+// forced square, and not clipped by drawImage either (see
+// buildWavePostcard's letterboxing of this rect into its square photo
+// area, which is what makes going non-square actually safe to draw).
+test('the postcard crop is not forced square, so a board taller/wider than the canvas\'s shorter side still shows every dot', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
 
   const result = await page.evaluate(() => {
-    const maxSize = Math.min(canvas.width, canvas.height);
+    const shorterDimension = Math.min(canvas.width, canvas.height);
     // A narrow diagonal spanning almost the whole canvas along its LONGER
     // axis -- on this suite's portrait viewport that's height, so this
     // reproduces the "diagonal line cut off at the top" report directly.
@@ -4693,14 +4701,25 @@ test('the postcard crop is not clamped to the canvas\'s shorter dimension, so a 
     const crop = computePostcardCropRect();
     const allDotsFramed = STATE.dots.every(dot => {
       const p = worldToScreen(dot.x, dot.y);
-      return p.x >= crop.x && p.x <= crop.x + crop.size && p.y >= crop.y && p.y <= crop.y + crop.size;
+      return p.x >= crop.x && p.x <= crop.x + crop.width && p.y >= crop.y && p.y <= crop.y + crop.height;
     });
 
-    return { maxSize, cropSize: crop.size, allDotsFramed };
+    return {
+      shorterDimension,
+      canvasHeight: canvas.height,
+      cropWidth: crop.width,
+      cropHeight: crop.height,
+      allDotsFramed,
+    };
   });
 
   expect(result.allDotsFramed).toBe(true);
-  expect(result.cropSize).toBeGreaterThan(result.maxSize); // the old bug: this used to be clamped down to maxSize
+  // The old bug: crop.height used to be clamped down to shorterDimension
+  // (the canvas width, on this portrait viewport) even though the
+  // content's own vertical spread needed far more room than that.
+  expect(result.cropHeight).toBeGreaterThan(result.shorterDimension);
+  // Still a real, drawable rect -- never bigger than the canvas itself.
+  expect(result.cropHeight).toBeLessThanOrEqual(result.canvasHeight);
   expect(errors).toEqual([]);
 });
 
