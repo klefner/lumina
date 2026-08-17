@@ -164,31 +164,55 @@ choice as Safari's library, for the same fine-detail-preserving reason),
 sourced from Pexels (free to use for commercial purposes, no
 attribution legally required, credited anyway):
 
-- `palm-shore-crown.webp` — the crown of the SAME leaning tree as
-  `palm-overhang.webp` below (see "View of a Palm Tree on the Beach"),
-  cropped separately from its own long trunk and re-exported. Two
-  earlier candidates were tried and rejected first: a backlit sunset
-  silhouette (via
-  [Pexels](https://www.pexels.com/photo/palm-tree-silhouette-on-sunset-sky-5477156/))
-  looked fine on its own but read as a near-solid dark blob composited
-  small onto a bright daylight beach photo -- a silhouette's lighting
-  just doesn't match an unrelated midday scene; and a second, better-lit
-  candidate (via
-  [Pexels](https://www.pexels.com/photo/tropical-palm-trees-under-clear-blue-sky-31508264/))
-  had a patch of genuinely low-confidence, partially-transparent alpha
-  around an overexposed/glare section of frond that no amount of
-  erosion or re-cropping cleaned up satisfactorily -- reusing the
-  already-proven-clean `palm-overhang` cutout's own crown sidestepped
-  both problems at once.
-  Ground-anchored NOT at the horizon but near the photo's own visible
-  foreground sand (see `drawBeachPalm`'s own comment) -- an earlier
-  version anchored it at the horizon, which is the water/sky line, and
-  player feedback (screenshot) called this out directly: bare crowns
-  with nothing under them, sitting at the water line, read as trees
-  floating in the air over the water. `drawBeachPalm` now draws a
-  simple tapered procedural trunk from the crown down to the sand (this
-  cutout is crown-only, no trunk of its own in frame) and anchors the
-  whole thing at `sandY`, not `horizonY`.
+- `palm-full-1.webp` and `palm-full-2.webp` — each a SINGLE real photo
+  of an entire standing palm tree, trunk to crown in one frame, via
+  [Pexels](https://www.pexels.com/photo/palm-trees-at-a-beach-34076502/)
+  and
+  [Pexels](https://www.pexels.com/photo/a-tall-palm-tree-stands-against-a-clear-blue-sky-with-a-view-of-the-ocean-and-distant-mountains-15034744/)
+  respectively. Each `palm` instance in `generateBeachScene` picks one
+  of the two at random, for visual variety between trees. This replaced
+  a much longer, three-attempt history of trying to build a convincing
+  tree out of a crown-only cutout plus a hand-drawn trunk:
+  1. A backlit sunset-silhouette crown (via
+     [Pexels](https://www.pexels.com/photo/palm-tree-silhouette-on-sunset-sky-5477156/))
+     read as a near-solid dark blob composited small onto a bright
+     daylight beach photo -- a silhouette's lighting doesn't match an
+     unrelated midday scene.
+  2. A better-lit crown (via
+     [Pexels](https://www.pexels.com/photo/tropical-palm-trees-under-clear-blue-sky-31508264/))
+     had a patch of genuinely low-confidence, partially-transparent
+     `rembg` alpha around an overexposed/glare section of frond that no
+     amount of erosion or re-cropping cleaned up satisfactorily.
+  3. Reusing `palm-overhang`'s own (already-clean) crown, cropped away
+     from its long trunk, worked visually -- but every version of a
+     *procedural* trunk drawn underneath it (a flat solid-color
+     triangle, then later a cross-trunk gradient with a slight organic
+     lean and bark-ring notches) still read as an obviously fake
+     cardboard-cutout trunk next to the photographic crown above it
+     (player report, screenshot), and the crown cutout's own tight
+     alpha-bbox crop clipped some of its lower drooping fronds where
+     they'd extended past the crop -- visible as a hard cutoff edge
+     right where the fake trunk met it (a second, separate player
+     report, screenshot).
+
+  Sourcing a photo of the *whole tree* sidesteps every one of these at
+  once: no crown/trunk seam to fake, no clipped fronds (both source
+  photos were picked specifically because the entire tree, uncropped,
+  fits the frame), and a real photographic trunk with real bark texture
+  and a real root flare at the base.
+
+  Ground-anchored NOT at the horizon but at `sandY`, well within the
+  photo's own visible foreground sand (see the `drawBeachScene` comment
+  by the palm-drawing loop) -- an earlier version anchored the (then
+  crown-only) cutout at the horizon, which is the water/sky line, and
+  player feedback (screenshot) called this out directly: a cutout with
+  nothing under it, sitting at the water line, read as a tree floating
+  in the air over the water. A separate round of player feedback
+  (screenshot) also caught the trees (along with `palmOverhang` and the
+  `cruiseShip`) crowding out the dots and the score/wave text at their
+  originally-shipped size -- `palm.sizeFrac`, `palmOverhang.sizeFrac`,
+  and `cruiseShip.sizeFrac` are all shrunk considerably from those
+  first-shipped values.
 - `dolphin.webp` — cropped from "View of a Dolphin Jumping above the
   Water Surface," via
   [Pexels](https://www.pexels.com/photo/view-of-a-dolphin-jumping-above-the-water-surface-17334473/).

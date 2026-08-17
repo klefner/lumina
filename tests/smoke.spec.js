@@ -7067,10 +7067,13 @@ test('Beach cutouts are darkened for the night variant but left untouched for da
 
 // Player report, screenshot: shore palms anchored bare at the horizon
 // (the water/sky line) with no trunk under them read as trees floating
-// in the air, over the water. drawBeachPalm now anchors at sandY (well
-// within the photo's own visible foreground sand) with a procedural
-// trunk closing the gap, not horizonY.
-test('Beach palms are planted in the sand (anchored at sandY, well below the water-line horizon), not floating at the horizon', async ({ page }) => {
+// in the air, over the water. Palms are now each a single real photo of
+// a WHOLE tree (trunk to crown -- see CREDITS.md, an earlier version
+// drew a procedural trunk under a crown-only cutout, and player feedback
+// called the procedural trunk out as obviously fake), anchored directly
+// at sandY (well within the photo's own visible foreground sand), not
+// horizonY.
+test('Beach palms (whole real-photo trees) are planted in the sand (anchored at sandY, well below the water-line horizon), not floating at the horizon', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
   await page.waitForFunction(() => window.__lumina);
@@ -7085,7 +7088,7 @@ test('Beach palms are planted in the sand (anchored at sandY, well below the wat
     const original = drawBeachCutout;
     const palmGroundYs = [];
     window.drawBeachCutout = (source, xCenter, groundY, ...rest) => {
-      if (source === 'palm-shore-crown') palmGroundYs.push(groundY);
+      if (source === 'palm-full-1' || source === 'palm-full-2') palmGroundYs.push(groundY);
       return original(source, xCenter, groundY, ...rest);
     };
     drawBeachScene();
@@ -7093,21 +7096,14 @@ test('Beach palms are planted in the sand (anchored at sandY, well below the wat
 
     const cfg = BEACH_CONFIG;
     const sandY = canvas.height - cfg.SAND_HEIGHT_FRAC * canvas.height;
-    // The crown itself is anchored ABOVE sandY by its own procedural
-    // trunk's height (see drawBeachPalm) -- the trunk's own BASE, not
-    // the crown, is what's actually planted at sandY.
-    const expectedCrownYs = STATE.beachScene.palms.map((p) => sandY - p.trunkHeightFrac * canvas.height);
-    return { palmGroundYs, expectedCrownYs, sandY };
+    return { palmGroundYs, sandY, palmCount: STATE.beachScene.palms.length };
   });
 
-  expect(result.palmGroundYs.length).toBeGreaterThan(0);
-  expect(result.palmGroundYs.length).toBe(result.expectedCrownYs.length);
-  // Each crown sits exactly at sandY minus its own trunk height -- i.e.
-  // the trunk's base (the tree's actual anchor point) is planted right
-  // at sandY, not scattered up near the horizon the way the old (buggy)
-  // version anchored the bare crown itself.
-  const allMatch = result.palmGroundYs.every((y, i) => Math.abs(y - result.expectedCrownYs[i]) < 1);
-  expect(allMatch).toBe(true);
+  expect(result.palmCount).toBeGreaterThan(0);
+  expect(result.palmGroundYs.length).toBe(result.palmCount);
+  // Every whole-tree cutout is anchored right at sandY -- not scattered
+  // up near the horizon, which is what the old (buggy) version did.
+  expect(result.palmGroundYs.every((y) => Math.abs(y - result.sandY) < 1)).toBe(true);
   expect(errors).toEqual([]);
 });
 
