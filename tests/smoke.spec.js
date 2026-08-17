@@ -7065,6 +7065,93 @@ test('Beach cutouts are darkened for the night variant but left untouched for da
   expect(errors).toEqual([]);
 });
 
+// Player report, screenshot: shore palms anchored bare at the horizon
+// (the water/sky line) with no trunk under them read as trees floating
+// in the air, over the water. drawBeachPalm now anchors at sandY (well
+// within the photo's own visible foreground sand) with a procedural
+// trunk closing the gap, not horizonY.
+test('Beach palms are planted in the sand (anchored at sandY, well below the water-line horizon), not floating at the horizon', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'beach';
+    STATE.beachVariant = 'day';
+    STATE.beachScene = generateBeachScene();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const original = drawBeachCutout;
+    const palmGroundYs = [];
+    window.drawBeachCutout = (source, xCenter, groundY, ...rest) => {
+      if (source === 'palm-shore-crown') palmGroundYs.push(groundY);
+      return original(source, xCenter, groundY, ...rest);
+    };
+    drawBeachScene();
+    window.drawBeachCutout = original;
+
+    const cfg = BEACH_CONFIG;
+    const sandY = canvas.height - cfg.SAND_HEIGHT_FRAC * canvas.height;
+    // The crown itself is anchored ABOVE sandY by its own procedural
+    // trunk's height (see drawBeachPalm) -- the trunk's own BASE, not
+    // the crown, is what's actually planted at sandY.
+    const expectedCrownYs = STATE.beachScene.palms.map((p) => sandY - p.trunkHeightFrac * canvas.height);
+    return { palmGroundYs, expectedCrownYs, sandY };
+  });
+
+  expect(result.palmGroundYs.length).toBeGreaterThan(0);
+  expect(result.palmGroundYs.length).toBe(result.expectedCrownYs.length);
+  // Each crown sits exactly at sandY minus its own trunk height -- i.e.
+  // the trunk's base (the tree's actual anchor point) is planted right
+  // at sandY, not scattered up near the horizon the way the old (buggy)
+  // version anchored the bare crown itself.
+  const allMatch = result.palmGroundYs.every((y, i) => Math.abs(y - result.expectedCrownYs[i]) < 1);
+  expect(allMatch).toBe(true);
+  expect(errors).toEqual([]);
+});
+
+// Codex review catch, PR #101: on a wide/landscape canvas, the night
+// photo's portrait aspect (1600x2000) makes drawH end up far taller than
+// the canvas once cover-fit by width, and the pan cycle's plain sine
+// wave could swing far enough that the mapped horizon -- and every
+// horizon-anchored cutout -- landed off the bottom of the screen for a
+// real stretch of the 90-second cycle. panY is now clamped to keep the
+// horizon on-screen regardless of canvas shape.
+test('Beach horizon (and every horizon-anchored cutout) stays on-screen across the full pan cycle, even on a wide landscape canvas', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 1920; canvas.height = 1080;
+    STATE.scene = 'beach';
+    STATE.beachVariant = 'night'; // the portrait-photo variant Codex's math was about
+    STATE.beachScene = generateBeachScene();
+    await new Promise((r) => setTimeout(r, 500));
+
+    const original = drawBeachCutout;
+    const ys = [];
+    window.drawBeachCutout = (source, xCenter, groundY, ...rest) => {
+      ys.push(groundY);
+      return original(source, xCenter, groundY, ...rest);
+    };
+    const cfg = BEACH_CONFIG;
+    // Sample densely across the whole pan cycle (not just the exact
+    // cycle=0.75 point Codex's own math used).
+    for (let frac = 0; frac < 1; frac += 0.02) {
+      STATE.beachScene.phase = Math.round(frac * cfg.PAN_CYCLE_FRAMES);
+      drawBeachScene();
+    }
+    window.drawBeachCutout = original;
+    return { ys, h: canvas.height };
+  });
+
+  expect(result.ys.length).toBeGreaterThan(0);
+  expect(result.ys.every((y) => y >= 0 && y <= result.h)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 test('Beach day/night pick rides along with a saved game across a reload, same pattern as Safari\'s own variant', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');

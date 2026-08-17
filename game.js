@@ -9388,6 +9388,7 @@ const BEACH_CONFIG = {
   SAND_HEIGHT_FRAC: 0.07,
   SAND_COLOR: { day: '#e3c07f', night: '#4d4330' },
   BOAT_COLOR: { day: '#16324a', night: '#050a14' },
+  PALM_TRUNK_COLOR: { day: '#6b4a2f', night: '#1c130c' },
   PALM_SHORE_COUNT: 2,
   DOLPHIN_COUNT: 2,
   // Not every wave -- a cruise ship crossing the horizon should read as a
@@ -9461,11 +9462,17 @@ function generateBeachScene(previousScene) {
     sizeFrac: 0.03 + Math.random() * 0.015,
   };
 
-  // Palm crowns along the shoreline, ground-anchored at the horizon --
-  // same spirit as Safari's trees.
+  // Palm crowns along the shoreline. The cutout itself is crown-only (no
+  // trunk in its source photo -- see CREDITS.md), so trunkHeightFrac
+  // drives a procedural trunk drawn underneath at render time (see
+  // drawBeachScene) -- planting each palm in the photo's own visible
+  // foreground sand near the bottom of the screen, NOT at the horizon
+  // (player report, screenshot: cutouts anchored bare at the horizon
+  // read as trees floating in the air, over the water).
   const palms = [];
   for (let i = 0; i < BEACH_CONFIG.PALM_SHORE_COUNT; i++) {
-    palms.push({ xFrac: 0.05 + Math.random() * 0.9, sizeFrac: 0.16 + Math.random() * 0.08 });
+    const sizeFrac = 0.16 + Math.random() * 0.08;
+    palms.push({ xFrac: 0.05 + Math.random() * 0.9, sizeFrac, trunkHeightFrac: sizeFrac * (0.9 + Math.random() * 0.5) });
   }
 
   // Dolphins leaping near the water's surface, wrapping across the
@@ -9600,6 +9607,25 @@ function drawBeachCutout(source, xCenter, groundY, targetHeight, direction, nigh
   ctx.restore();
 }
 
+// A ground-anchored shore palm: a simple tapered procedural trunk (the
+// cutout itself is crown-only, see CREDITS.md) closing the visual gap
+// between the crown and groundY, then the crown cutout on top. Player
+// report, screenshot: a bare crown cutout anchored directly at a ground
+// point with nothing under it read as a tree floating in the air.
+function drawBeachPalm(palm, xCenter, groundY, canvasH, nightTint) {
+  const trunkHeight = palm.trunkHeightFrac * canvasH;
+  const trunkBaseWidth = trunkHeight * 0.1;
+  ctx.fillStyle = BEACH_CONFIG.PALM_TRUNK_COLOR[nightTint ? 'night' : 'day'];
+  ctx.beginPath();
+  ctx.moveTo(xCenter - trunkBaseWidth / 2, groundY);
+  ctx.lineTo(xCenter + trunkBaseWidth / 2, groundY);
+  ctx.lineTo(xCenter + trunkBaseWidth * 0.15, groundY - trunkHeight);
+  ctx.lineTo(xCenter - trunkBaseWidth * 0.15, groundY - trunkHeight);
+  ctx.closePath();
+  ctx.fill();
+  drawBeachCutout('palm-shore-crown', xCenter, groundY - trunkHeight, palm.sizeFrac * canvasH, 1, nightTint);
+}
+
 // The overhanging corner frond -- anchored from a TOP corner of the
 // screen instead of the horizon. Its source photo is a real palm leaning
 // out over open water, cropped tight to its own alpha bounding box (see
@@ -9655,7 +9681,22 @@ function drawBeachScene() {
     drawH = drawW / imgAspect;
   }
   const panX = (drawW - w) * easedT;
-  const panY = (drawH - h) * (0.5 + 0.3 * Math.sin(cycle * Math.PI * 2));
+  let panY = (drawH - h) * (0.5 + 0.3 * Math.sin(cycle * Math.PI * 2));
+  // Clamped so the horizon -- and every horizon-anchored element (palms,
+  // dolphins, the cruise ship, the boat) -- never drifts off-screen
+  // (Codex review catch, PR #101): the night photo's portrait aspect
+  // (1600x2000) makes drawH end up FAR taller than a typical wide/
+  // landscape canvas once cover-fit by width, and the plain sine-wave
+  // panY above could then swing far enough that horizonY (see below)
+  // lands below the bottom of the screen for a real stretch of the pan
+  // cycle. Keeps the horizon within the middle 70% of the screen instead
+  // of letting the pan's own math push it arbitrarily off either edge.
+  const desiredHorizonY = cfg.HORIZON_FRAC[scene.variant] * drawH;
+  const minPanY = desiredHorizonY - h * 0.85;
+  const maxPanY = desiredHorizonY - h * 0.15;
+  panY = Math.min(maxPanY, Math.max(minPanY, panY));
+  // Still a valid crop of the actual image -- never reveal area outside it.
+  panY = Math.min(Math.max(panY, 0), Math.max(0, drawH - h));
   ctx.drawImage(img, -panX, -panY, drawW, drawH);
 
   // Mapped through the SAME pan/zoom space the photo itself just used
@@ -9708,8 +9749,13 @@ function drawBeachScene() {
   // don't move fast, sit slightly further back conceptually), then the
   // more active dolphins/whale/boat on top. Drawn before the vignette
   // below so they pick up the same edge-darkening the photo does.
+  // Anchored at sandY (the top edge of the flat sand-color strip below),
+  // NOT horizonY -- horizonY is the water/sky line, which is exactly
+  // where the previous version wrongly anchored these and read as trees
+  // floating over the water. sandY sits within the photo's own visible
+  // foreground sand, so a palm planted there always reads as on land.
   for (const palm of scene.palms) {
-    drawBeachCutout('palm-shore-crown', palm.xFrac * w, horizonY, palm.sizeFrac * h, 1, nightTint);
+    drawBeachPalm(palm, palm.xFrac * w, sandY, h, nightTint);
   }
   if (scene.cruiseShip) {
     const ship = scene.cruiseShip;

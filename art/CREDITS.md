@@ -144,6 +144,14 @@ ship, the boat) is anchored to this, mapped through the same
 cover-fit/pan/zoom transform the photo itself uses, so they sit on the
 water/sand line the photo actually shows as the Ken Burns cycle pans.
 
+`drawBeachScene`'s vertical pan (`panY`) is clamped to keep that mapped
+horizon within the middle 70% of the screen (Codex review catch, PR
+#101): the night photo's portrait aspect (1600x2000) means `drawH` ends
+up far taller than a typical wide/landscape canvas once cover-fit by
+width, and the plain sine-wave pan on its own could swing far enough
+that the horizon -- and everything anchored to it -- landed off the
+bottom of the screen for a real stretch of the 90-second pan cycle.
+
 ## Beach foreground cutouts (art/beach-cutouts/*.webp)
 
 Same player request, and the same real-photo-cutout technique as
@@ -156,12 +164,31 @@ choice as Safari's library, for the same fine-detail-preserving reason),
 sourced from Pexels (free to use for commercial purposes, no
 attribution legally required, credited anyway):
 
-- `palm-shore-crown.webp` — cropped from "Palm Tree Silhouette on Sunset
-  Sky," via
-  [Pexels](https://www.pexels.com/photo/palm-tree-silhouette-on-sunset-sky-5477156/).
-  Ground-anchored at the horizon, same technique as Safari's trees --
-  the crown alone (this source photo doesn't show a trunk base in
-  frame) reads fine bottom-anchored at typical on-screen sizes.
+- `palm-shore-crown.webp` — the crown of the SAME leaning tree as
+  `palm-overhang.webp` below (see "View of a Palm Tree on the Beach"),
+  cropped separately from its own long trunk and re-exported. Two
+  earlier candidates were tried and rejected first: a backlit sunset
+  silhouette (via
+  [Pexels](https://www.pexels.com/photo/palm-tree-silhouette-on-sunset-sky-5477156/))
+  looked fine on its own but read as a near-solid dark blob composited
+  small onto a bright daylight beach photo -- a silhouette's lighting
+  just doesn't match an unrelated midday scene; and a second, better-lit
+  candidate (via
+  [Pexels](https://www.pexels.com/photo/tropical-palm-trees-under-clear-blue-sky-31508264/))
+  had a patch of genuinely low-confidence, partially-transparent alpha
+  around an overexposed/glare section of frond that no amount of
+  erosion or re-cropping cleaned up satisfactorily -- reusing the
+  already-proven-clean `palm-overhang` cutout's own crown sidestepped
+  both problems at once.
+  Ground-anchored NOT at the horizon but near the photo's own visible
+  foreground sand (see `drawBeachPalm`'s own comment) -- an earlier
+  version anchored it at the horizon, which is the water/sky line, and
+  player feedback (screenshot) called this out directly: bare crowns
+  with nothing under them, sitting at the water line, read as trees
+  floating in the air over the water. `drawBeachPalm` now draws a
+  simple tapered procedural trunk from the crown down to the sand (this
+  cutout is crown-only, no trunk of its own in frame) and anchors the
+  whole thing at `sandY`, not `horizonY`.
 - `dolphin.webp` — cropped from "View of a Dolphin Jumping above the
   Water Surface," via
   [Pexels](https://www.pexels.com/photo/view-of-a-dolphin-jumping-above-the-water-surface-17334473/).
