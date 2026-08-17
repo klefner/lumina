@@ -4782,12 +4782,15 @@ test("Halloween's music is always the scoped eerie family, never the generic poo
       usesOnlySourcedInstruments: eerie.seeds.every(seed =>
         seed.roles.every(r => SAMPLE_MANIFEST[r.instrument] !== undefined)
       ),
-      // Matches the 'lullaby' family's own established precedent: flute
-      // and cello have a documented history of reading as "a horn" when
-      // sustained continuously in a pad/drone role (see that family's own
-      // comment) -- eerie keeps them out of both.
-      keepsFluteCelloOutOfSustainedRoles: eerie.seeds.every(seed =>
-        seed.roles.every(r => !(['pad', 'drone'].includes(r.kind) && ['flute', 'cello'].includes(r.instrument)))
+      // Matches the 'lullaby' family's own established precedent, taken
+      // all the way this time: flute/cello are continuously-sustained
+      // real recordings, so this engine's algorithmically-placed notes
+      // expose every awkward interval nakedly on them, in any role --
+      // an earlier version of this family only kept them out of
+      // pad/drone (player report, 2026-08-17: "sounds like a kid
+      // practicing violin" from cello/flute still in melody/accent).
+      keepsFluteCelloOutEntirely: eerie.seeds.every(seed =>
+        seed.roles.every(r => !['flute', 'cello'].includes(r.instrument))
       ),
     };
   });
@@ -4797,7 +4800,7 @@ test("Halloween's music is always the scoped eerie family, never the generic poo
   expect(result.seedCount).toBeGreaterThanOrEqual(3);
   expect(result.allHarmonicMinor).toBe(true);
   expect(result.usesOnlySourcedInstruments).toBe(true);
-  expect(result.keepsFluteCelloOutOfSustainedRoles).toBe(true);
+  expect(result.keepsFluteCelloOutEntirely).toBe(true);
   expect(errors).toEqual([]);
 });
 

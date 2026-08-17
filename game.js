@@ -2014,13 +2014,20 @@ const GENRE_FAMILIES = [
   // same triad/arpeggio/pad machinery every other family already uses
   // into minor i/iv chords against a major V, the classic "spooky
   // cadence" interval used across horror and Halloween-themed music, via
-  // the augmented 2nd it creates between scale degrees 6 and 7. Kept to
-  // the same real-recording instrument pool 'spa' uses (piano/flute/
-  // cello/marimba/vibraphone) rather than anything synthesized, and keeps
-  // flute/cello out of pad/drone roles -- both have a documented history
-  // of reading as "a horn" when sustained continuously there (see
-  // 'lullaby' family's own comment) -- in favor of marimba/vibraphone/
-  // piano, already proven safe in those roles.
+  // the augmented 2nd it creates between scale degrees 6 and 7.
+  //
+  // Originally kept to the same real-recording pool 'spa' uses (piano/
+  // flute/cello/marimba/vibraphone), with flute/cello only kept OUT of
+  // pad/drone roles -- a containment fix, the same shape 'lullaby'
+  // originally shipped with. Player report (2026-08-17, "sounds like a
+  // kid practicing violin... doesn't sound eerie"): containment wasn't
+  // enough here either, for exactly the reason 'lullaby's own comment
+  // already documents -- flute/cello are continuously-sustained real
+  // recordings, so this engine's algorithmically-placed melody/accent
+  // notes expose every awkward interval nakedly, in a way a decay/mallet
+  // instrument (piano/marimba/vibraphone) or plucked bass (doublebass)
+  // just absorbs. Dropped flute/cello entirely, same fix 'lullaby'
+  // already proved out.
   {
     name: 'eerie',
     sceneOnly: 'halloween',
@@ -2032,12 +2039,12 @@ const GENRE_FAMILIES = [
         scaleIntervals: [0, 2, 3, 5, 7, 8, 11], // harmonic minor
         chordProgression: [0, 3, 4, 0],          // i - iv - V - i
         roles: [
-          { kind: 'melody',   instrument: 'flute' },
-          { kind: 'arpeggio', instrument: 'piano' },
+          { kind: 'melody',   instrument: 'piano' },
+          { kind: 'arpeggio', instrument: 'marimba' },
           { kind: 'pad',      instrument: 'vibraphone' },
-          { kind: 'drone',    instrument: 'marimba' },
+          { kind: 'drone',    instrument: 'doublebass' },
           { kind: 'accent',   instrument: 'marimba' },
-          { kind: 'accent',   instrument: 'cello' },
+          { kind: 'accent',   instrument: 'vibraphone' },
         ],
       },
       {
@@ -2045,11 +2052,11 @@ const GENRE_FAMILIES = [
         scaleIntervals: [0, 2, 3, 5, 7, 8, 11],
         chordProgression: [0, 5, 3, 4],          // i - VI - iv - V
         roles: [
-          { kind: 'melody',   instrument: 'cello' },
+          { kind: 'melody',   instrument: 'vibraphone' },
           { kind: 'arpeggio', instrument: 'marimba' },
           { kind: 'pad',      instrument: 'piano' },
-          { kind: 'drone',    instrument: 'vibraphone' },
-          { kind: 'accent',   instrument: 'flute' },
+          { kind: 'drone',    instrument: 'doublebass' },
+          { kind: 'accent',   instrument: 'piano' },
           { kind: 'accent',   instrument: 'marimba' },
         ],
       },
@@ -2058,12 +2065,12 @@ const GENRE_FAMILIES = [
         scaleIntervals: [0, 2, 3, 5, 7, 8, 11],
         chordProgression: [0, 4, 5, 3],          // i - V - VI - iv
         roles: [
-          { kind: 'melody',   instrument: 'flute' },
+          { kind: 'melody',   instrument: 'piano' },
           { kind: 'arpeggio', instrument: 'vibraphone' },
           { kind: 'pad',      instrument: 'marimba' },
-          { kind: 'drone',    instrument: 'piano' },
-          { kind: 'accent',   instrument: 'cello' },
-          { kind: 'accent',   instrument: 'piano' },
+          { kind: 'drone',    instrument: 'doublebass' },
+          { kind: 'accent',   instrument: 'marimba' },
+          { kind: 'accent',   instrument: 'vibraphone' },
         ],
       },
     ],
