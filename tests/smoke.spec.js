@@ -4661,6 +4661,49 @@ test('the postcard crop follows an off-center cluster of dots instead of the scr
   expect(errors).toEqual([]);
 });
 
+// Player report, attached screenshot: a diagonal line cut off at the top
+// edge of the postcard -- some dots/lines the player actually saw on
+// screen were missing from the celebratory photo. Root cause:
+// computePostcardCropRect used to clamp its square crop's size to
+// `Math.min(canvas.width, canvas.height)` (there's nothing to zoom OUT
+// for, the old reasoning went), but a board whose content spans MORE than
+// the canvas's shorter dimension (e.g. a tall diagonal line on a portrait
+// viewport, where width is the shorter side) legitimately needs a crop
+// bigger than that to keep every on-screen dot framed -- the old clamp
+// shrank the crop back down and cropped genuinely visible content out.
+// Forces exactly that shape (narrow horizontally, spanning nearly the
+// full canvas vertically) and confirms every dot stays framed.
+test('the postcard crop is not clamped to the canvas\'s shorter dimension, so a board taller/wider than that still shows every dot', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    const maxSize = Math.min(canvas.width, canvas.height);
+    // A narrow diagonal spanning almost the whole canvas along its LONGER
+    // axis -- on this suite's portrait viewport that's height, so this
+    // reproduces the "diagonal line cut off at the top" report directly.
+    const top = screenToWorld(canvas.width / 2 - 20, 20);
+    const bottom = screenToWorld(canvas.width / 2 + 20, canvas.height - 20);
+    STATE.dots = [
+      { x: top.x, y: top.y, pairId: 0 },
+      { x: bottom.x, y: bottom.y, pairId: 0 },
+    ];
+
+    const crop = computePostcardCropRect();
+    const allDotsFramed = STATE.dots.every(dot => {
+      const p = worldToScreen(dot.x, dot.y);
+      return p.x >= crop.x && p.x <= crop.x + crop.size && p.y >= crop.y && p.y <= crop.y + crop.size;
+    });
+
+    return { maxSize, cropSize: crop.size, allDotsFramed };
+  });
+
+  expect(result.allDotsFramed).toBe(true);
+  expect(result.cropSize).toBeGreaterThan(result.maxSize); // the old bug: this used to be clamped down to maxSize
+  expect(errors).toEqual([]);
+});
+
 test('shareOrSaveWavePostcard shares a file with the play link included exactly once, and copies the link on fallback', async ({ page }) => {
   const errors = trackErrors(page);
   await page.addInitScript(() => { navigator.vibrate = () => true; });

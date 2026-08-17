@@ -3873,27 +3873,34 @@ const SCENE_AMBIENT_CONFIG = {
       chimes: { file: 'christmas-chimes.mp3', gain: 0.45, isEvent: true, minGapSec: 30, maxGapSec: 65 },
     },
   },
-  // The composed African-inspired track is the scene's floor (same
-  // reasoning as every other scene's first-revealed layer), with the bus
-  // engine hum right behind it. wind and insects (both real field
-  // recordings -- see sounds/CREDITS.md) are the two continuous "nature"
-  // beds every other scene's ambience already leans on (forest's wind/
-  // crickets, beach's waves/wind), which this scene didn't have at
-  // first -- song and engine cover the "riding in a vehicle" half of the
-  // brief, but neither one is actually a savanna field recording.
-  // wildlife is the one occasional event layer: a real elephant trumpet
-  // call (also replaces an earlier synthesized placeholder -- see git
-  // history), matching the real-recording pattern player feedback
-  // established for forest/beach's own event layers (owl, whale) over
-  // synthesizing something built to only approximate them.
+  // wind and insects (both real field recordings -- see
+  // sounds/CREDITS.md) are the two continuous "nature" beds every other
+  // scene's ambience already leans on (forest's wind/crickets, beach's
+  // waves/wind), with the bus engine hum covering the "riding in a
+  // vehicle" half of the original brief. wildlife is the one occasional
+  // event layer: a real elephant trumpet call (also replaces an earlier
+  // synthesized placeholder -- see git history), matching the
+  // real-recording pattern player feedback established for forest/
+  // beach's own event layers (owl, whale) over synthesizing something
+  // built to only approximate them.
+  //
+  // This scene originally also had a 'song' layer -- a composed
+  // African-inspired track playing as passive ambience. Removed (player
+  // request, 2026-08-17): the whole point of the scene-locked 'savanna'
+  // genre family (see GENRE_FAMILIES) is that the African-instrument
+  // music comes from the PLAYER's own dot-connecting, not a canned track
+  // playing regardless of what they do -- a passive song undercut that
+  // and duplicated the same job. wildlife's own gap range was also
+  // tightened way down (25-55s to 10-24s, player: "I need to hear
+  // African animal sounds way often in the distance") now that it isn't
+  // competing with a whole separate music track for attention.
   safari: {
-    order: ['song', 'wind', 'insects', 'engine', 'wildlife'],
+    order: ['wind', 'insects', 'engine', 'wildlife'],
     sounds: {
-      song: { file: 'safari-song.mp3', gain: 0.5, isEvent: false },
       wind: { file: 'safari-wind.mp3', gain: 0.42, isEvent: false },
       insects: { file: 'safari-insects.mp3', gain: 0.4, isEvent: false },
       engine: { file: 'safari-engine.mp3', gain: 0.28, isEvent: false },
-      wildlife: { file: 'safari-wildlife.mp3', gain: 0.55, isEvent: true, minGapSec: 25, maxGapSec: 55 },
+      wildlife: { file: 'safari-wildlife.mp3', gain: 0.55, isEvent: true, minGapSec: 10, maxGapSec: 24 },
     },
   },
 };
@@ -12451,12 +12458,20 @@ function computePostcardCropRect() {
   const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
   const contentSize = Math.max(maxX - minX, maxY - minY) + pad * 2;
 
-  // Square crop, sized to the content but never larger than the shorter
-  // canvas dimension (there's nothing to zoom OUT for) and never smaller
-  // than CROP_MIN_SIZE_PX (a single close-together pair shouldn't crop in
-  // so tight it reads as an abstract close-up instead of a game board).
-  const maxSize = Math.min(canvas.width, canvas.height);
-  const size = Math.min(maxSize, Math.max(POSTCARD_CONFIG.CROP_MIN_SIZE_PX, contentSize));
+  // Square crop, sized to the content and never smaller than
+  // CROP_MIN_SIZE_PX (a single close-together pair shouldn't crop in so
+  // tight it reads as an abstract close-up instead of a game board).
+  // Deliberately NOT clamped to the shorter canvas dimension (player
+  // report, attached screenshot: a wide/zoomed-out board's dots spread
+  // wider than the canvas's shorter side, and that old upper clamp
+  // silently cropped genuinely on-canvas dots/lines out of the postcard
+  // -- players should see their whole design, not a slice of it). The
+  // drawImage call below handles a source rect this large gracefully: a
+  // source rectangle that overhangs the actual canvas is clipped to it,
+  // with the destination clipped in the same proportion, so any true
+  // overflow just shows the photo rect's own black fill rather than
+  // distorting or erroring.
+  const size = Math.max(POSTCARD_CONFIG.CROP_MIN_SIZE_PX, contentSize);
 
   // Centered on the content, then nudged back on-canvas if that would
   // spill past an edge (e.g. a group hugging one side of a wide world).
