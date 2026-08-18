@@ -2940,7 +2940,7 @@ const STATE = {
                          // what render() actually draws, independent of sceneMode
   forestScene: null,    // { trees, fireflies, moonXFrac, ... } for the current wave when
                          // scene === 'forest' (see generateForestScene); null otherwise
-  beachScene: null,      // { variant, waveLines, glitterDots, moonXFrac, palmOverhang, palms,
+  beachScene: null,      // { variant, waveLines, glitterDots, moonXFrac, palms,
                           // dolphins, whale, cruiseShip, boat, ... } for the current wave when
                           // scene === 'beach' (see generateBeachScene); null otherwise
   beachVariant: null,    // 'day' or 'night', persists across a whole beach block once rolled,
@@ -9421,15 +9421,31 @@ const BEACH_IMAGES = {
 
 // Real photo cutouts (background removed with rembg, sourcing + process
 // notes in art/CREDITS.md), same technique as Safari's tree/animal
-// library -- palm-full-1/2 and dolphin/whale/cruise-ship are all
-// ground-anchored at the horizon or sandY (see drawBeachCutout);
-// palm-overhang is the one exception, anchored from a screen corner
-// instead (see drawBeachOverhang's own comment). palm-full-1/2 are each
-// a SINGLE real photo showing an entire tree, trunk to crown -- not a
-// crown cutout with a procedural trunk drawn under it (an earlier
-// version did that, and player feedback -- screenshot -- called out the
-// procedural trunk as obviously fake next to the photographic crown).
-const BEACH_CUTOUT_SOURCES = ['palm-overhang', 'palm-full-1', 'palm-full-2', 'dolphin', 'whale', 'cruise-ship'];
+// library -- all ground-anchored at the horizon or sandY (see
+// drawBeachCutout). palm-full-1/2 are each a SINGLE real photo showing an
+// entire tree, trunk to crown -- not a crown cutout with a procedural
+// trunk drawn under it (an earlier version did that, and player feedback
+// -- screenshot -- called out the procedural trunk as obviously fake next
+// to the photographic crown).
+//
+// There used to be a 'palm-overhang' entry here too: a corner-anchored
+// frond meant to read as "the rest of the tree is off-frame" (a real
+// travel-photo trope). Removed for good, not just re-cropped again, after
+// the SAME underlying asset produced four distinct floating-tree defects
+// across four rounds (dangling trunk stub; a second, un-noticed trunk
+// remnant Codex had to catch; a vertical region-containment gap letting
+// the crown extend into the water; and, discovered while fixing that
+// last one, the asset itself was never actually corner-shaped to begin
+// with -- a symmetric photo shot from directly underneath the tree, 0
+// opaque pixels on its top row or right column, so it could never read
+// as "anchored to a corner" no matter how it was cropped or clamped).
+// Every other element anchors to something visually verifiable (a
+// horizon, a shoreline, an edge with real contact) -- this was the only
+// element whose entire premise was "trust that it looks attached to a
+// corner it never actually touched," and that premise is what kept
+// failing. See SOURCE_OF_TRUTH.md's Required Method, "Composition must
+// match anchor role."
+const BEACH_CUTOUT_SOURCES = ['palm-full-1', 'palm-full-2', 'dolphin', 'whale', 'cruise-ship'];
 const BEACH_CUTOUT_IMAGES = {};
 for (const name of BEACH_CUTOUT_SOURCES) {
   BEACH_CUTOUT_IMAGES[name] = Object.assign(new Image(), { src: `art/beach-cutouts/${name}.webp` });
@@ -9565,16 +9581,6 @@ function generateBeachScene(previousScene) {
     palms,
     dolphins,
     cruiseShip,
-    // One dramatic overhanging palm frond in a screen corner -- a real
-    // travel-photo composition trope, not ground-anchored at all (see
-    // drawBeachOverhang's own comment on why this cutout anchors from a
-    // corner instead of the horizon). Rerolled fresh every wave, same as
-    // every other decorative detail here.
-    // Shrunk from an earlier version (player report, screenshot: it filled
-    // most of the upper half of the screen and sat right over the dots) --
-    // still a recognizable corner accent at this size, not the dominant
-    // element in frame.
-    palmOverhang: { corner: Math.random() < 0.5 ? 'left' : 'right', sizeFrac: 0.28 + Math.random() * 0.08 },
     celestialXFrac,
     celestialYFrac: 0.08 + Math.random() * 0.12,
     celestialRadiusFrac: 0.045 + Math.random() * 0.02,
@@ -9669,38 +9675,29 @@ function drawBeachCutout(source, xCenter, groundY, targetHeight, direction, nigh
   ctx.restore();
 }
 
-// The overhanging corner frond -- anchored from a TOP corner of the
-// screen instead of the horizon. Its source photo is a real palm leaning
-// out over open water, cropped tight to its own alpha bounding box (see
-// CREDITS.md); the trunk exits the photo's own right edge rather than
-// ever reaching a visible base, so there's no real "ground" to
-// bottom-anchor it to the way every other cutout here is. A palm frond
-// hanging into frame from a corner is itself a common, recognizable
-// beach-photo composition on its own terms, not a workaround.
 // The explicit, source-of-truth depth model for every Beach foreground
 // element, farthest from the camera to nearest. drawBeachScene's actual
 // draw order MUST match this order exactly -- enforced by the "depth
-// order" test in smoke.spec.js, which hooks drawBeachCutout/drawBeachBoat/
-// drawBeachOverhang and asserts the sequence of layer names drawn in a
-// real frame never goes backwards through this list. See
-// SOURCE_OF_TRUTH.md's Required Method for why this exists: an earlier
-// version sorted draw order by how fast each element moves (a completely
-// different axis from depth) instead of by depth, and a fast-moving-but-
-// FAR cruise ship ended up drawn on top of a static-but-NEAR palm tree
-// whenever their independently-random x positions happened to overlap
-// (player report, screenshot). If a new foreground element is ever added,
-// it needs a row here, in the right depth position, not just a draw call
-// added wherever happens to be convenient.
-const BEACH_DEPTH_LAYERS = ['cruise-ship', 'dolphin', 'whale', 'boat', 'palm', 'palm-overhang'];
+// order" test in smoke.spec.js, which hooks drawBeachCutout/drawBeachBoat
+// and asserts the sequence of layer names drawn in a real frame never
+// goes backwards through this list. See SOURCE_OF_TRUTH.md's Required
+// Method for why this exists: an earlier version sorted draw order by how
+// fast each element moves (a completely different axis from depth)
+// instead of by depth, and a fast-moving-but-FAR cruise ship ended up
+// drawn on top of a static-but-NEAR palm tree whenever their
+// independently-random x positions happened to overlap (player report,
+// screenshot). If a new foreground element is ever added, it needs a row
+// here, in the right depth position, not just a draw call added wherever
+// happens to be convenient.
+const BEACH_DEPTH_LAYERS = ['cruise-ship', 'dolphin', 'whale', 'boat', 'palm'];
 
 // Boat -- a simple hull-and-sail silhouette riding right at the horizon
 // line, bobbing gently (see updateBeachScene for its slow horizontal
 // drift). The one point of warm color otherwise is its masthead light --
 // what actually makes a real distant boat readable against a dim horizon
-// (day or night). Pulled into its own named function (like
-// drawBeachOverhang already was) specifically so tests can hook it the
-// same way they hook drawBeachCutout, to observe real draw order --
-// see BEACH_DEPTH_LAYERS above.
+// (day or night). Pulled into its own named function specifically so
+// tests can hook it the same way they hook drawBeachCutout, to observe
+// real draw order -- see BEACH_DEPTH_LAYERS above.
 function drawBeachBoat(boat, waterFarY, waterTopY, waterBottomY, w, variant, t) {
   const boatX = boat.xFrac * w;
   const bob = Math.sin(t * boat.bobSpeed + boat.bobPhase) * 1.5;
@@ -9726,21 +9723,6 @@ function drawBeachBoat(boat, waterFarY, waterTopY, waterBottomY, w, variant, t) 
   ctx.arc(boatX + mastLean, boatY - br * 0.85, Math.max(1, br * 0.06), 0, Math.PI * 2);
   ctx.fillStyle = 'rgba(255, 210, 140, 0.9)';
   ctx.fill();
-}
-
-function drawBeachOverhang(overhang, w, h, nightTint) {
-  const img = BEACH_CUTOUT_IMAGES['palm-overhang'];
-  if (!img.complete || img.naturalWidth === 0) return;
-  const targetHeight = overhang.sizeFrac * h;
-  const targetWidth = targetHeight * (img.naturalWidth / img.naturalHeight);
-  ctx.save();
-  if (overhang.corner === 'right') {
-    ctx.translate(w, 0);
-    ctx.scale(-1, 1);
-  }
-  if (nightTint) ctx.filter = 'brightness(0.4) saturate(0.55) contrast(1.05)';
-  ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-  ctx.restore();
 }
 
 function drawBeachScene() {
@@ -9841,11 +9823,22 @@ function drawBeachScene() {
     ctx.fillRect(0, waterTopY, w, waterBottomY - waterTopY);
   }
 
+  // celestialYFrac is a plain screen-space fraction (0.08-0.20 of h),
+  // with no relationship to horizonY/waterTopY otherwise (see
+  // SOURCE_OF_TRUTH.md's Required Method, "region containment").
+  // horizonY's own clamp only guarantees it stays within the screen's
+  // middle 70% (15%-85% of h); on a sufficiently wide canvas that 15%
+  // floor is actually reached (confirmed: an ultrawide 2560x1080 canvas
+  // hits exactly 0.15), which overlaps celestialYFrac's own 0.08-0.20
+  // range -- the sun/moon could render below the horizon, appearing to
+  // sit in the water, on wide enough displays. Clamped: never render
+  // below a safe margin above waterTopY.
+  const celestialY = Math.min(scene.celestialYFrac * h, waterTopY - h * 0.08);
   if (nightTint) {
-    drawNightMoon(scene.celestialXFrac, scene.celestialYFrac, scene.celestialRadiusFrac);
+    drawNightMoon(scene.celestialXFrac, celestialY / h, scene.celestialRadiusFrac);
     drawStars(true); // reward-only -- see this section's header comment
   } else {
-    drawBeachSun(scene.celestialXFrac, scene.celestialYFrac, scene.celestialRadiusFrac);
+    drawBeachSun(scene.celestialXFrac, celestialY / h, scene.celestialRadiusFrac);
   }
 
   for (const d of scene.glitterDots) {
@@ -9936,7 +9929,6 @@ function drawBeachScene() {
   for (const palm of scene.palms) {
     drawBeachCutout(palm.source, palm.xFrac * w, sandY, palm.sizeFrac * h, 1, nightTint);
   }
-  drawBeachOverhang(scene.palmOverhang, w, h, nightTint);
 
   ctx.fillStyle = BEACH_CONFIG.SAND_COLOR[scene.variant];
   ctx.fillRect(0, sandY, w, h - sandY);

@@ -7012,7 +7012,6 @@ for (const variant of ['day', 'night']) {
         hasBoat: !!STATE.beachScene.boat,
         hasPalms: STATE.beachScene.palms.length > 0,
         hasDolphins: STATE.beachScene.dolphins.length > 0,
-        hasPalmOverhang: !!STATE.beachScene.palmOverhang,
         hasWhale: !!STATE.beachScene.whale,
         phaseAdvanced,
         phaseStartedRandomized: phaseBefore >= 0 && phaseBefore < BEACH_CONFIG.PAN_CYCLE_FRAMES,
@@ -7027,7 +7026,6 @@ for (const variant of ['day', 'night']) {
     expect(result.hasBoat).toBe(true);
     expect(result.hasPalms).toBe(true);
     expect(result.hasDolphins).toBe(true);
-    expect(result.hasPalmOverhang).toBe(true);
     expect(result.hasWhale).toBe(true);
     expect(result.phaseAdvanced).toBe(true);
     expect(result.phaseStartedRandomized).toBe(true);
@@ -7270,14 +7268,11 @@ test('Beach foreground elements draw in depth order (far-to-near) every frame, n
     const layers = [];
     const originalCutout = drawBeachCutout;
     const originalBoat = drawBeachBoat;
-    const originalOverhang = drawBeachOverhang;
     window.drawBeachCutout = (source, ...rest) => { layers.push(source); return originalCutout(source, ...rest); };
     window.drawBeachBoat = (...args) => { layers.push('boat'); return originalBoat(...args); };
-    window.drawBeachOverhang = (...args) => { layers.push('palm-overhang'); return originalOverhang(...args); };
     drawBeachScene();
     window.drawBeachCutout = originalCutout;
     window.drawBeachBoat = originalBoat;
-    window.drawBeachOverhang = originalOverhang;
 
     return { layers, model: BEACH_DEPTH_LAYERS };
   });
@@ -7342,11 +7337,6 @@ test('Beach: a palm and the cruise ship forced to the same x still draw palm-on-
 // crown asset (a crown with no trunk, see CREDITS.md's sourcing history)
 // -- this test would have caught it automatically before it was ever
 // wired into drawBeachScene, instead of needing a player screenshot.
-// palm-overhang is deliberately excluded: it's the one cutout that's NOT
-// meant to touch any edge of its own crop at its anchor side (it hangs
-// from a screen corner, its far end meant to read as exiting the frame
-// entirely) -- see SOURCE_OF_TRUTH.md's Required Method for why that
-// category needs a different (still-manual, visual) check instead.
 test('Every ground/water-anchored cutout touches its own bottom edge (has a real "foot", not a floating crop)', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
