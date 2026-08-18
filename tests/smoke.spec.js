@@ -7328,6 +7328,113 @@ test('Beach: a palm and the cruise ship forced to the same x still draw palm-on-
   expect(errors).toEqual([]);
 });
 
+// Player report, screenshot: a dolphin rendered visibly bigger than the
+// cruise ship. The cruise ship anchors exclusively at waterFarY (a real
+// distant vessel, never anywhere else); the whale does too. sizeFrac is
+// the only cue telling those apart from "small/mid animal" scale, so their
+// random ranges must never overlap the ship's. The dolphin's range check
+// stays here even though dolphins can now roam the WHOLE water column
+// (see generateBeachScene's own comment) rather than being fixed to
+// waterFarY like the ship/whale -- a dolphin can still land at yFrac~0,
+// effectively at the same horizon distance as the ship, so the same bound
+// still has to hold regardless of where in the water it's drawn.
+//
+// First version of this test (PR #107) only checked the one reported pair
+// (dolphin vs. ship) -- a review catch (Codex) pointed out it would stay
+// green even if a later change made the WHALE bigger than the ship, since
+// nothing modeled that pair too. Generalized to a table of every
+// co-anchored pair instead of one hardcoded comparison, specifically so
+// adding a future co-anchored element means adding a row here, not
+// re-discovering this same gap a second time. See SOURCE_OF_TRUTH.md's
+// Required Method, "Relative scale plausibility."
+test('Beach: every co-anchored cutout\'s size range stays smaller than the cruise ship\'s (real-world scale, not just the one reported pair)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const cfg = await page.evaluate(() => ({
+    dolphin: BEACH_CONFIG.DOLPHIN_SIZE_FRAC,
+    whale: BEACH_CONFIG.WHALE_SIZE_FRAC,
+    ship: BEACH_CONFIG.CRUISE_SHIP_SIZE_FRAC,
+  }));
+
+  // Deterministic check against the named constants -- the invariant is
+  // meant to hold by construction, so assert it directly rather than
+  // relying on enough random draws to catch a violation.
+  const smallerElements = [
+    { name: 'dolphin', maxSizeFrac: cfg.dolphin.max },
+    { name: 'whale', maxSizeFrac: cfg.whale }, // fixed value, not a range
+  ];
+  for (const el of smallerElements) {
+    expect(cfg.ship.min, `cruise ship's smallest possible size must still exceed the ${el.name}'s largest possible size`).toBeGreaterThan(el.maxSizeFrac);
+  }
+
+  // Also confirm actual generated scenes never violate it in practice --
+  // belt-and-suspenders in case a future edit changes how sizeFrac is
+  // drawn from the range without updating the range itself.
+  const violations = await page.evaluate(() => {
+    let count = 0;
+    for (let i = 0; i < 2000; i++) {
+      const scene = generateBeachScene();
+      if (!scene.cruiseShip) continue;
+      for (const d of scene.dolphins) {
+        if (d.sizeFrac >= scene.cruiseShip.sizeFrac) count++;
+      }
+      if (scene.whale.sizeFrac >= scene.cruiseShip.sizeFrac) count++;
+    }
+    return count;
+  });
+  expect(violations).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+// Companion to the scale-plausibility test above: confirms the actual
+// position freedom described in generateBeachScene's dolphin comment. The
+// cruise ship stays exclusively on the horizon (waterFarY, no
+// y-randomization at all -- confirmed by reading the one draw call
+// directly); dolphins are meant to range across the whole water column,
+// but never past the sand line (never "beached," per the player's own
+// framing of the rule).
+test('Beach: dolphins can appear anywhere in the water but never past the sand line; the cruise ship stays only on the horizon', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'beach';
+    STATE.beachVariant = 'day';
+    STATE.beachScene = generateBeachScene();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const yFracs = [];
+    for (let i = 0; i < 500; i++) {
+      const scene = generateBeachScene();
+      for (const d of scene.dolphins) yFracs.push(d.yFrac);
+    }
+    const spread = Math.max(...yFracs) - Math.min(...yFracs);
+
+    const shipYs = [];
+    for (let i = 0; i < 50; i++) {
+      const scene = generateBeachScene();
+      if (scene.cruiseShip) shipYs.push(scene.cruiseShip.yFrac);
+    }
+
+    return {
+      dolphinYFracHasVariety: spread > 0.5, // spans a real chunk of the water, not clustered at one line
+      dolphinYFracMin: Math.min(...yFracs),
+      dolphinYFracMax: Math.max(...yFracs),
+      cruiseShipHasNoYFrac: shipYs.every((v) => v === undefined), // no per-instance y-randomization field at all
+    };
+  });
+
+  expect(result.dolphinYFracHasVariety).toBe(true);
+  expect(result.dolphinYFracMin).toBeGreaterThanOrEqual(0);
+  expect(result.dolphinYFracMax).toBeLessThanOrEqual(1);
+  expect(result.cruiseShipHasNoYFrac).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 // Generic, reusable across both Beach and Safari's cutout libraries (and
 // any future one): a ground/water-anchored cutout's own alpha channel
 // must actually reach the edge it's anchored at -- if the asset's visible

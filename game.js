@@ -9413,6 +9413,33 @@ const BEACH_CONFIG = {
   // Not every wave -- a cruise ship crossing the horizon should read as a
   // rarer sight than the everyday sailboat, not a second boat every time.
   CRUISE_SHIP_CHANCE: 0.6,
+  // Both anchor at the identical y (waterFarY -- see drawBeachScene), so
+  // sizeFrac is the ONLY cue distinguishing "huge vessel, far out at sea"
+  // from "small animal, near the surface." Named constants (not inline
+  // literals in generateBeachScene) specifically so a test can assert the
+  // relationship holds without statistical sampling. Player report,
+  // screenshot: the two ranges used to overlap (dolphin 0.05-0.07, ship
+  // 0.05-0.075) and a randomly-large dolphin next to a randomly-small ship
+  // rendered visibly bigger than a cruise ship. CRUISE_SHIP_SIZE_FRAC's
+  // floor is set above DOLPHIN_SIZE_FRAC's ceiling with a deliberate
+  // margin so this can't recur regardless of what either random draw
+  // produces -- see SOURCE_OF_TRUTH.md's Required Method, "Relative scale
+  // plausibility."
+  DOLPHIN_SIZE_FRAC: { min: 0.05, max: 0.07 },
+  CRUISE_SHIP_SIZE_FRAC: { min: 0.08, max: 0.105 },
+  // The whale also anchors at waterFarY (same as the cruise ship) and is
+  // a plausible-scale check candidate for the same reason the dolphin was
+  // -- a fixed single value, not a range (an occasional silhouette
+  // sighting, not something that needs size variety). Named here, not
+  // left as a magic number in generateBeachScene's whale object, for the
+  // same reason DOLPHIN/CRUISE_SHIP_SIZE_FRAC are named: a review catch
+  // (Codex, PR #107) pointed out the original scale-plausibility test
+  // only covered the one reported pair (dolphin/ship) and would stay
+  // green even if a later change made the whale bigger than the ship --
+  // "any two elements that share an anchor" (this section's own opening
+  // line) has to mean ALL of them, not just whichever pair a screenshot
+  // happened to catch.
+  WHALE_SIZE_FRAC: 0.06,
 };
 const BEACH_IMAGES = {
   day: Object.assign(new Image(), { src: BEACH_CONFIG.images.day }),
@@ -9546,16 +9573,25 @@ function generateBeachScene(previousScene) {
     });
   }
 
-  // Dolphins leaping near the water's surface, wrapping across the
-  // screen the same way Safari's animals do.
+  // Dolphins leaping anywhere in the water -- unlike the cruise ship
+  // (which stays exclusively on the horizon, a real distant vessel, see
+  // its own comment below), a dolphin can plausibly be anywhere from the
+  // horizon down to the shore. yFrac spans the full water region the same
+  // way glitterDots/waveLines already do (interpolated between waterTopY
+  // and waterBottomY in drawBeachScene) -- NOT past it: waterBottomY is
+  // itself capped at sandY (real photographed sand, day; the near
+  // shoreline, night), and drawBeachCutout draws upward from its anchor
+  // point, so a dolphin at yFrac 1.0 has its body entirely above the sand
+  // line, never overlapping it -- a dolphin can never be "beached."
   const dolphins = [];
   for (let i = 0; i < BEACH_CONFIG.DOLPHIN_COUNT; i++) {
     dolphins.push({
       xFrac: Math.random(),
+      yFrac: Math.random(),
       direction: Math.random() < 0.5 ? 1 : -1,
       speed: 0.0004 + Math.random() * 0.0004,
       bobPhase: Math.random() * Math.PI * 2,
-      sizeFrac: 0.05 + Math.random() * 0.02,
+      sizeFrac: BEACH_CONFIG.DOLPHIN_SIZE_FRAC.min + Math.random() * (BEACH_CONFIG.DOLPHIN_SIZE_FRAC.max - BEACH_CONFIG.DOLPHIN_SIZE_FRAC.min),
     });
   }
 
@@ -9568,8 +9604,10 @@ function generateBeachScene(previousScene) {
     speed: 0.00003 + Math.random() * 0.00002,
     // A ship this far out at sea should read as small on the horizon, not
     // loom close to shore (player report, screenshot) -- shrunk from an
-    // earlier version sized closer to the shore-side cruise ship.
-    sizeFrac: 0.05 + Math.random() * 0.025,
+    // earlier version sized closer to the shore-side cruise ship. See
+    // BEACH_CONFIG.CRUISE_SHIP_SIZE_FRAC's own comment for why this range
+    // must stay above DOLPHIN_SIZE_FRAC's ceiling.
+    sizeFrac: BEACH_CONFIG.CRUISE_SHIP_SIZE_FRAC.min + Math.random() * (BEACH_CONFIG.CRUISE_SHIP_SIZE_FRAC.max - BEACH_CONFIG.CRUISE_SHIP_SIZE_FRAC.min),
   } : null;
 
   return {
@@ -9590,7 +9628,7 @@ function generateBeachScene(previousScene) {
     // (review catch, PR #92): phase can already be large on a fresh
     // scene, so a small fixed delay alone could spawn one almost
     // immediately.
-    whale: { active: false, xFrac: 0.5, sizeFrac: 0.06, life: 0, maxLife: 1, nextSpawnFrame: phase + 300 + Math.floor(Math.random() * 600) },
+    whale: { active: false, xFrac: 0.5, sizeFrac: BEACH_CONFIG.WHALE_SIZE_FRAC, life: 0, maxLife: 1, nextSpawnFrame: phase + 300 + Math.floor(Math.random() * 600) },
   };
 }
 
@@ -9903,7 +9941,13 @@ function drawBeachScene() {
     // spirit as Safari's animal bob, since a static photo has no
     // leap-cycle frames to animate.
     const bob = Math.sin(t * 0.04 + dolphin.bobPhase) * dolphin.sizeFrac * h * 0.15;
-    drawBeachCutout('dolphin', dolphin.xFrac * w, waterFarY + bob, dolphin.sizeFrac * h, dolphin.direction, nightTint);
+    // Spread across the FULL water region (not fixed to waterFarY like the
+    // cruise ship) -- same interpolation glitterDots/waveLines already use,
+    // so a dolphin can be anywhere in the water but never past waterBottomY
+    // (itself capped at the real sand line -- see this scene's own comment
+    // on why that keeps it from ever being drawn "beached").
+    const dolphinY = waterTopY + dolphin.yFrac * (waterBottomY - waterTopY) + bob;
+    drawBeachCutout('dolphin', dolphin.xFrac * w, dolphinY, dolphin.sizeFrac * h, dolphin.direction, nightTint);
   }
   if (scene.whale.active) {
     // Fades in/out over its short life rather than popping, so a "spot
