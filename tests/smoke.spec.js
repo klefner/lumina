@@ -7435,6 +7435,53 @@ test('Beach: dolphins can appear anywhere in the water but never past the sand l
   expect(errors).toEqual([]);
 });
 
+// Player report, screenshot: a dolphin rendered up near a shore palm's
+// crown height, reading as jumping higher than the tree. Letting dolphins
+// roam the full water depth (the test above) without also scaling their
+// SIZE by that same depth reintroduced a version of the relative-scale
+// bug category 8 already exists for -- a dolphin near the horizon (small
+// yFrac, meant to read as far out at sea) still rendered at its full,
+// position-independent size, so it could appear as a large object high in
+// the frame next to a much shorter, clearly-nearby tree. Fixed by scaling
+// the RENDERED size down toward the horizon (this is drawBeachScene's own
+// depthScale, not a separate stored field -- hooks the actual draw call
+// to observe it, the same technique the depth-order test uses, rather
+// than recomputing the formula independently and asserting it agrees with
+// itself).
+test('Beach: a dolphin far from shore renders visibly smaller than one near shore (depth-consistent, not just position-free)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'beach';
+    STATE.beachVariant = 'day';
+    STATE.beachScene = generateBeachScene();
+    STATE.beachScene.dolphins = [
+      { xFrac: 0.3, yFrac: 0, direction: 1, speed: 0, bobPhase: 0, sizeFrac: BEACH_CONFIG.DOLPHIN_SIZE_FRAC.max },
+      { xFrac: 0.7, yFrac: 1, direction: 1, speed: 0, bobPhase: 0, sizeFrac: BEACH_CONFIG.DOLPHIN_SIZE_FRAC.max },
+    ];
+    await new Promise((r) => setTimeout(r, 300));
+
+    const sizes = [];
+    const original = drawBeachCutout;
+    window.drawBeachCutout = (source, xCenter, groundY, targetHeight, ...rest) => {
+      if (source === 'dolphin') sizes.push(targetHeight);
+      return original(source, xCenter, groundY, targetHeight, ...rest);
+    };
+    drawBeachScene();
+    window.drawBeachCutout = original;
+
+    return { farSize: sizes[0], nearSize: sizes[1], nominalMaxSize: BEACH_CONFIG.DOLPHIN_SIZE_FRAC.max * canvas.height };
+  });
+
+  expect(result.farSize, 'a dolphin at yFrac 0 (far from shore) must render smaller than its own nominal max size').toBeLessThan(result.nominalMaxSize);
+  expect(result.nearSize, 'a dolphin at yFrac 1 (at the shore) renders at its full nominal size').toBeCloseTo(result.nominalMaxSize, 5);
+  expect(result.farSize, 'the far dolphin must render meaningfully smaller than the near one, not just marginally').toBeLessThan(result.nearSize * 0.7);
+  expect(errors).toEqual([]);
+});
+
 // Generic, reusable across both Beach and Safari's cutout libraries (and
 // any future one): a ground/water-anchored cutout's own alpha channel
 // must actually reach the edge it's anchored at -- if the asset's visible

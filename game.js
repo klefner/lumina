@@ -9937,17 +9937,38 @@ function drawBeachScene() {
     drawBeachCutout('cruise-ship', ship.xFrac * w, waterFarY, ship.sizeFrac * h, ship.direction, nightTint);
   }
   for (const dolphin of scene.dolphins) {
+    // Player report, screenshot: a dolphin rendered up near a shore palm's
+    // CROWN height -- reading as jumping higher than the tree. Once
+    // dolphins could roam the full water depth (not just the fixed
+    // waterFarY line), a dolphin near the horizon (small yFrac -- meant to
+    // read as far out at sea) still rendered at its full, position-
+    // independent sizeFrac, the same size a near-shore dolphin would. A
+    // large object positioned high in the frame next to a much shorter,
+    // clearly-nearby tree breaks the same real-world scale expectation
+    // category 8 (Relative scale plausibility) already exists for co-
+    // anchored elements -- this is that same category applied to ONE
+    // element's own position range, not just two different elements.
+    // Scales the rendered size down toward the horizon (0.4x) and back up
+    // to the dolphin's own full sizeFrac at the shore (1.0x) -- a
+    // real depth/perspective cue, and one that can only ever shrink a
+    // dolphin relative to its already-verified-safe-against-the-ship
+    // sizeFrac, never grow it, so the cruise-ship/whale scale-plausibility
+    // invariant above still holds at every yFrac.
+    const depthScale = 0.4 + 0.6 * dolphin.yFrac;
+    const renderSizeFrac = dolphin.sizeFrac * depthScale;
     // A small vertical bounce in place of real swim animation -- same
     // spirit as Safari's animal bob, since a static photo has no
-    // leap-cycle frames to animate.
-    const bob = Math.sin(t * 0.04 + dolphin.bobPhase) * dolphin.sizeFrac * h * 0.15;
+    // leap-cycle frames to animate. Scaled with renderSizeFrac too, so a
+    // distant, small-rendered dolphin doesn't bob with the same absolute
+    // amplitude as a near, large-rendered one.
+    const bob = Math.sin(t * 0.04 + dolphin.bobPhase) * renderSizeFrac * h * 0.15;
     // Spread across the FULL water region (not fixed to waterFarY like the
     // cruise ship) -- same interpolation glitterDots/waveLines already use,
     // so a dolphin can be anywhere in the water but never past waterBottomY
     // (itself capped at the real sand line -- see this scene's own comment
     // on why that keeps it from ever being drawn "beached").
     const dolphinY = waterTopY + dolphin.yFrac * (waterBottomY - waterTopY) + bob;
-    drawBeachCutout('dolphin', dolphin.xFrac * w, dolphinY, dolphin.sizeFrac * h, dolphin.direction, nightTint);
+    drawBeachCutout('dolphin', dolphin.xFrac * w, dolphinY, renderSizeFrac * h, dolphin.direction, nightTint);
   }
   if (scene.whale.active) {
     // Fades in/out over its short life rather than popping, so a "spot
