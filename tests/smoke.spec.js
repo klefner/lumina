@@ -7378,30 +7378,44 @@ test('Every ground/water-anchored cutout touches its own bottom edge (has a real
       cctx.drawImage(img, 0, 0);
       // Sample the bottom 3% of rows (not just the very last row -- a
       // couple of stray anti-aliased pixels shouldn't count as "real"
-      // contact) and find the peak alpha reached anywhere across that
-      // band's full width.
+      // contact) and find the widest single-row COUNT of comfortably-
+      // opaque pixels anywhere in that band -- not just the single peak
+      // alpha value anywhere in it (review catch, PR #105: a lone opaque
+      // splash/shadow artifact/stray pixel would pass a peak-alpha check
+      // even with every other pixel in the band fully empty, which isn't
+      // real contact at all). A per-row count is real coverage: it can't
+      // be satisfied by one stray pixel the way a band-wide maximum can.
       const bandHeight = Math.max(1, Math.round(img.naturalHeight * 0.03));
       const data = cctx.getImageData(0, img.naturalHeight - bandHeight, img.naturalWidth, bandHeight).data;
-      let maxAlpha = 0;
-      for (let i = 3; i < data.length; i += 4) maxAlpha = Math.max(maxAlpha, data[i]);
-      out[path] = maxAlpha;
+      let maxRowCount = 0;
+      for (let row = 0; row < bandHeight; row++) {
+        let rowCount = 0;
+        const rowStart = row * img.naturalWidth * 4;
+        for (let x = 0; x < img.naturalWidth; x++) {
+          if (data[rowStart + x * 4 + 3] > 150) rowCount++;
+        }
+        maxRowCount = Math.max(maxRowCount, rowCount);
+      }
+      out[path] = maxRowCount;
     }
     return out;
   }, groundAnchoredCutouts);
 
   for (const path of groundAnchoredCutouts) {
-    // 150, not a stricter 200+ -- calibrated against two real cases this
-    // test itself turned up. tree-baobab's root base fades into a soft
-    // photographed ground-shadow haze right at its crop edge (peak alpha
-    // 168 in this band): visually fine (confirmed by rendering it with a
-    // reference line at its anchor point) and a legitimately different,
-    // organic kind of edge than a hard graphic cutoff, not the bug this
-    // test exists to catch. dolphin.webp's ORIGINAL crop (before this
-    // test caught it and it was re-cropped -- see CREDITS.md) peaked at
-    // only alpha 40 in the same band: genuinely near-empty, not softly
-    // faded, which is the real distinguishing signal -- "present but
-    // soft-edged" vs "essentially nothing here at all."
-    expect(result[path], `${path}'s bottom edge has no real opaque content (max alpha ${result[path]}) -- this cutout doesn't touch the ground/water it's anchored to`).toBeGreaterThan(150);
+    // 5 pixels, not just >0 -- calibrated against real cases this test
+    // itself turned up, using the narrowest genuinely-real contact found
+    // across the whole library as the floor rather than an arbitrary
+    // guess. dolphin.webp's re-cropped tail (see CREDITS.md) is the
+    // tightest legitimate case at exactly 5 opaque pixels in its widest
+    // band row -- thin, but confirmed real by rendering it against a
+    // reference line at its own anchor point. tree-baobab.webp's root
+    // base similarly has real (if narrow, ~9-pixel) coverage from a soft
+    // photographed ground-shadow, not a hard graphic cutoff -- also
+    // confirmed fine by the same render-and-look check. A single stray
+    // opaque pixel (a rembg artifact, dust speck) -- the failure mode a
+    // band-wide peak-alpha check couldn't rule out -- caps out at 1-2
+    // pixels in any one row, well under this floor.
+    expect(result[path], `${path}'s bottom edge has no real opaque coverage (widest row: ${result[path]} px) -- this cutout doesn't touch the ground/water it's anchored to`).toBeGreaterThanOrEqual(5);
   }
   expect(errors).toEqual([]);
 });
