@@ -9404,7 +9404,46 @@ const BEACH_CONFIG = {
   // single-pixel stars, since only the real horizon is a jump consistent
   // across the whole row width) -- the actual transition is at 0.903, not
   // 0.672.
-  HORIZON_FRAC: { day: 0.413, night: 0.903 },
+  //
+  // day's value was ALSO wrong, discovered much later (player report,
+  // screenshot: the cruise ship rendering roughly halfway between the
+  // horizon and the beach, not on it) -- 0.413 was never actually verified
+  // against beach-day.jpg with the same full-row brightness scan used to
+  // fix night above; it was just accepted as presumably-fine since day
+  // renders looked plausible in isolation (nothing in frame to visually
+  // contradict "the ship is on some water," since the ship IS still drawn
+  // somewhere within the visibly blue-green sea either way). Measured
+  // properly: the real sky-to-water transition is a sharp brightness drop
+  // (194 to 46, full-row average) centered at row 355 of 1276, i.e. 0.278
+  // -- confirmed by drawing a line at that row and inspecting the crop
+  // directly, not just trusting the number. 0.413 sits well INSIDE the
+  // open ocean instead, about 60% of the way down the visible water band
+  // -- exactly matching the reported "halfway to the beach" symptom.
+  HORIZON_FRAC: { day: 0.278, night: 0.903 },
+  // Where the water actually ENDS and the real photographed sand begins
+  // (day only -- see WATER_END_FRAC's own comment on why night doesn't
+  // need this). Same units/measurement technique as HORIZON_FRAC: a
+  // photo-space fraction, mapped through the identical pan/zoom transform
+  // horizonY uses, NOT the plain-screen-space SAND_HEIGHT_FRAC below.
+  //
+  // Added alongside the HORIZON_FRAC.day fix above, same player report:
+  // a dolphin rendering on top of the real photographed sand. Once
+  // dolphins (and glitterDots/waveLines, which share the same
+  // waterTopY..waterBottomY band) could be positioned anywhere down to
+  // `waterBottomY`, and `waterBottomY` for day was simply `sandY` --
+  // itself just `h - SAND_HEIGHT_FRAC * h`, a fixed CANVAS fraction never
+  // tied to any actual photo content (deliberately, for its original
+  // purpose: a plain decorative color strip at the visible bottom edge,
+  // written before anything needed the water region's real photo extent
+  // to matter). A full-row brightness scan of beach-day.jpg shows real
+  // open water (dark, ~45-65 brightness) only through row ~625 of 1276
+  // (0.49); rows below that climb through breaking-wave foam into fully
+  // dry sand (~190+ brightness) by row ~740 (0.58) -- confirmed visually
+  // by drawing reference lines and inspecting the crop, the same way
+  // HORIZON_FRAC.day was re-verified above. Used the conservative (start
+  // of the climb, not the end) value so nothing drawn "in the water" ever
+  // reaches the wave-break foam, let alone the dry sand past it.
+  WATER_END_FRAC: { day: 0.49 },
   SAND_HEIGHT_FRAC: 0.07,
   SAND_COLOR: { day: '#e3c07f', night: '#4d4330' },
   BOAT_COLOR: { day: '#16324a', night: '#050a14' },
@@ -9819,9 +9858,15 @@ function drawBeachScene() {
   // actual horizon as panY shifts the image underneath it. The sand
   // strip stays plain screen-space on purpose: it's a decorative accent
   // at the visible bottom edge, not tied to any specific content the
-  // photo shows.
+  // photo shows -- unlike waterEndY below, which IS tied to real photo
+  // content and must NOT be confused with this.
   const horizonY = -panY + cfg.HORIZON_FRAC[scene.variant] * drawH;
   const sandY = h - cfg.SAND_HEIGHT_FRAC * h;
+  // Day only -- see WATER_END_FRAC's own comment. Mapped through the
+  // identical transform as horizonY, so it stays correctly aligned with
+  // the real photo's water/sand boundary at every pan/zoom state, not
+  // just the one this constant happened to be measured at.
+  const waterEndY = -panY + cfg.WATER_END_FRAC.day * drawH;
   const nightTint = scene.variant === 'night';
 
   // Player report, screenshot: even with horizonY correctly measured
@@ -9830,19 +9875,22 @@ function drawBeachScene() {
   // this specific photo shows almost no distinguishable water texture at
   // all: real open water in near-total darkness is visually
   // indistinguishable from the night sky above it, both just uniform
-  // black. The day photo doesn't have this problem (a real, obviously
-  // blue-green sea fills a huge share of the frame between horizonY and
-  // sandY) so this is night-only -- day keeps using that real photographed
-  // water band unchanged. For night, everything from horizonY down to
-  // sandY is real photographed SAND (that's what a correctly-measured
-  // horizonY means), so glitter/wave lines are moved to a synthetic
-  // "water" band just ABOVE horizonY instead, painted with a soft tinted
-  // gradient that fades to fully transparent well before it reaches the
-  // dramatic star field higher up -- the sky itself is untouched, but the
-  // strip right above the real shoreline now reads as calm night water
-  // instead of empty air.
+  // black. For night, everything from horizonY down to sandY is real
+  // photographed SAND (that's what a correctly-measured horizonY means),
+  // so glitter/wave lines are moved to a synthetic "water" band just
+  // ABOVE horizonY instead, painted with a soft tinted gradient that
+  // fades to fully transparent well before it reaches the dramatic star
+  // field higher up -- the sky itself is untouched, but the strip right
+  // above the real shoreline now reads as calm night water instead of
+  // empty air. Day uses waterEndY (see above), NOT sandY -- an earlier
+  // version of this comment claimed "day keeps using that real
+  // photographed water band unchanged" using sandY as that bound, which
+  // was never actually verified against the photo and was wrong (player
+  // report, screenshot: a dolphin rendered on top of the real
+  // photographed sand -- see WATER_END_FRAC's own comment for the
+  // measurement that caught it).
   const waterTopY = nightTint ? horizonY - Math.min(horizonY, h * 0.16) : horizonY;
-  const waterBottomY = nightTint ? horizonY : sandY;
+  const waterBottomY = nightTint ? horizonY : waterEndY;
   // A little further above waterTopY itself -- the far-off vessels/
   // dolphins/whale below anchor here, not at waterTopY's own hard edge,
   // where the gradient below is at its most transparent and the tint
@@ -9964,9 +10012,14 @@ function drawBeachScene() {
     const bob = Math.sin(t * 0.04 + dolphin.bobPhase) * renderSizeFrac * h * 0.15;
     // Spread across the FULL water region (not fixed to waterFarY like the
     // cruise ship) -- same interpolation glitterDots/waveLines already use,
-    // so a dolphin can be anywhere in the water but never past waterBottomY
-    // (itself capped at the real sand line -- see this scene's own comment
-    // on why that keeps it from ever being drawn "beached").
+    // so a dolphin can be anywhere in the water but never past
+    // waterBottomY. For day, waterBottomY is waterEndY -- a real,
+    // photo-measured boundary (see WATER_END_FRAC's own comment) -- NOT
+    // sandY, which is a fixed decorative canvas fraction that used to sit
+    // deep in the real photographed sand and let a dolphin render "on the
+    // sand" (player report, screenshot) despite technically staying within
+    // [0,1] of yFrac the whole time. Staying within the stored range was
+    // never the actual bug; the range itself pointed at the wrong place.
     const dolphinY = waterTopY + dolphin.yFrac * (waterBottomY - waterTopY) + bob;
     drawBeachCutout('dolphin', dolphin.xFrac * w, dolphinY, renderSizeFrac * h, dolphin.direction, nightTint);
   }
