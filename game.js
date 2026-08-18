@@ -9753,6 +9753,43 @@ function drawBeachScene() {
   const sandY = h - cfg.SAND_HEIGHT_FRAC * h;
   const nightTint = scene.variant === 'night';
 
+  // Player report, screenshot: even with horizonY correctly measured
+  // (see HORIZON_FRAC.night's own comment), the boat/dolphins/wave lines
+  // still read as floating in empty sky, not water -- because at night
+  // this specific photo shows almost no distinguishable water texture at
+  // all: real open water in near-total darkness is visually
+  // indistinguishable from the night sky above it, both just uniform
+  // black. The day photo doesn't have this problem (a real, obviously
+  // blue-green sea fills a huge share of the frame between horizonY and
+  // sandY) so this is night-only -- day keeps using that real photographed
+  // water band unchanged. For night, everything from horizonY down to
+  // sandY is real photographed SAND (that's what a correctly-measured
+  // horizonY means), so glitter/wave lines are moved to a synthetic
+  // "water" band just ABOVE horizonY instead, painted with a soft tinted
+  // gradient that fades to fully transparent well before it reaches the
+  // dramatic star field higher up -- the sky itself is untouched, but the
+  // strip right above the real shoreline now reads as calm night water
+  // instead of empty air.
+  const waterTopY = nightTint ? horizonY - Math.min(horizonY, h * 0.16) : horizonY;
+  const waterBottomY = nightTint ? horizonY : sandY;
+  // A little further above waterTopY itself -- the far-off vessels/
+  // dolphins/whale below anchor here, not at waterTopY's own hard edge,
+  // where the gradient below is at its most transparent and the tint
+  // meant to sell "this is water, not sky" would be almost invisible
+  // right where the eye is drawn (review self-catch: anchoring exactly
+  // at a fade-to-zero edge defeats the point of adding the fade).
+  const waterFarY = nightTint ? waterTopY + (waterBottomY - waterTopY) * 0.25 : waterTopY;
+  if (nightTint) {
+    const waterGrad = ctx.createLinearGradient(0, waterTopY, 0, waterBottomY);
+    // Floors at a low but non-zero alpha rather than fully transparent,
+    // so no part of the designated water band -- including right at
+    // waterTopY -- ever reads as plain unmodified sky.
+    waterGrad.addColorStop(0, 'rgba(8, 26, 42, 0.12)');
+    waterGrad.addColorStop(1, 'rgba(8, 26, 42, 0.6)');
+    ctx.fillStyle = waterGrad;
+    ctx.fillRect(0, waterTopY, w, waterBottomY - waterTopY);
+  }
+
   if (nightTint) {
     drawNightMoon(scene.celestialXFrac, scene.celestialYFrac, scene.celestialRadiusFrac);
     drawStars(true); // reward-only -- see this section's header comment
@@ -9763,7 +9800,7 @@ function drawBeachScene() {
   for (const d of scene.glitterDots) {
     const twinkle = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * d.twinkleSpeed + d.phase));
     const gx = d.xFrac * w;
-    const gy = horizonY + d.yFrac * (sandY - horizonY);
+    const gy = waterTopY + d.yFrac * (waterBottomY - waterTopY);
     ctx.fillStyle = nightTint
       ? `rgba(255, 250, 230, ${(d.alpha * twinkle).toFixed(3)})`
       : `rgba(255, 255, 255, ${(d.alpha * twinkle * 0.8).toFixed(3)})`;
@@ -9773,7 +9810,7 @@ function drawBeachScene() {
   // Surf lines -- a few gently undulating horizontal bands standing in
   // for breaking waves, without animating full particle foam.
   for (const wl of scene.waveLines) {
-    const ly = horizonY + wl.yFrac * (sandY - horizonY);
+    const ly = waterTopY + wl.yFrac * (waterBottomY - waterTopY);
     ctx.beginPath();
     ctx.moveTo(0, ly);
     const segments = 8;
@@ -9800,16 +9837,25 @@ function drawBeachScene() {
   for (const palm of scene.palms) {
     drawBeachCutout(palm.source, palm.xFrac * w, sandY, palm.sizeFrac * h, 1, nightTint);
   }
+  // cruiseShip/dolphins/whale/boat all anchor at waterFarY, not horizonY
+  // -- for day waterFarY equals horizonY (the real photographed sea
+  // meets the sky right there), but for night horizonY is now the NEAR
+  // shoreline, not the distant horizon (see waterTopY's own comment
+  // above); anchoring a "distant vessel crossing the horizon" at the
+  // near shore instead would read as uncomfortably close to the beach
+  // (an earlier round of player feedback, screenshot, already called
+  // this out once before for a different reason -- too-large sizeFrac --
+  // no need to reintroduce the same complaint via a wrong anchor point).
   if (scene.cruiseShip) {
     const ship = scene.cruiseShip;
-    drawBeachCutout('cruise-ship', ship.xFrac * w, horizonY, ship.sizeFrac * h, ship.direction, nightTint);
+    drawBeachCutout('cruise-ship', ship.xFrac * w, waterFarY, ship.sizeFrac * h, ship.direction, nightTint);
   }
   for (const dolphin of scene.dolphins) {
     // A small vertical bounce in place of real swim animation -- same
     // spirit as Safari's animal bob, since a static photo has no
     // leap-cycle frames to animate.
     const bob = Math.sin(t * 0.04 + dolphin.bobPhase) * dolphin.sizeFrac * h * 0.15;
-    drawBeachCutout('dolphin', dolphin.xFrac * w, horizonY + bob, dolphin.sizeFrac * h, dolphin.direction, nightTint);
+    drawBeachCutout('dolphin', dolphin.xFrac * w, waterFarY + bob, dolphin.sizeFrac * h, dolphin.direction, nightTint);
   }
   if (scene.whale.active) {
     // Fades in/out over its short life rather than popping, so a "spot
@@ -9818,7 +9864,7 @@ function drawBeachScene() {
     const alpha = Math.min(1, Math.min(scene.whale.maxLife - scene.whale.life, scene.whale.life, fadeFrames) / fadeFrames);
     ctx.save();
     ctx.globalAlpha = alpha;
-    drawBeachCutout('whale', scene.whale.xFrac * w, horizonY, scene.whale.sizeFrac * h, 1, nightTint);
+    drawBeachCutout('whale', scene.whale.xFrac * w, waterFarY, scene.whale.sizeFrac * h, 1, nightTint);
     ctx.restore();
   }
   drawBeachOverhang(scene.palmOverhang, w, h, nightTint);
@@ -9831,7 +9877,7 @@ function drawBeachScene() {
   const boat = scene.boat;
   const boatX = boat.xFrac * w;
   const bob = Math.sin(t * boat.bobSpeed + boat.bobPhase) * 1.5;
-  const boatY = horizonY + (sandY - horizonY) * 0.04 + bob;
+  const boatY = waterFarY + (waterBottomY - waterTopY) * 0.04 + bob;
   const br = boat.sizeFrac * w;
   ctx.fillStyle = BEACH_CONFIG.BOAT_COLOR[scene.variant];
   ctx.beginPath();
