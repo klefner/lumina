@@ -120,7 +120,7 @@ nobody defined yet, which is exactly what happened here for three rounds
 running (7, 8, and 9 each exposed a category — region containment, compound
 placement, and asset composition — that the method didn't have yet).
 
-**The seven rubric categories, and how each one is actually enforced:**
+**The eight rubric categories, and how each one is actually enforced:**
 
 1. **Contact** — does the cutout asset's own visible content reach the edge
    it's anchored at? Testable and enforced: `tests/smoke.spec.js`'s "Every
@@ -215,6 +215,27 @@ placement, and asset composition — that the method didn't have yet).
    apart, then statistically confirm zero violations across many thousands
    of generated scenes (not just a handful of samples) — the check applied
    in round 8 above before the element it protected was removed entirely.
+8. **Relative scale plausibility** — for any two elements that share an
+   anchor point/line (same `waterFarY`, same horizon, etc.), do their
+   `sizeFrac` ranges preserve real-world relative scale, so an unlucky pair
+   of independent random draws can never make the smaller-in-reality thing
+   render bigger? Player report, screenshot: a dolphin rendered visibly
+   bigger than the cruise ship — both anchor at the identical `waterFarY`,
+   so `sizeFrac` was the only cue separating "huge vessel, far at sea" from
+   "small animal near the surface," and the dolphin's (0.05–0.07) and
+   ship's (0.05–0.075) ranges overlapped almost entirely. Different from
+   category 7: that one is about position ranges combining into an
+   impossible compound shape; this one is about size ranges alone breaking
+   a real-world scale relationship even with positions handled correctly.
+   Testable and enforced, and deterministically rather than statistically
+   where possible: extract the ranges into named `BEACH_CONFIG` constants
+   (`DOLPHIN_SIZE_FRAC`, `CRUISE_SHIP_SIZE_FRAC`) instead of inline random
+   literals, then assert the smaller element's ceiling stays below the
+   larger element's floor by comparing the constants directly — no need to
+   sample when the invariant is meant to hold by construction. Backed by a
+   statistical check over thousands of actual `generateBeachScene()` calls
+   as well, in case a future edit changes how `sizeFrac` is drawn from the
+   range without updating the range itself.
 
 **Whenever any of the above changes** (a new cutout, a new scene, a changed
 `sizeFrac` range, a changed anchor formula), re-run the relevant tests AND

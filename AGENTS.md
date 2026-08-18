@@ -20,3 +20,14 @@ Pages/Cloudflare Pages/itch.io. Treat that authorization as already granted for 
 don't pause mid-task to ask permission for it. This does NOT cover genuinely destructive or irreversible
 actions outside that normal loop (force-pushing over someone else's work, deleting a branch with unmerged
 commits, rewriting shipped history) — those still warrant checking in, same as any repo.
+
+**Binding, not optional: SOURCE_OF_TRUTH.md's "Required Method: Grounding a Cutout on a Real-Photo
+Scene."** This isn't reference material to skim — it's a mandatory checklist-plus-tests that MUST be
+applied every time a scene composites a foreground cutout onto a real photo background, in this repo or
+any future one built the same way. It exists because prose review alone produced the same "floating tree"
+class of bug nine separate times on Beach before the method reached its current form. Any new photo-scene
+work (a new cutout, a new scene, a changed `sizeFrac` range or anchor formula) needs its own pass through
+all eight rubric categories there, with automated test coverage added for whichever ones are testable —
+not a one-time visual check that gets skipped under time pressure. If a category surfaces a bug this
+method didn't already have a check for, the fix isn't done until the method itself is updated with a new
+category, the same way rounds 6–9 of Beach's history did.

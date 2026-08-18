@@ -9413,6 +9413,20 @@ const BEACH_CONFIG = {
   // Not every wave -- a cruise ship crossing the horizon should read as a
   // rarer sight than the everyday sailboat, not a second boat every time.
   CRUISE_SHIP_CHANCE: 0.6,
+  // Both anchor at the identical y (waterFarY -- see drawBeachScene), so
+  // sizeFrac is the ONLY cue distinguishing "huge vessel, far out at sea"
+  // from "small animal, near the surface." Named constants (not inline
+  // literals in generateBeachScene) specifically so a test can assert the
+  // relationship holds without statistical sampling. Player report,
+  // screenshot: the two ranges used to overlap (dolphin 0.05-0.07, ship
+  // 0.05-0.075) and a randomly-large dolphin next to a randomly-small ship
+  // rendered visibly bigger than a cruise ship. CRUISE_SHIP_SIZE_FRAC's
+  // floor is set above DOLPHIN_SIZE_FRAC's ceiling with a deliberate
+  // margin so this can't recur regardless of what either random draw
+  // produces -- see SOURCE_OF_TRUTH.md's Required Method, "Relative scale
+  // plausibility."
+  DOLPHIN_SIZE_FRAC: { min: 0.05, max: 0.07 },
+  CRUISE_SHIP_SIZE_FRAC: { min: 0.08, max: 0.105 },
 };
 const BEACH_IMAGES = {
   day: Object.assign(new Image(), { src: BEACH_CONFIG.images.day }),
@@ -9555,7 +9569,7 @@ function generateBeachScene(previousScene) {
       direction: Math.random() < 0.5 ? 1 : -1,
       speed: 0.0004 + Math.random() * 0.0004,
       bobPhase: Math.random() * Math.PI * 2,
-      sizeFrac: 0.05 + Math.random() * 0.02,
+      sizeFrac: BEACH_CONFIG.DOLPHIN_SIZE_FRAC.min + Math.random() * (BEACH_CONFIG.DOLPHIN_SIZE_FRAC.max - BEACH_CONFIG.DOLPHIN_SIZE_FRAC.min),
     });
   }
 
@@ -9568,8 +9582,10 @@ function generateBeachScene(previousScene) {
     speed: 0.00003 + Math.random() * 0.00002,
     // A ship this far out at sea should read as small on the horizon, not
     // loom close to shore (player report, screenshot) -- shrunk from an
-    // earlier version sized closer to the shore-side cruise ship.
-    sizeFrac: 0.05 + Math.random() * 0.025,
+    // earlier version sized closer to the shore-side cruise ship. See
+    // BEACH_CONFIG.CRUISE_SHIP_SIZE_FRAC's own comment for why this range
+    // must stay above DOLPHIN_SIZE_FRAC's ceiling.
+    sizeFrac: BEACH_CONFIG.CRUISE_SHIP_SIZE_FRAC.min + Math.random() * (BEACH_CONFIG.CRUISE_SHIP_SIZE_FRAC.max - BEACH_CONFIG.CRUISE_SHIP_SIZE_FRAC.min),
   } : null;
 
   return {

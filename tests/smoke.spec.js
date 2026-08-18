@@ -7328,6 +7328,48 @@ test('Beach: a palm and the cruise ship forced to the same x still draw palm-on-
   expect(errors).toEqual([]);
 });
 
+// Player report, screenshot: a dolphin rendered visibly bigger than the
+// cruise ship. Both anchor at the identical y (waterFarY), so sizeFrac is
+// the only cue telling "huge vessel, far out at sea" apart from "small
+// animal near the surface" -- their random ranges used to overlap
+// (dolphin 0.05-0.07, ship 0.05-0.075), so an unlucky pair of draws could
+// put a bigger dolphin next to a smaller ship. This is a deterministic
+// check against the named BEACH_CONFIG constants, not statistical
+// sampling -- the invariant (ship's floor above dolphin's ceiling, with a
+// margin) is meant to hold by construction, so assert the constants
+// directly rather than relying on enough random draws to catch a
+// violation. See SOURCE_OF_TRUTH.md's Required Method, "Relative scale
+// plausibility."
+test('Beach: the cruise ship\'s size range never overlaps the dolphins\' (co-anchored elements must preserve real-world scale)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const ranges = await page.evaluate(() => ({
+    dolphin: BEACH_CONFIG.DOLPHIN_SIZE_FRAC,
+    ship: BEACH_CONFIG.CRUISE_SHIP_SIZE_FRAC,
+  }));
+
+  expect(ranges.ship.min, 'cruise ship\'s smallest possible size must still exceed the dolphin\'s largest possible size').toBeGreaterThan(ranges.dolphin.max);
+
+  // Also confirm actual generated scenes never violate it in practice --
+  // belt-and-suspenders in case a future edit changes how sizeFrac is
+  // drawn from the range without updating the range itself.
+  const violations = await page.evaluate(() => {
+    let count = 0;
+    for (let i = 0; i < 2000; i++) {
+      const scene = generateBeachScene();
+      if (!scene.cruiseShip) continue;
+      for (const d of scene.dolphins) {
+        if (d.sizeFrac >= scene.cruiseShip.sizeFrac) count++;
+      }
+    }
+    return count;
+  });
+  expect(violations).toBe(0);
+  expect(errors).toEqual([]);
+});
+
 // Generic, reusable across both Beach and Safari's cutout libraries (and
 // any future one): a ground/water-anchored cutout's own alpha channel
 // must actually reach the edge it's anchored at -- if the asset's visible
