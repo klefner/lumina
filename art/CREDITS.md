@@ -300,6 +300,29 @@ attribution legally required, credited anyway):
   common, recognizable beach-photo composition, not a compromise forced
   by the crop.
 
+  Originally shipped with a long diagonal trunk still in frame, cut off
+  at the source photo's own right edge. That worked at the size this
+  first shipped at (`sizeFrac` 0.55-0.70): at that scale, the trunk's
+  cutoff point landed close enough to the screen's own edge to read as
+  "continuing off-frame." A later round shrank `sizeFrac` to 0.28-0.36 to
+  fix an unrelated "too large, blocks the dots" complaint, and nobody
+  re-verified the trunk-exits-the-frame illusion still held at the new
+  size -- it didn't (player report, screenshot): the cutoff point is a
+  FIXED position relative to the crown (proportional to `sizeFrac`), so
+  shrinking the whole cutout pulls that point away from the corner and
+  toward the screen's open interior. This isn't a tunable margin -- any
+  `sizeFrac` well under "fills most of the screen" puts the cutoff
+  somewhere in open space, full stop, so the fix isn't a size adjustment.
+  Cropped the trunk out of the source image entirely instead: this
+  cutout is now the crown/fronds only, no limb of any kind extending
+  toward the interior. A dense mass of foliage hanging into frame from a
+  corner reads as "the lower fronds of a tree whose trunk is out of
+  frame" on its own, with nothing that needs a supporting branch shown to
+  avoid looking cut off -- confirmed by rendering it at the full
+  production `sizeFrac` range (both corners, min/mid/max size) and
+  inspecting a crop of just the cutout each time, not by reasoning about
+  it.
+
 Sourcing note, `palm-overhang.webp`: `rembg` alone left a visible blue
 color-fringe halo along every frond edge, bleeding in from the photo's
 own saturated blue sky background -- alpha erosion alone (shrinking the
