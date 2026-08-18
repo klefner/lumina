@@ -12,3 +12,11 @@ Lumina intentionally runs a lighter process than some other repos in this studio
 checkout, no separate release-package step, no per-build numbering scheme) — GitHub is the whole story
 here: feature branch → CI (Playwright smoke tests) → PR review → squash-merge to `main` → GitHub Pages
 auto-deploys `main`. Keep it that light unless a real, recurring problem shows up that calls for more.
+
+**Standing authorization for the normal ship loop**: the player (klefner) has explicitly said not to
+stop and wait for a go-ahead on the routine steps that make up shipping a change here — merging a PR once
+CI is green and review threads are resolved, pushing the resulting deploy, watching it land on GitHub
+Pages/Cloudflare Pages/itch.io. Treat that authorization as already granted for this repo's normal loop;
+don't pause mid-task to ask permission for it. This does NOT cover genuinely destructive or irreversible
+actions outside that normal loop (force-pushing over someone else's work, deleting a branch with unmerged
+commits, rewriting shipped history) — those still warrant checking in, same as any repo.

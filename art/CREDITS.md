@@ -234,8 +234,9 @@ attribution legally required, credited anyway):
      had a patch of genuinely low-confidence, partially-transparent
      `rembg` alpha around an overexposed/glare section of frond that no
      amount of erosion or re-cropping cleaned up satisfactorily.
-  3. Reusing `palm-overhang`'s own (already-clean) crown, cropped away
-     from its long trunk, worked visually -- but every version of a
+  3. Reusing the (then-still-shipping) corner-overhang cutout's own
+     already-clean crown, cropped away from its long trunk, worked
+     visually -- but every version of a
      *procedural* trunk drawn underneath it (a flat solid-color
      triangle, then later a cross-trunk gradient with a slight organic
      lean and bark-ring notches) still read as an obviously fake
@@ -259,11 +260,10 @@ attribution legally required, credited anyway):
   player feedback (screenshot) called this out directly: a cutout with
   nothing under it, sitting at the water line, read as a tree floating
   in the air over the water. A separate round of player feedback
-  (screenshot) also caught the trees (along with `palmOverhang` and the
-  `cruiseShip`) crowding out the dots and the score/wave text at their
-  originally-shipped size -- `palm.sizeFrac`, `palmOverhang.sizeFrac`,
-  and `cruiseShip.sizeFrac` are all shrunk considerably from those
-  first-shipped values.
+  (screenshot) also caught the trees (along with the cruise ship)
+  crowding out the dots and the score/wave text at their
+  originally-shipped size -- `palm.sizeFrac` and `cruiseShip.sizeFrac`
+  are both shrunk considerably from those first-shipped values.
 - `dolphin.webp` — cropped from "View of a Dolphin Jumping above the
   Water Surface," via
   [Pexels](https://www.pexels.com/photo/view-of-a-dolphin-jumping-above-the-water-surface-17334473/).
@@ -289,28 +289,82 @@ attribution legally required, credited anyway):
   [Pexels](https://www.pexels.com/photo/white-cruise-ship-on-sea-13486900/).
   The dock/ropes visible in the original source photo were cleanly
   removed by `rembg` along with the sky -- no manual masking needed.
-- `palm-overhang.webp` — cropped from "View of a Palm Tree on the
-  Beach," via
+- `palm-overhang.webp` (REMOVED 2026-08-18, kept here only as the record
+  of why) — cropped from "View of a Palm Tree on the Beach," via
   [Pexels](https://www.pexels.com/photo/view-of-a-palm-tree-on-the-beach-26551139/).
-  The one exception to bottom-anchoring: this source photo's trunk
-  leans dramatically and exits the frame's own right edge rather than
-  ever reaching a visible base, so `drawBeachOverhang` anchors it from a
-  screen CORNER instead (mirrored to either side, picked fresh each
-  wave) -- a palm frond hanging into frame from a corner is itself a
-  common, recognizable beach-photo composition, not a compromise forced
-  by the crop.
+  Meant as the one exception to bottom-anchoring: a corner-hanging frond,
+  anchored from a screen CORNER instead of the ground (mirrored to
+  either side, picked fresh each wave) -- a palm frond hanging into frame
+  from a corner is a common, recognizable beach-photo composition on its
+  own terms.
 
-Sourcing note, `palm-overhang.webp`: `rembg` alone left a visible blue
-color-fringe halo along every frond edge, bleeding in from the photo's
-own saturated blue sky background -- alpha erosion alone (shrinking the
-cutout mask a couple pixels) reduced but didn't eliminate it. Fixed
-with proper alpha decontamination instead: sampling the source photo's
-actual sky color, then for every partially-transparent edge pixel,
-solving `foreground = (blended - (1-alpha)*sky) / alpha` to undo the
-blend rather than just trim it, before a final light erosion pass. Only
-worth doing for this one cutout -- the others' source photos had
-plain white/grey/black backgrounds with no strongly saturated color to
-bleed in.
+  In practice this single asset produced FOUR distinct floating-tree
+  defects across four rounds, each one a different root cause, before it
+  was cut entirely rather than patched a fifth time:
+  1. Originally shipped with a long diagonal trunk still in frame, cut
+     off at the source photo's own right edge -- read fine at the
+     large size this first shipped at (`sizeFrac` 0.55-0.70), where the
+     cutoff point landed close enough to the screen's own edge to read
+     as "continuing off-frame." A later round shrank `sizeFrac` to
+     0.28-0.36 to fix an unrelated "too large, blocks the dots"
+     complaint, and nobody re-verified the trunk-exits-the-frame
+     illusion still held at the new size -- it didn't (player report,
+     screenshot): the cutoff point is a FIXED position relative to the
+     crown (proportional to `sizeFrac`), so shrinking the whole cutout
+     pulled that point away from the corner and toward the screen's
+     open interior at any size well under "fills most of the screen."
+  2. Cropped the trunk out of the source image entirely in response --
+     but the first attempt at that crop (removing everything below
+     y=750 of the original) still left a genuine ~30px-wide solid trunk
+     segment right at the new bottom edge, caught in PR review rather
+     than by the render-and-look pass that should have caught it: that
+     round's check confirmed the diagonal dangling trunk was gone but
+     didn't re-scan the whole result for anything else that might still
+     read as a hard cutoff -- the same "stop looking after finding one
+     problem" failure this whole saga kept running into. Cropped
+     further (removing another ~90px) and re-verified by measuring the
+     bottom row's contiguous opaque-pixel run lengths directly (no
+     single run over ~100px, all irregular widths consistent with frond
+     tips, not one dominant narrow column).
+  3. With the trunk genuinely gone, nothing then related the crown's own
+     vertical extent to the horizon/water line at all -- on some
+     Ken Burns pan states the crown's lower fronds extended down into
+     the synthetic water band or the real photographed sea, reading as
+     a tree growing out of the open ocean (player report, screenshot).
+     Fixed by clamping the rendered height to stay a safe margin above
+     `waterTopY`.
+  4. Investigating a further report of the same "tree in the ocean"
+     look after that clamp was in place (and confirming, by
+     instrumenting the actual draw call, that the clamp math itself was
+     correct -- `waterTopY` and the resulting clamped height were
+     exactly as intended) led to opening the asset file directly: it is
+     a symmetric photo shot from directly underneath the tree, fronds
+     radiating in a full circle around a centered coconut cluster --
+     0 of 886 pixels opaque on its own top row, 0 of 660 on its own
+     right column. It never actually touched the corner it was drawn
+     anchored to, at any crop or clamp. The first three rounds had each
+     patched a real, separate symptom (an unremoved trunk, then a
+     second unremoved trunk remnant, then a missing vertical bound) but
+     none of them could have fixed this, because the premise underneath
+     all of them -- "this asset reads as anchored to a screen corner" --
+     was never true of this particular photo to begin with.
+
+  Removed rather than re-sourced a fifth time. See SOURCE_OF_TRUTH.md's
+  Required Method for the new category this added ("composition must
+  match anchor role") and why every other Beach cutout doesn't have this
+  risk (each one anchors to something with real, verifiable contact --
+  a horizon or a shoreline -- not to an edge the asset itself was only
+  assumed, never confirmed, to reach).
+
+  Sourcing note (for the historical record): `rembg` alone left a visible
+  blue color-fringe halo along every frond edge on this photo, bleeding
+  in from its own saturated blue sky background -- alpha erosion alone
+  (shrinking the cutout mask a couple pixels) reduced but didn't
+  eliminate it. Fixed with proper alpha decontamination instead: sampling
+  the source photo's actual sky color, then for every partially-
+  transparent edge pixel, solving
+  `foreground = (blended - (1-alpha)*sky) / alpha` to undo the blend
+  rather than just trim it, before a final light erosion pass.
 
 `drawBeachCutout` applies the same `nightTint` filter
 (`brightness(0.4) saturate(0.55) contrast(1.05)`) as Safari's
