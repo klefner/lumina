@@ -323,6 +323,27 @@ attribution legally required, credited anyway):
   inspecting a crop of just the cutout each time, not by reasoning about
   it.
 
+  First attempt at this crop (removing everything below y=750 of the
+  original) still left a real problem, caught in PR review rather than
+  by the render-and-look pass that should have caught it: a genuine
+  solid trunk segment (~30px wide at this resolution, a single
+  well-defined column distinct from the surrounding scattered frond
+  tips -- confirmed by measuring contiguous opaque-pixel run lengths
+  along the crop's bottom row, not just eyeballing it) still remained
+  right at the new bottom edge. The render check that round was real but
+  incomplete -- it confirmed the diagonal dangling trunk from the
+  original crop was gone, but didn't re-scan the whole resulting image
+  for anything else that might still read as a hard cutoff, the same
+  "stop looking after finding one problem" failure this whole saga kept
+  running into. Cropped further (removing another ~90px, well above
+  where that trunk column's constant ~30px width starts to flare out
+  into the much wider, more irregular frond-base mass) to remove that
+  column entirely. Re-verified the same way, but this time by measuring
+  the bottom row's contiguous run lengths directly (no single run over
+  ~100px wide, all irregular/varying widths consistent with frond tips,
+  not one dominant narrow column) before trusting the visual check, not
+  only after it.
+
 Sourcing note, `palm-overhang.webp`: `rembg` alone left a visible blue
 color-fringe halo along every frond edge, bleeding in from the photo's
 own saturated blue sky background -- alpha erosion alone (shrinking the
