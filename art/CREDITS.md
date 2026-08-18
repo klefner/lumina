@@ -267,6 +267,17 @@ attribution legally required, credited anyway):
 - `dolphin.webp` — cropped from "View of a Dolphin Jumping above the
   Water Surface," via
   [Pexels](https://www.pexels.com/photo/view-of-a-dolphin-jumping-above-the-water-surface-17334473/).
+  Re-cropped tighter (2026-08-18) after the generic "ground/water-anchored
+  cutout touches its own bottom edge" test (see SOURCE_OF_TRUTH.md's
+  Required Method) caught it: the original crop's alpha bbox extended a
+  few percent past where the tail's solid content actually ends, into a
+  wide, near-empty band of very faint splash mist (peak alpha ~40/255).
+  `drawBeachCutout` anchors this bottom-center, so that near-empty margin
+  put real, visible daylight between the tail and the water line it's
+  supposed to be anchored to -- confirmed by rendering the cutout alone
+  against a reference line at its own anchor point before and after.
+  Re-cropped to the alpha>120 bbox instead, which trims the near-empty
+  margin without touching any of the dolphin's own visible silhouette.
 - `whale.webp` — cropped from "Whale's Tail," via
   [Pexels](https://www.pexels.com/photo/whale-s-tail-892548/). An
   occasional sighting (see `drawBeachScene`'s whale active/life/

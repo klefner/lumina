@@ -9677,6 +9677,57 @@ function drawBeachCutout(source, xCenter, groundY, targetHeight, direction, nigh
 // bottom-anchor it to the way every other cutout here is. A palm frond
 // hanging into frame from a corner is itself a common, recognizable
 // beach-photo composition on its own terms, not a workaround.
+// The explicit, source-of-truth depth model for every Beach foreground
+// element, farthest from the camera to nearest. drawBeachScene's actual
+// draw order MUST match this order exactly -- enforced by the "depth
+// order" test in smoke.spec.js, which hooks drawBeachCutout/drawBeachBoat/
+// drawBeachOverhang and asserts the sequence of layer names drawn in a
+// real frame never goes backwards through this list. See
+// SOURCE_OF_TRUTH.md's Required Method for why this exists: an earlier
+// version sorted draw order by how fast each element moves (a completely
+// different axis from depth) instead of by depth, and a fast-moving-but-
+// FAR cruise ship ended up drawn on top of a static-but-NEAR palm tree
+// whenever their independently-random x positions happened to overlap
+// (player report, screenshot). If a new foreground element is ever added,
+// it needs a row here, in the right depth position, not just a draw call
+// added wherever happens to be convenient.
+const BEACH_DEPTH_LAYERS = ['cruise-ship', 'dolphin', 'whale', 'boat', 'palm', 'palm-overhang'];
+
+// Boat -- a simple hull-and-sail silhouette riding right at the horizon
+// line, bobbing gently (see updateBeachScene for its slow horizontal
+// drift). The one point of warm color otherwise is its masthead light --
+// what actually makes a real distant boat readable against a dim horizon
+// (day or night). Pulled into its own named function (like
+// drawBeachOverhang already was) specifically so tests can hook it the
+// same way they hook drawBeachCutout, to observe real draw order --
+// see BEACH_DEPTH_LAYERS above.
+function drawBeachBoat(boat, waterFarY, waterTopY, waterBottomY, w, variant, t) {
+  const boatX = boat.xFrac * w;
+  const bob = Math.sin(t * boat.bobSpeed + boat.bobPhase) * 1.5;
+  const boatY = waterFarY + (waterBottomY - waterTopY) * 0.04 + bob;
+  const br = boat.sizeFrac * w;
+  ctx.fillStyle = BEACH_CONFIG.BOAT_COLOR[variant];
+  ctx.beginPath();
+  ctx.moveTo(boatX - br * 0.55, boatY);
+  ctx.quadraticCurveTo(boatX, boatY + br * 0.28, boatX + br * 0.55, boatY);
+  ctx.lineTo(boatX + br * 0.4, boatY - br * 0.08);
+  ctx.lineTo(boatX - br * 0.4, boatY - br * 0.08);
+  ctx.closePath();
+  ctx.fill();
+  // Mast + single sail, leaning toward the direction of travel.
+  const mastLean = boat.direction * br * 0.12;
+  ctx.beginPath();
+  ctx.moveTo(boatX, boatY - br * 0.08);
+  ctx.lineTo(boatX + mastLean, boatY - br * 0.85);
+  ctx.lineTo(boatX - br * 0.35 * boat.direction, boatY - br * 0.08);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(boatX + mastLean, boatY - br * 0.85, Math.max(1, br * 0.06), 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255, 210, 140, 0.9)';
+  ctx.fill();
+}
+
 function drawBeachOverhang(overhang, w, h, nightTint) {
   const img = BEACH_CUTOUT_IMAGES['palm-overhang'];
   if (!img.complete || img.naturalWidth === 0) return;
@@ -9825,18 +9876,22 @@ function drawBeachScene() {
   }
 
   // Foreground cutouts, mapped into the same pan/zoom space as the
-  // background/horizon above -- palms and the cruise ship first (they
-  // don't move fast, sit slightly further back conceptually), then the
-  // more active dolphins/whale/boat on top. Drawn before the vignette
-  // below so they pick up the same edge-darkening the photo does.
-  // Anchored at sandY (the top edge of the flat sand-color strip below),
-  // NOT horizonY -- horizonY is the water/sky line, which is exactly
-  // where the previous version wrongly anchored these and read as trees
-  // floating over the water. sandY sits within the photo's own visible
-  // foreground sand, so a palm planted there always reads as on land.
-  for (const palm of scene.palms) {
-    drawBeachCutout(palm.source, palm.xFrac * w, sandY, palm.sizeFrac * h, 1, nightTint);
-  }
+  // background/horizon above -- drawn strictly back-to-front by DEPTH,
+  // not by how fast each thing moves (an earlier version sorted by
+  // motion speed instead, and the mistake was invisible in any single
+  // screenshot: whenever a fast-moving sea creature's random x happened
+  // to land under a slow-moving-but-NEARER palm, the palm's crown/trunk
+  // painted first and the ship or dolphin drew right on top of it,
+  // visibly nested inside the tree's own branches -- player report,
+  // screenshot). Every water/sea element here (cruiseShip, dolphins,
+  // whale, boat) is conceptually far out at sea, so all of them are
+  // drawn FIRST; every beach/land element (palms, the overhanging frond)
+  // is conceptually right next to the camera, so those draw LAST -- when
+  // a far and a near element's independently-random positions do
+  // overlap on screen, the nearer one now always wins, the way an actual
+  // photo would ever show it. Drawn before the vignette below so they
+  // pick up the same edge-darkening the photo does.
+  //
   // cruiseShip/dolphins/whale/boat all anchor at waterFarY, not horizonY
   // -- for day waterFarY equals horizonY (the real photographed sea
   // meets the sky right there), but for night horizonY is now the NEAR
@@ -9867,38 +9922,21 @@ function drawBeachScene() {
     drawBeachCutout('whale', scene.whale.xFrac * w, waterFarY, scene.whale.sizeFrac * h, 1, nightTint);
     ctx.restore();
   }
-  drawBeachOverhang(scene.palmOverhang, w, h, nightTint);
 
-  // Boat -- a simple hull-and-sail silhouette riding right at the horizon
-  // line, bobbing gently (see updateBeachScene for its slow horizontal
-  // drift). The one point of warm color otherwise is its masthead light
-  // -- what actually makes a real distant boat readable against a dim
-  // horizon (day or night).
-  const boat = scene.boat;
-  const boatX = boat.xFrac * w;
-  const bob = Math.sin(t * boat.bobSpeed + boat.bobPhase) * 1.5;
-  const boatY = waterFarY + (waterBottomY - waterTopY) * 0.04 + bob;
-  const br = boat.sizeFrac * w;
-  ctx.fillStyle = BEACH_CONFIG.BOAT_COLOR[scene.variant];
-  ctx.beginPath();
-  ctx.moveTo(boatX - br * 0.55, boatY);
-  ctx.quadraticCurveTo(boatX, boatY + br * 0.28, boatX + br * 0.55, boatY);
-  ctx.lineTo(boatX + br * 0.4, boatY - br * 0.08);
-  ctx.lineTo(boatX - br * 0.4, boatY - br * 0.08);
-  ctx.closePath();
-  ctx.fill();
-  // Mast + single sail, leaning toward the direction of travel.
-  const mastLean = boat.direction * br * 0.12;
-  ctx.beginPath();
-  ctx.moveTo(boatX, boatY - br * 0.08);
-  ctx.lineTo(boatX + mastLean, boatY - br * 0.85);
-  ctx.lineTo(boatX - br * 0.35 * boat.direction, boatY - br * 0.08);
-  ctx.closePath();
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(boatX + mastLean, boatY - br * 0.85, Math.max(1, br * 0.06), 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255, 210, 140, 0.9)';
-  ctx.fill();
+  drawBeachBoat(scene.boat, waterFarY, waterTopY, waterBottomY, w, scene.variant, t);
+
+  // Land elements last (nearest to camera) -- see this section's own
+  // header comment for why these have to draw after every sea element
+  // above, not before.
+  // Anchored at sandY (the top edge of the flat sand-color strip below),
+  // NOT horizonY -- horizonY is the water/sky line, which is exactly
+  // where an earlier version wrongly anchored these and read as trees
+  // floating over the water. sandY sits within the photo's own visible
+  // foreground sand, so a palm planted there always reads as on land.
+  for (const palm of scene.palms) {
+    drawBeachCutout(palm.source, palm.xFrac * w, sandY, palm.sizeFrac * h, 1, nightTint);
+  }
+  drawBeachOverhang(scene.palmOverhang, w, h, nightTint);
 
   ctx.fillStyle = BEACH_CONFIG.SAND_COLOR[scene.variant];
   ctx.fillRect(0, sandY, w, h - sandY);
