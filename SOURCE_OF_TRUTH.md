@@ -237,6 +237,27 @@ placement, and asset composition — that the method didn't have yet).
    as well, in case a future edit changes how `sizeFrac` is drawn from the
    range without updating the range itself.
 
+   **This category also applies WITHIN a single element's own position
+   range, not just between two different elements.** Player report,
+   screenshot, next round: after dolphins were given freedom to roam the
+   whole water column (player request -- "dolphins can be anywhere in the
+   water... only cruise ships on the horizon only") instead of being fixed
+   to `waterFarY`, a dolphin near the horizon (small `yFrac`, meant to read
+   as far out at sea) still rendered at its full, position-independent
+   size — appearing as a large object high in the frame, next to a much
+   shorter, clearly-nearby shore palm, reading as "jumping higher than the
+   tree." The fix wasn't a new category, just this one applied more
+   broadly: rendered size now scales with the SAME `yFrac` that decides
+   position (0.4x near the horizon, up to the element's own full
+   `sizeFrac` at the shore) — a real depth/perspective cue, and one that
+   can only shrink an element relative to its own already-verified-safe
+   size, never grow it, so the cross-element invariant above still holds
+   at every position. Any future element given its own position freedom
+   across a depth range needs this same self-consistency, not just a
+   position-freedom check in isolation — "can be anywhere" and "renders
+   the same size everywhere" are DIFFERENT claims, and shipping the first
+   without checking the second is exactly what happened here.
+
 **Whenever any of the above changes** (a new cutout, a new scene, a changed
 `sizeFrac` range, a changed anchor formula), re-run the relevant tests AND
 re-verify anything in categories 4–5 by eye/direct pixel inspection — a
