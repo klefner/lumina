@@ -7237,6 +7237,189 @@ test('Beach cruise ship sits out over the (synthetic, night-only) water band, no
   expect(errors).toEqual([]);
 });
 
+// Player report, screenshot: the cruise ship rendered ON TOP of a shore
+// palm's fronds -- visibly nested inside the tree's own branches -- because
+// draw order was originally chosen by how fast each element moves ("slow
+// things first"), not by which element is conceptually nearer the camera.
+// A fast-moving-but-FAR cruise ship and a static-but-NEAR palm just
+// happened not to overlap in the specific screenshots checked before
+// shipping; the very next player session hit a random x where they did.
+// This is a structural test, not a lucky-sample one: it hooks every
+// Beach foreground draw entry point, records the actual sequence of
+// layers drawn in a real frame, and asserts that sequence never goes
+// backwards through BEACH_DEPTH_LAYERS (game.js's own source-of-truth
+// depth model) -- so ANY future reordering mistake fails CI immediately,
+// regardless of whether that particular run's random positions happened
+// to visibly collide. See SOURCE_OF_TRUTH.md's Required Method.
+test('Beach foreground elements draw in depth order (far-to-near) every frame, not motion-speed order', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'beach';
+    STATE.beachVariant = 'night';
+    STATE.beachScene = generateBeachScene();
+    // Force every optional/random element present so this frame actually
+    // exercises the whole depth model, not just whatever happened to spawn.
+    STATE.beachScene.cruiseShip = { xFrac: 0.3, direction: 1, speed: 0, sizeFrac: 0.08 };
+    STATE.beachScene.whale = { active: true, xFrac: 0.7, sizeFrac: 0.06, life: 40, maxLife: 90, nextSpawnFrame: 0 };
+    await new Promise((r) => setTimeout(r, 300));
+
+    const layers = [];
+    const originalCutout = drawBeachCutout;
+    const originalBoat = drawBeachBoat;
+    const originalOverhang = drawBeachOverhang;
+    window.drawBeachCutout = (source, ...rest) => { layers.push(source); return originalCutout(source, ...rest); };
+    window.drawBeachBoat = (...args) => { layers.push('boat'); return originalBoat(...args); };
+    window.drawBeachOverhang = (...args) => { layers.push('palm-overhang'); return originalOverhang(...args); };
+    drawBeachScene();
+    window.drawBeachCutout = originalCutout;
+    window.drawBeachBoat = originalBoat;
+    window.drawBeachOverhang = originalOverhang;
+
+    return { layers, model: BEACH_DEPTH_LAYERS };
+  });
+
+  // drawBeachCutout is called with a specific asset filename (e.g.
+  // 'palm-full-1'), not the generic depth-model category ('palm') --
+  // normalize before comparing against BEACH_DEPTH_LAYERS.
+  const toDepthLayer = (source) => (source.startsWith('palm-full') ? 'palm' : source);
+
+  expect(result.layers.length).toBeGreaterThan(0);
+  let lastIndex = -1;
+  for (const rawLayer of result.layers) {
+    const layer = toDepthLayer(rawLayer);
+    const idx = result.model.indexOf(layer);
+    expect(idx, `drawn layer "${layer}" (from "${rawLayer}") is missing from BEACH_DEPTH_LAYERS`).toBeGreaterThanOrEqual(0);
+    expect(idx, `"${layer}" (depth index ${idx}) drew after something nearer the camera -- full sequence: ${result.layers.join(', ')}`).toBeGreaterThanOrEqual(lastIndex);
+    lastIndex = idx;
+  }
+  expect(errors).toEqual([]);
+});
+
+// The literal reported case, pinned down directly rather than relying
+// only on the general structural test above: a palm and the cruise ship
+// forced to the exact same x. If this regresses, the ship visibly nests
+// inside the palm's branches again.
+test('Beach: a palm and the cruise ship forced to the same x still draw palm-on-top', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const layers = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'beach';
+    STATE.beachVariant = 'night';
+    STATE.beachScene = generateBeachScene();
+    STATE.beachScene.palms = [{ xFrac: 0.5, source: 'palm-full-1', sizeFrac: 0.26 }];
+    STATE.beachScene.cruiseShip = { xFrac: 0.5, direction: 1, speed: 0, sizeFrac: 0.1 };
+    await new Promise((r) => setTimeout(r, 300));
+
+    const seen = [];
+    const originalCutout = drawBeachCutout;
+    window.drawBeachCutout = (source, ...rest) => { seen.push(source); return originalCutout(source, ...rest); };
+    drawBeachScene();
+    window.drawBeachCutout = originalCutout;
+    return seen;
+  });
+
+  const shipIdx = layers.indexOf('cruise-ship');
+  const palmIdx = layers.indexOf('palm-full-1');
+  expect(shipIdx).toBeGreaterThanOrEqual(0);
+  expect(palmIdx).toBeGreaterThanOrEqual(0);
+  expect(palmIdx, 'palm must draw after (on top of) the cruise ship').toBeGreaterThan(shipIdx);
+  expect(errors).toEqual([]);
+});
+
+// Generic, reusable across both Beach and Safari's cutout libraries (and
+// any future one): a ground/water-anchored cutout's own alpha channel
+// must actually reach the edge it's anchored at -- if the asset's visible
+// content tapers off well before its own crop boundary, the cutout will
+// read as floating no matter how correct the anchor math placing it is.
+// This is exactly the bug class that shipped as the original palm-shore-
+// crown asset (a crown with no trunk, see CREDITS.md's sourcing history)
+// -- this test would have caught it automatically before it was ever
+// wired into drawBeachScene, instead of needing a player screenshot.
+// palm-overhang is deliberately excluded: it's the one cutout that's NOT
+// meant to touch any edge of its own crop at its anchor side (it hangs
+// from a screen corner, its far end meant to read as exiting the frame
+// entirely) -- see SOURCE_OF_TRUTH.md's Required Method for why that
+// category needs a different (still-manual, visual) check instead.
+test('Every ground/water-anchored cutout touches its own bottom edge (has a real "foot", not a floating crop)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const groundAnchoredCutouts = [
+    'art/beach-cutouts/palm-full-1.webp',
+    'art/beach-cutouts/palm-full-2.webp',
+    'art/beach-cutouts/dolphin.webp',
+    'art/beach-cutouts/whale.webp',
+    'art/beach-cutouts/cruise-ship.webp',
+    'art/safari-cutouts/tree-acacia.webp',
+    'art/safari-cutouts/tree-baobab.webp',
+    'art/safari-cutouts/animal-zebra.webp',
+    'art/safari-cutouts/animal-giraffe.webp',
+    'art/safari-cutouts/animal-elephant.webp',
+  ];
+
+  const result = await page.evaluate(async (paths) => {
+    const out = {};
+    for (const path of paths) {
+      const img = new Image();
+      img.src = path;
+      await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; });
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      const cctx = c.getContext('2d');
+      cctx.drawImage(img, 0, 0);
+      // Sample the bottom 3% of rows (not just the very last row -- a
+      // couple of stray anti-aliased pixels shouldn't count as "real"
+      // contact) and find the widest single-row COUNT of comfortably-
+      // opaque pixels anywhere in that band -- not just the single peak
+      // alpha value anywhere in it (review catch, PR #105: a lone opaque
+      // splash/shadow artifact/stray pixel would pass a peak-alpha check
+      // even with every other pixel in the band fully empty, which isn't
+      // real contact at all). A per-row count is real coverage: it can't
+      // be satisfied by one stray pixel the way a band-wide maximum can.
+      const bandHeight = Math.max(1, Math.round(img.naturalHeight * 0.03));
+      const data = cctx.getImageData(0, img.naturalHeight - bandHeight, img.naturalWidth, bandHeight).data;
+      let maxRowCount = 0;
+      for (let row = 0; row < bandHeight; row++) {
+        let rowCount = 0;
+        const rowStart = row * img.naturalWidth * 4;
+        for (let x = 0; x < img.naturalWidth; x++) {
+          if (data[rowStart + x * 4 + 3] > 150) rowCount++;
+        }
+        maxRowCount = Math.max(maxRowCount, rowCount);
+      }
+      out[path] = maxRowCount;
+    }
+    return out;
+  }, groundAnchoredCutouts);
+
+  for (const path of groundAnchoredCutouts) {
+    // 5 pixels, not just >0 -- calibrated against real cases this test
+    // itself turned up, using the narrowest genuinely-real contact found
+    // across the whole library as the floor rather than an arbitrary
+    // guess. dolphin.webp's re-cropped tail (see CREDITS.md) is the
+    // tightest legitimate case at exactly 5 opaque pixels in its widest
+    // band row -- thin, but confirmed real by rendering it against a
+    // reference line at its own anchor point. tree-baobab.webp's root
+    // base similarly has real (if narrow, ~9-pixel) coverage from a soft
+    // photographed ground-shadow, not a hard graphic cutoff -- also
+    // confirmed fine by the same render-and-look check. A single stray
+    // opaque pixel (a rembg artifact, dust speck) -- the failure mode a
+    // band-wide peak-alpha check couldn't rule out -- caps out at 1-2
+    // pixels in any one row, well under this floor.
+    expect(result[path], `${path}'s bottom edge has no real opaque coverage (widest row: ${result[path]} px) -- this cutout doesn't touch the ground/water it's anchored to`).toBeGreaterThanOrEqual(5);
+  }
+  expect(errors).toEqual([]);
+});
+
 // Player request: Sleep mode should always be Beach's calmest, dimmest
 // look, same as every other sleep-safe scene here defaulting to night/
 // dim rather than a coin flip. Non-sleep difficulties keep the genuine
