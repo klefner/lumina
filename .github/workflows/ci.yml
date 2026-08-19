@@ -17,7 +17,24 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
+        # Repeated, real stalls/timeouts on this exact step (multiple runs,
+        # 2026-08-19) turned out to be the Chromium binary download from
+        # Playwright's own CDN, paid fresh every run since nothing was
+        # cached -- the workflow itself was already correct, just fully
+        # exposed to that one external dependency's own flakiness. The
+        # cache above addresses that directly. System package deps
+        # (--with-deps) still get checked every run regardless of cache
+        # hit (they're not part of the cached directory, and skipping them
+        # on a hit risks a stale/missing system lib after a runner image
+        # update) -- Playwright's own install command is already fast when
+        # the browser binary doesn't need re-downloading, so this isn't
+        # conditionally skipped, just far cheaper on a cache hit.
         run: npx playwright install --with-deps chromium
       - name: Run smoke tests
         run: npm test
