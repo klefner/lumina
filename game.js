@@ -12702,7 +12702,53 @@ const SAFARI_CONFIG = {
   BIRD_COUNT: 3,
   ANIMAL_COUNT: 3,
   TREE_COUNT: 3,
+  // Named ranges (not inline literals in generateSafariTrees/Animals) --
+  // same reasoning as BEACH_CONFIG.DOLPHIN_SIZE_FRAC/CRUISE_SHIP_SIZE_FRAC:
+  // lets a test assert the relationship deterministically. No forced
+  // ordering between the two (unlike Beach's dolphin/ship): a real acacia
+  // and a real elephant are genuinely comparable ground-level scale, so
+  // there's no cross-category invariant to enforce here, just plausible
+  // individual ranges -- see the depth-order comment just below this
+  // object for the actual fix these ranges are now depth-scaled under.
+  TREE_SIZE_FRAC: { min: 0.15, max: 0.3 },
+  ANIMAL_SIZE_FRAC: { min: 0.1, max: 0.16 },
 };
+// Player report, screenshot (2026-08-19): animals rendering on top of
+// trees they should read as behind/beside, and trees rendering nested
+// underneath other trees -- Safari predates the Required Method's
+// depth-order category entirely (see SOURCE_OF_TRUTH.md's Known Open Risk
+// Areas), so every tree/animal was simply bottom-anchored at the exact
+// SAME horizonY (no depth variance at all -- everything pinned to one
+// line), then drawn as two entirely separate loops, "all trees, then all
+// animals," with each loop's own order coming straight from
+// Math.random()-driven array generation. Draw order determined by "which
+// array you're in" and "what order Math.random() happened to fill it in"
+// is the exact same wrong-axis mistake Beach's cruise-ship/palm bug was
+// (see BEACH_DEPTH_LAYERS' own comment) -- neither axis has any
+// relationship to actual on-screen depth, so whenever two elements'
+// footprints happened to overlap, whichever "won" was pure chance.
+//
+// Unlike Beach's clean sea-vs-land split (where CATEGORY is itself a
+// reliable depth proxy: sea is always farther than land, no exceptions),
+// Safari's trees and animals don't have a comparable disjoint split -- a
+// real photo can show an animal grazing far behind a near tree, or a near
+// zebra in front of a distant acacia, in either order depending on where
+// each one actually stands. A fixed category-order array like
+// BEACH_DEPTH_LAYERS would be the wrong model here, not just an
+// incomplete one. So both trees and animals now roam real depth
+// (`yFrac`, 0 = right at the horizon/farthest, 1 = nearest the camera,
+// same technique as Desert's flora -- see DESERT_CONFIG's own comment),
+// depth-scaled the same way Beach's dolphins are (a far element renders
+// smaller than the same element's own sizeFrac would give it near the
+// camera), and drawSafariScene draws ALL of them -- trees and animals
+// together -- in ONE pass, sorted by that shared yFrac every frame. This
+// is the source of truth for Safari's depth order (there is no separate
+// named array the way BEACH_DEPTH_LAYERS/DESERT_DEPTH_LAYERS are, because
+// the depth axis here is continuous per-element, not a fixed small set of
+// categories) -- the sort itself, run fresh every frame against each
+// element's own current yFrac, IS the model. See drawSafariScene's own
+// draw loop below for the actual sort/depth-scale, and
+// generateSafariTrees/generateSafariAnimals for where yFrac is assigned.
 
 const SAFARI_IMAGES = {
   day: Object.assign(new Image(), { src: SAFARI_CONFIG.images.day }),
@@ -12796,9 +12842,14 @@ function generateSafariAnimals() {
       // freely and cross paths after this, so it only smooths out where
       // they START, not a hard non-overlap guarantee.
       xFrac: (i + 0.1 + Math.random() * 0.8) / SAFARI_CONFIG.ANIMAL_COUNT,
+      // 0 = right at the horizon (farthest), 1 = nearest the camera --
+      // see SAFARI_CONFIG's own depth-order comment. Roaming the full
+      // band, same as Desert's flora/Beach's dolphins, not pinned to one
+      // fixed line the way every Safari element used to be.
+      yFrac: Math.random(),
       direction: Math.random() < 0.5 ? 1 : -1,
       speed: 0.000035 + Math.random() * 0.00003,
-      sizeFrac: 0.1 + Math.random() * 0.06,
+      sizeFrac: SAFARI_CONFIG.ANIMAL_SIZE_FRAC.min + Math.random() * (SAFARI_CONFIG.ANIMAL_SIZE_FRAC.max - SAFARI_CONFIG.ANIMAL_SIZE_FRAC.min),
       bobPhase: Math.random() * Math.PI * 2,
     });
   }
@@ -12818,7 +12869,13 @@ function generateSafariTrees() {
     trees.push({
       source: SAFARI_TREE_SOURCES[Math.floor(Math.random() * SAFARI_TREE_SOURCES.length)],
       xFrac: (i + 0.15 + Math.random() * 0.7) / SAFARI_CONFIG.TREE_COUNT,
-      sizeFrac: 0.15 + Math.random() * 0.15,
+      // Same depth roaming as animals above (see SAFARI_CONFIG's own
+      // depth-order comment) -- trees used to all pin to the exact same
+      // horizon line, which is what let two trees' draw order come down
+      // to pure array-generation chance instead of which one actually
+      // stands nearer the camera.
+      yFrac: Math.random(),
+      sizeFrac: SAFARI_CONFIG.TREE_SIZE_FRAC.min + Math.random() * (SAFARI_CONFIG.TREE_SIZE_FRAC.max - SAFARI_CONFIG.TREE_SIZE_FRAC.min),
     });
   }
   return trees;
@@ -12996,28 +13053,68 @@ function drawSafariScene() {
     drawW = w * zoom;
     drawH = drawW / imgAspect;
   }
+  let panY = (drawH - h) * (0.5 + 0.3 * Math.sin(cycle * Math.PI * 2));
+  // Clamped so the horizon -- and every horizon-anchored tree/animal --
+  // never drifts off-screen, same technique (and same margins) as Beach's
+  // own HORIZON_FRAC clamp (Codex review catch, PR #101, on that scene).
+  // Safari never had this: panY was completely unclamped here until this
+  // pass. It happened not to matter while every element pinned to the
+  // single horizonY line itself (an off-screen horizonY just meant
+  // everything rendered off-screen together, never individually broken),
+  // but now that trees/animals roam a real depth band below it (see
+  // SAFARI_CONFIG's own depth-order comment), an unclamped horizonY could
+  // let that whole band collapse or invert on an extreme pan phase --
+  // exactly the region-containment gap category 6 exists to catch, closed
+  // proactively here rather than waiting for a report.
+  const desiredHorizonY = cfg.HORIZON_FRAC[scene.variant] * drawH;
+  const minPanY = desiredHorizonY - h * 0.85;
+  const maxPanY = desiredHorizonY - h * 0.15;
+  panY = Math.min(maxPanY, Math.max(minPanY, panY));
+  // Still a valid crop of the actual image -- never reveal area outside it.
+  panY = Math.min(Math.max(panY, 0), Math.max(0, drawH - h));
   const panX = (drawW - w) * t;
-  const panY = (drawH - h) * (0.5 + 0.3 * Math.sin(cycle * Math.PI * 2));
   ctx.drawImage(img, -panX, -panY, drawW, drawH);
 
-  // Foreground wildlife/sky decoration, mapped into the SAME cover-fit/
-  // pan/zoom space the photo itself just used -- specifically the
-  // trees' and animals' shared ground line (SAFARI_CONFIG.HORIZON_FRAC),
-  // so they stay on the actual grass the photo shows instead of drifting
-  // off it as the pan/zoom moves. Drawn before the vignette below so
-  // they pick up the same edge-darkening the photo does, not sitting
-  // artificially crisp on top of it. Trees first (they don't move, and
-  // sit slightly further back conceptually), then animals on top.
-  const horizonY = -panY + cfg.HORIZON_FRAC[scene.variant] * drawH;
+  // Foreground wildlife, mapped into the SAME cover-fit/pan/zoom space
+  // the photo itself just used -- specifically SAFARI_CONFIG.HORIZON_FRAC,
+  // the far edge of the depth band every tree/animal roams (see
+  // SAFARI_CONFIG's own depth-order comment for why this used to be a
+  // single fixed line every element pinned to, and why that was the root
+  // cause of both the animals-over-trees and trees-under-trees reports).
+  // Drawn before the vignette below so they pick up the same
+  // edge-darkening the photo does, not sitting artificially crisp on top
+  // of it.
+  const horizonY = -panY + desiredHorizonY;
   const nightTint = scene.variant === 'night';
-  for (const tree of scene.trees) {
-    drawSafariCutout(tree.source, tree.xFrac * w, horizonY, tree.sizeFrac * h, 1, nightTint);
-  }
-  for (const animal of scene.animals) {
-    // A small vertical bounce in place of real leg articulation -- see
-    // generateSafariAnimals for why a static photo can't have a stride.
-    const bob = Math.sin(animal.bobPhase) * animal.sizeFrac * h * 0.025;
-    drawSafariCutout(animal.source, animal.xFrac * w, horizonY + bob, animal.sizeFrac * h, animal.direction, nightTint);
+  // ONE combined list, trees and animals together, sorted by their own
+  // yFrac (far to near) fresh every frame -- see SAFARI_CONFIG's own
+  // comment for why this has to be a single continuous sort rather than
+  // two separate category loops. `kind` only distinguishes which extra
+  // per-frame touch applies (the animal bob) -- drawSafariCutout itself
+  // already handles both trees and animals identically otherwise.
+  const groundElements = [
+    ...scene.trees.map((tree) => ({ kind: 'tree', el: tree })),
+    ...scene.animals.map((animal) => ({ kind: 'animal', el: animal })),
+  ].sort((a, b) => a.el.yFrac - b.el.yFrac);
+  for (const { kind, el } of groundElements) {
+    // Depth-scaled the same way Beach's dolphins / Desert's flora are
+    // (see either's own comment): an element near the far edge of the
+    // band renders smaller than its own sizeFrac would give it near the
+    // camera -- required so one element's OWN roamed position can't read
+    // as implausible even when it never visually overlaps another.
+    const depthScale = 0.4 + 0.6 * el.yFrac;
+    const elY = horizonY + el.yFrac * (h - horizonY);
+    if (kind === 'animal') {
+      // A small vertical bounce in place of real leg articulation -- see
+      // generateSafariAnimals for why a static photo can't have a
+      // stride. Scaled with depthScale too, so a distant, small-rendered
+      // animal doesn't bob with the same absolute amplitude as a near,
+      // large-rendered one (same reasoning as Beach's dolphin bob).
+      const bob = Math.sin(el.bobPhase) * el.sizeFrac * depthScale * h * 0.025;
+      drawSafariCutout(el.source, el.xFrac * w, elY + bob, el.sizeFrac * depthScale * h, el.direction, nightTint);
+    } else {
+      drawSafariCutout(el.source, el.xFrac * w, elY, el.sizeFrac * depthScale * h, 1, nightTint);
+    }
   }
   if (scene.variant === 'day') {
     for (const bird of scene.birds) {

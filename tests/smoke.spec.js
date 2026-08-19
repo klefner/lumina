@@ -8931,6 +8931,200 @@ test('Safari\'s foreground wildlife (birds, real-photo trees/animals, night shoo
   expect(errors).toEqual([]);
 });
 
+// Player report, screenshot (2026-08-19): animals rendering on top of
+// trees they should read as behind/beside, and trees rendering nested
+// underneath other trees. Root cause: every tree/animal was bottom-
+// anchored at the exact same horizonY (no depth variance at all), then
+// drawn as "all trees, then all animals" -- two separate loops whose
+// internal order came straight from Math.random()-driven array
+// generation, an axis with no relationship to actual on-screen depth
+// (the same wrong-axis mistake BEACH_DEPTH_LAYERS' own history
+// describes). Fixed by giving both a real yFrac and merging them into
+// ONE list sorted by it every frame (see SAFARI_CONFIG's own comment for
+// why this is a continuous sort, not a fixed category array the way
+// Beach/Desert's own depth models are). This is the structural test:
+// hooks drawSafariCutout, forces a known mix of tree/animal yFracs, and
+// asserts the actual sequence of groundY values drawSafariCutout receives
+// is non-decreasing (farther/smaller-yFrac elements always draw before
+// nearer/larger-yFrac ones, regardless of which array -- tree or animal
+// -- either one came from).
+test('Safari trees and animals draw in real depth order (far-to-near, by their own yFrac), not by which array they came from', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'safari';
+    STATE.safariVariant = 'day';
+    STATE.safariScene = generateSafariScene(null);
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Deliberately interleaved so a "trees first, then animals" draw
+    // order would visibly violate depth (a far animal, yFrac 0.1, would
+    // draw AFTER a near tree, yFrac 0.9, if grouped by array instead of
+    // sorted by yFrac).
+    STATE.safariScene.trees[0].yFrac = 0.1;
+    STATE.safariScene.trees[1].yFrac = 0.9;
+    STATE.safariScene.trees[2].yFrac = 0.5;
+    STATE.safariScene.animals[0].yFrac = 0.3;
+    STATE.safariScene.animals[1].yFrac = 0.7;
+    STATE.safariScene.animals[2].yFrac = 0.05;
+
+    const groundYs = [];
+    const original = drawSafariCutout;
+    window.drawSafariCutout = (source, xCenter, groundY, ...rest) => {
+      groundYs.push(groundY);
+      return original(source, xCenter, groundY, ...rest);
+    };
+    drawSafariScene();
+    window.drawSafariCutout = original;
+
+    return { groundYs };
+  });
+
+  expect(result.groundYs.length).toBe(6); // 3 trees + 3 animals
+  let last = -Infinity;
+  for (const gy of result.groundYs) {
+    expect(gy, `groundY sequence went backwards -- an element drew nearer-then-farther instead of far-to-near: ${JSON.stringify(result.groundYs)}`).toBeGreaterThanOrEqual(last);
+    last = gy;
+  }
+  expect(errors).toEqual([]);
+});
+
+// The literal reported case, pinned down directly rather than relying
+// only on the general structural test above -- same technique as Beach's
+// own "a palm and the cruise ship forced to the same x" pin. A near
+// animal and a far tree forced to the exact same x: the animal (nearer,
+// larger yFrac) must draw on top. If this regresses, an animal nests
+// behind foliage it should stand in front of again (or vice versa).
+test('Safari: a near animal and a far tree forced to the same x still draw animal-on-top', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const layers = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'safari';
+    STATE.safariVariant = 'day';
+    STATE.safariScene = generateSafariScene(null);
+    STATE.safariScene.trees = [{ source: 'tree-acacia', xFrac: 0.5, yFrac: 0.1, sizeFrac: SAFARI_CONFIG.TREE_SIZE_FRAC.max }];
+    STATE.safariScene.animals = [{ source: 'animal-elephant', xFrac: 0.5, yFrac: 0.9, direction: 1, speed: 0, sizeFrac: SAFARI_CONFIG.ANIMAL_SIZE_FRAC.max, bobPhase: 0 }];
+    await new Promise((r) => setTimeout(r, 300));
+
+    const seen = [];
+    const original = drawSafariCutout;
+    window.drawSafariCutout = (source, ...rest) => { seen.push(source); return original(source, ...rest); };
+    drawSafariScene();
+    window.drawSafariCutout = original;
+    return seen;
+  });
+
+  const treeIdx = layers.indexOf('tree-acacia');
+  const animalIdx = layers.indexOf('animal-elephant');
+  expect(treeIdx).toBeGreaterThanOrEqual(0);
+  expect(animalIdx).toBeGreaterThanOrEqual(0);
+  expect(animalIdx, 'the nearer animal must draw after (on top of) the farther tree').toBeGreaterThan(treeIdx);
+  expect(errors).toEqual([]);
+});
+
+// Same category-8 "one element's OWN roamed position must not break scale
+// plausibility" requirement Beach's dolphins and Desert's flora needed --
+// a tree/animal near the far edge of the depth band must render smaller
+// than the SAME element's own sizeFrac would give it near the camera.
+test('Safari: a far tree/animal renders visibly smaller than the same element would near the camera (depth-consistent)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'safari';
+    STATE.safariVariant = 'day';
+    STATE.safariScene = generateSafariScene(null);
+    await new Promise((r) => setTimeout(r, 300));
+
+    function renderedHeightFor(yFrac) {
+      STATE.safariScene.trees = [{ source: 'tree-acacia', xFrac: 0.5, yFrac, sizeFrac: SAFARI_CONFIG.TREE_SIZE_FRAC.max }];
+      STATE.safariScene.animals = [];
+      let captured = null;
+      const original = drawSafariCutout;
+      window.drawSafariCutout = (source, xCenter, groundY, targetHeight, ...rest) => {
+        captured = targetHeight;
+        return original(source, xCenter, groundY, targetHeight, ...rest);
+      };
+      drawSafariScene();
+      window.drawSafariCutout = original;
+      return captured;
+    }
+
+    return { far: renderedHeightFor(0), near: renderedHeightFor(1) };
+  });
+
+  expect(result.far).not.toBeNull();
+  expect(result.near).not.toBeNull();
+  expect(result.near, `near-camera tree (${result.near}px) should render taller than the same tree far away (${result.far}px)`).toBeGreaterThan(result.far);
+  expect(errors).toEqual([]);
+});
+
+// Region containment across the full pan/zoom/canvas-shape parameter
+// space -- Safari's panY was completely unclamped before this pass (see
+// drawSafariScene's own comment); confirms the new clamp actually holds
+// horizonY (and therefore the whole depth band trees/animals now roam)
+// on-screen, same requirement and same ultrawide shape Beach's own
+// WATER_END_FRAC review catch was found on.
+test('Safari horizon (and the depth band every tree/animal roams) stays on-screen across the full pan cycle, including an ultrawide canvas', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    const canvasShapes = [
+      { w: 420, h: 860 },
+      { w: 1920, h: 1080 },
+      { w: 3840, h: 1080 },
+    ];
+    const violations = [];
+    let sampleCount = 0;
+
+    for (const shape of canvasShapes) {
+      for (const variant of ['day', 'night']) {
+        canvas.width = shape.w; canvas.height = shape.h;
+        STATE.scene = 'safari';
+        STATE.safariVariant = variant;
+        STATE.safariScene = generateSafariScene(null);
+        STATE.safariScene.trees = [{ source: 'tree-acacia', xFrac: 0.5, yFrac: 0, sizeFrac: SAFARI_CONFIG.TREE_SIZE_FRAC.max }];
+        STATE.safariScene.animals = [];
+        await new Promise((r) => setTimeout(r, 100));
+
+        let capturedGroundY = null;
+        const original = drawSafariCutout;
+        window.drawSafariCutout = (source, xCenter, groundY, ...rest) => {
+          capturedGroundY = groundY;
+          return original(source, xCenter, groundY, ...rest);
+        };
+
+        for (let frac = 0; frac < 1; frac += 0.05) {
+          STATE.safariScene.phase = Math.round(frac * SAFARI_CONFIG.PAN_CYCLE_FRAMES);
+          capturedGroundY = null;
+          drawSafariScene();
+          sampleCount++;
+          if (capturedGroundY !== null && (capturedGroundY < 0 || capturedGroundY > shape.h)) {
+            violations.push({ shape: `${shape.w}x${shape.h}`, variant, phase: frac, groundY: capturedGroundY });
+          }
+        }
+        window.drawSafariCutout = original;
+      }
+    }
+
+    return { violations, sampleCount };
+  });
+
+  expect(result.sampleCount).toBeGreaterThan(100);
+  expect(result.violations, `a horizon-anchored element left the visible canvas: ${JSON.stringify(result.violations)}`).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
 test('Safari\'s cutout image manifest actually loads every declared tree/animal source', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');

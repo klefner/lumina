@@ -79,6 +79,19 @@ photos were rejected after cutout testing revealed they were tight
 crops of a single bare branch, not a full tree, despite reading as
 plausible from their thumbnails.
 
+**Depth-order fix (2026-08-19, player report/screenshot):** animals
+rendered on top of trees they should read as behind, and trees rendered
+nested underneath other trees. These cutout files themselves were never
+the problem — `drawSafariScene` was: every tree/animal used to bottom-
+anchor at the exact same `SAFARI_CONFIG.HORIZON_FRAC` line (no depth
+variance at all), then drew as two separate "all trees, then all
+animals" loops, so draw order came down to `Math.random()`-driven array
+generation, not actual on-screen depth. Fixed by giving both a real
+`yFrac` and merging them into one list sorted by it every frame — see
+`SOURCE_OF_TRUTH.md`'s Known Open Risk Areas for the full account
+(including the other Required Method categories re-audited in the same
+pass, not just this one).
+
 ## Forest scene (forest-night.jpg)
 
 Player request (2026-08-17): extend Safari's real-photo treatment to
