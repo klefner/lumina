@@ -284,11 +284,68 @@ attribution legally required, credited anyway):
   nextSpawnFrame cycle, same pattern as Safari's shooting star), not a
   fixture -- a whale tail breaking the surface is meant to read as a
   rare, notable moment.
-- `cruise-ship.webp` — cropped from "White Cruise Ship on Sea" (the
-  *Marella Dream*, docked), via
-  [Pexels](https://www.pexels.com/photo/white-cruise-ship-on-sea-13486900/).
-  The dock/ropes visible in the original source photo were cleanly
-  removed by `rembg` along with the sky -- no manual masking needed.
+- `cruise-ship.webp` — cropped from "White Cruise Ship" (the *Explorer of
+  the Seas*, underway, no dock in frame), by Matthew Barra, via
+  [Pexels](https://www.pexels.com/photo/white-cruise-ship-813011/).
+
+  This is the SECOND source photo used for this cutout. The first
+  ("White Cruise Ship on Sea," the *Marella Dream*, docked) was originally
+  described here as having its dock/ropes "cleanly removed by `rembg`
+  along with the sky -- no manual masking needed." That claim was wrong
+  and had never actually been checked against the asset -- `rembg`
+  correctly removed the sky (a different color/texture it could segment
+  against) but the dock/pier is physically touching the hull in that
+  source photo and reads as one continuous foreground object; `rembg`
+  kept all of it, including the raised concrete pier deck, mooring
+  bollards, and a receding line of dockside lamp posts. Because
+  `drawBeachCutout` anchors the image's bottom edge at the horizon, the
+  ship rendered with the FULL HEIGHT of that pier structure between its
+  hull and the waterline -- reading as a cruise ship floating well above
+  the water (player report, screenshot). This passed the Required
+  Method's category-1 "contact" test the whole time, because that test
+  only checks whether real opaque content exists at the bottom edge, not
+  whether that content is the semantically correct part of the object --
+  a dock IS real, non-transparent content, just not the ship's own hull.
+  See SOURCE_OF_TRUTH.md's Required Method for the note this added to
+  category 1.
+
+  First attempt at a fix cropped the pier out of the *Marella Dream*
+  photo (removing everything below the pier's own walkway line) --
+  visually confirmed at the time (rendered at full production `sizeFrac`
+  across multiple pan phases and both mirror directions, hull sitting
+  directly on the horizon every time) and caught a follow-up review
+  finding anyway: a PR reviewer (Codex) spotted that the flatter crop
+  line still left several dockside lamp posts standing in front of the
+  lower hull at the far right, where the receding pier's perspective
+  carried them higher in frame than the crop line cleared. Rather than
+  attempt a second, more careful crop of the same fundamentally-docked
+  photo -- the pier runs the full width of that image with no point where
+  the hull's own true waterline is even visible, so no crop line was ever
+  going to cleanly separate "ship" from "dock" -- switched to a genuinely
+  different photo showing the ship actually underway at sea instead,
+  matching how the palm-shore-crown/procedural-trunk problem was
+  ultimately solved (a whole real photo, not a patched composite).
+
+  `rembg` (isnet-general-use) cleanly separated the ship from open sky and
+  sea with no dock, pier, or any other structure in frame at all -- no
+  manual masking needed, and this time actually verified: inspected the
+  full alpha-channel result against a solid background before cropping,
+  confirmed no residual non-ship content anywhere in the silhouette.
+  Checked for the same blue color-fringe halo `palm-overhang.webp` needed
+  alpha decontamination for (the sky/sea backdrop here is comparably
+  saturated) -- none found; the edges here are mostly hard geometric
+  shapes (hull, masts, railings) rather than fine frond-like detail, which
+  gives `rembg`'s matting far less room to blend in background color
+  along the boundary. Cropped to the alpha>120 bbox (1945x858) after
+  confirming a wide, solid contiguous contact run at the bottom edge
+  (1646px of 1949px width at alpha>150, tapering off over the final ~20
+  rows -- normal soft-edge antialiasing at the hull's own waterline
+  reflection, not a near-empty margin like `dolphin.webp`'s had been).
+  Verified by rendering at full production `sizeFrac`
+  (`CRUISE_SHIP_SIZE_FRAC.max`) across multiple pan phases and both mirror
+  directions, day and night -- the hull sits directly on the rendered
+  horizon in every case, no gap, no residual pier fragments anywhere in
+  frame.
 - `palm-overhang.webp` (REMOVED 2026-08-18, kept here only as the record
   of why) — cropped from "View of a Palm Tree on the Beach," via
   [Pexels](https://www.pexels.com/photo/view-of-a-palm-tree-on-the-beach-26551139/).

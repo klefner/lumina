@@ -140,6 +140,28 @@ placement, and asset composition — that the method didn't have yet).
    its own anchor point). Re-tune the threshold with the same
    render-and-look verification if a future asset sits ambiguously near it,
    not by guessing a new number.
+
+   **This test checks whether real content exists at the anchor edge, not
+   whether that content is the semantically correct part of the object --
+   those are different questions**, and only the first one is automatable
+   without understanding what the image actually depicts. `cruise-ship.webp`
+   passed this test the whole time: its bottom edge had plenty of real,
+   solid alpha content. That content was a dock/pier the ship was moored
+   to, not the ship's own hull -- `rembg` had kept the whole dockside
+   structure as foreground (it's physically touching the hull in the
+   source photo, reading as one continuous object), so the ship rendered
+   with the dock's full height as a gap between its hull and the water
+   (player report, screenshot: the ship consistently floating above the
+   horizon). CREDITS.md's own sourcing note for this asset had confidently
+   claimed "the dock/ropes... were cleanly removed by rembg" -- another
+   claim, like `HORIZON_FRAC.day`'s, that had never actually been checked
+   against the asset and was wrong. **Whenever a new cutout is added,
+   visually inspect what's actually touching its own anchor edge (not just
+   whether the alpha test passes) and confirm it's the object itself, not
+   an attached structure the object happens to be resting against, tied
+   to, or standing on** -- this is not generically automatable (it
+   requires knowing what the photo depicts), so it stays a manual
+   render-and-look step alongside category 2 below, not a test.
 2. **Medium legibility** — is the surface an element is anchored to/in
    visually distinguishable in the actual rendered pixels, not just
    mathematically positioned there? Whether the medium itself needs a
@@ -322,6 +344,7 @@ their source photos, `HORIZON_FRAC` values, or cutout library ever change.
 ## Known Open Risk Areas
 
 - **Resolved (2026-08-18)**: `HORIZON_FRAC.day` (0.413) and the implicit assumption that `sandY` marked the real water/sand boundary were both wrong, discovered via player report/screenshot: the cruise ship rendering roughly halfway between the real horizon and the beach, and separately a dolphin rendering on real photographed sand. Neither had ever been verified against `beach-day.jpg` directly -- 0.413 was accepted on the strength of renders "looking plausible" (nothing else in frame contradicted it), and a comment beside the old `waterBottomY` line confidently asserted "day keeps using that real photographed water band unchanged," a claim that had never actually been checked. A fresh full-row brightness scan found the real horizon at 0.278 (not 0.413) and a new `WATER_END_FRAC.day` (0.49) marking where real water actually ends before wave-break foam/dry sand begins (previously conflated with `sandY`, a decorative canvas-fixed strip with no relationship to photo content). Both fixes verified by rendering the exact reported scenarios (ship across six pan phases, a max-depth dolphin) and inspecting real pixel output, not just re-deriving the formula. Closed the gap that let this go unverified for two rounds running: `tests/smoke.spec.js`'s new "Photo boundary fractions" test loads the real source photos and asserts every `HORIZON_FRAC`/`WATER_END_FRAC` constant (Beach day/night, Safari day) sits at a measurable brightness or hue transition, not floating inside one uniform region — see the Required Method's category 2 above for the full account, including why Safari's day value needed a hue-channel check instead of brightness (confirmed correct, but the earlier "visually confirmed" audit claim had never been backed by an automated check either).
+- **Resolved (2026-08-19)**: `cruise-ship.webp` still rendered the ship floating well above the horizon even after the `HORIZON_FRAC.day`/`WATER_END_FRAC.day` fix directly above -- because the position math was never the problem this time. Player report/screenshot correctly guessed the cause: the asset itself included the dock/pier the ship was moored to (mooring bollards, a raised concrete walkway, a receding line of dockside lamp posts), all kept as real opaque foreground by `rembg` since it's physically touching the hull in the source photo. `drawBeachCutout` anchors the image's own bottom edge at the horizon, so the ship rendered with the pier's full height as a gap above the water. This passed the Required Method's category-1 "contact" test the whole time (real alpha content at the bottom edge, just not the ship's own hull) — see the Required Method's category 1 above for the new note this added: contact and semantic-correctness-of-the-anchor-edge are different questions, and only the first is automatable. First fix attempt cropped the pier out of the SAME docked photo -- verified at the time (full production size, multiple pan phases, both mirror directions) but a PR reviewer (Codex) caught that the crop line still left several receding dockside lamp posts standing in front of the lower hull, since that photo's pier runs the full width with no clean line separating it from the hull anywhere. Rather than attempt a third crop of a photo that structurally couldn't produce a clean result (the pier occludes the hull's real waterline everywhere in that source image), sourced a genuinely different photo showing the ship actually underway at sea (player: "find a cruise ship image that's at sea, not a dock") -- the same resolution pattern as the palm-shore-crown asset earlier in this project (a whole real photo beats patching a compromised one). Verified by rendering at full production size across multiple pan phases, both mirror directions, and both day/night tints. See `art/CREDITS.md`'s `cruise-ship.webp` entry for the full two-photo account, including the correction to an earlier sourcing note that had wrongly claimed the first photo's dock was "cleanly removed by rembg."
 - The audio "no sound" fix (sample-loading race + AudioContext resume hardening, shipped in PR #18) is verified by automated tests but not yet confirmed against a real device that's had an actual interruption (phone call, notification) mid-session — see the Beta Group 2 readiness checklist for the full context.
 - The wide-playfield/zoom-out onboarding mechanic (PR #20) is covered by Playwright but not yet confirmed on a real touch device's pinch-zoom/pan gestures.
 - One-off incident: the PR #42 merge deploy (2026-07-31) hit a transient Cloudflare API 522 on the "Deploy to Cloudflare Pages" step while the GitHub Pages step in the same job succeeded, leaving `lumina-8f0.pages.dev` briefly stale relative to `klefner.github.io/lumina/`. Resolved with a fresh push to `main` to re-run the whole job (neither `rerun_workflow_run` nor `workflow_dispatch` were available to the token used, 403). Single occurrence so far — not worth permanent dual-host verification unless it recurs. See the Non-Negotiable Distinctions entry above for why that same 403 shaped the 2026-08-16 itch.io auto-deploy revert.
