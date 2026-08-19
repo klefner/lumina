@@ -341,13 +341,23 @@ attribution legally required, credited anyway):
   nearby crack, matching "way off in the distance" directly without
   needing extra effects processing to sell the distance. Downmixed to
   mono, resampled to 44.1kHz, short fade in/out; otherwise unedited.
-  `SCENE_AMBIENT_CONFIG.desert`'s own gain (0.4) sits well under this
-  recording's raw measured loudness (mean -15.4dB/peak -2.7dB, against
-  `desert-wind.mp3`'s -19.8dB/-3.5dB and `beach-wind.mp3`'s comparable
-  -19.9dB/-6.0dB) specifically so it reads as a faraway rumble under the
-  wind bed rather than a crack on top of it -- the same
-  distance-reads-as-restraint choice the visual lightning flash
-  (`drawDesertScene`, game.js) makes independently.
+  `SCENE_AMBIENT_CONFIG.desert`'s own gain (0.24, down from an initial
+  0.4 -- player correction 2026-08-19, a real ~50-mile Arizona storm cell
+  as the reference: "sounding like it's right at the player not way off
+  in the distance") sits well under this recording's raw measured
+  loudness (mean -15.4dB/peak -2.7dB, against `desert-wind.mp3`'s
+  -19.8dB/-3.5dB and `beach-wind.mp3`'s comparable -19.9dB/-6.0dB)
+  specifically so it reads as a faraway rumble under the wind bed rather
+  than a crack on top of it -- the same distance-reads-as-restraint
+  choice the visual lightning flash (`drawDesertScene`, game.js) makes
+  independently. Gain alone still left the recording's full high-frequency
+  crack/crackle content intact, which read as "quiet but close" rather
+  than genuinely far away -- real distance rolls off high frequencies
+  over range (air absorption), which a volume cut alone can't simulate.
+  `startEventAmbientLayer`'s own `lowpassHz` parameter (900Hz for this
+  sound specifically) now applies a real lowpass filter on top of the
+  gain cut, so the recording keeps the low rumble that reads as
+  "thunder" while losing the crack transient a nearby strike would have.
 
 Both trimmed/faded with ffmpeg, same two-pass technique as Safari's own
 recordings above.
