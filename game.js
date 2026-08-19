@@ -337,7 +337,7 @@ function saveCockpitModeSetting(enabled) {
 // 'rotate' (unlike flight/cockpit mode's off-by-default) since picking a
 // scene doesn't change how you play -- an unconfigured player should just
 // see everything.
-const SCENE_LIST = ['space', 'forest', 'beach', 'birthday', 'halloween', 'christmas', 'safari'];
+const SCENE_LIST = ['space', 'forest', 'beach', 'birthday', 'halloween', 'christmas', 'safari', 'desert'];
 const SCENE_KEY = 'lumina_scene_v1';
 function loadSceneSetting() {
   try {
@@ -507,6 +507,14 @@ function sceneWaveCount(scene) {
 // ambient track are exactly the low-arousal profile Sleep mode wants --
 // same class of calm as Forest/Beach/Christmas, not Birthday/Halloween's
 // deliberate higher energy.
+//
+// Desert deliberately excluded, same reasoning as Birthday/Halloween: a
+// sudden brightness flash (the lightning effect -- see
+// DESERT_CONFIG/drawDesertScene) is exactly the kind of stimulus Sleep
+// mode exists to avoid, independent of how calm the rest of the scene
+// (a slow pan over a quiet, empty desert) otherwise reads. Even an
+// occasional, subtle flash is still a flash a player trying to wind down
+// in a dark room shouldn't be surprised by.
 const SLEEP_SAFE_SCENES = new Set(['space', 'forest', 'beach', 'christmas', 'aurora', 'reef', 'cavern', 'safari']);
 
 function isSceneSleepSafe(scene) {
@@ -2960,6 +2968,8 @@ const STATE = {
                            // (see generateCavernScene); null otherwise -- premium, see PREMIUM_SCENE_LIST
   safariScene: null,      // { variant, phase } for the current wave when scene === 'safari'
                            // (see generateSafariScene); null otherwise
+  desertScene: null,      // { phase, flora, tumbleweed, roadrunner, lightning } for the current wave
+                           // when scene === 'desert' (see generateDesertScene); null otherwise
   safariVariant: null,    // 'day' or 'night', persists across a whole safari block once rolled, and
                            // rides along with SAVE_KEY the same way rotateSeed does (see saveGame/loadSave) --
                            // see generateSafariScene's own comment for why this can't just live on safariScene
@@ -3923,6 +3933,26 @@ const SCENE_AMBIENT_CONFIG = {
       wildlife: { file: 'safari-wildlife.mp3', gain: 0.55, isEvent: true, minGapSec: 10, maxGapSec: 24 },
     },
   },
+  // Wind first, same reasoning as every other scene's own floor layer.
+  // Thunder is the one occasional event -- a real distant-rolling-thunder
+  // recording (see sounds/CREDITS.md), not a sharp nearby crack, matching
+  // the "way off in the distance" request directly. gain is well under the
+  // raw recording's own loudness specifically so it reads as a faraway
+  // rumble under the wind bed, not a jump-scare crack on top of it -- the
+  // same distance-reads-as-restraint choice the visual lightning flash
+  // (see DESERT_CONFIG/drawDesertScene) makes independently. Not tied to
+  // the visual flash by a shared timer -- Beach's whale sighting and its
+  // own beach-whale.mp3 event layer are two separately-randomized systems
+  // too (see BEACH_CONFIG.WHALE_SIZE_FRAC's own comment), the established
+  // pattern for a visual "sighting" and its matching audio "event" in this
+  // codebase.
+  desert: {
+    order: ['wind', 'thunder'],
+    sounds: {
+      wind: { file: 'desert-wind.mp3', gain: 0.42, isEvent: false },
+      thunder: { file: 'desert-thunder.mp3', gain: 0.4, isEvent: true, minGapSec: 20, maxGapSec: 48 },
+    },
+  },
 };
 
 // Applied fresh on every repeat (a loop's next crossfaded pass, or an
@@ -4212,10 +4242,11 @@ const SCENE_COMPLETE_CELEBRATIONS = {
   halloween: { glyph: '🎃', bg: 'radial-gradient(circle at 35% 30%, #ffcf8a, #9a4a12)', glow: 'rgba(255,140,20,0.6)' },
   christmas: { glyph: '🎄', bg: 'radial-gradient(circle at 35% 30%, #cdeccb, #1f5c3a)', glow: 'rgba(60,190,110,0.6)' },
   safari: { glyph: '🦒', bg: 'radial-gradient(circle at 35% 30%, #f6dfa0, #7a5a1e)', glow: 'rgba(230,180,80,0.6)' },
+  desert: { glyph: '⚡', bg: 'radial-gradient(circle at 35% 30%, #e8d3a0, #5c4526)', glow: 'rgba(230,190,110,0.6)' },
 };
 const SCENE_DISPLAY_NAMES = {
   space: 'Space', forest: 'Forest', beach: 'Beach', birthday: 'Birthday', halloween: 'Halloween', christmas: 'Christmas', safari: 'Safari',
-  aurora: 'Aurora Skies', reef: 'Coral Reef', cavern: 'Crystal Cave',
+  aurora: 'Aurora Skies', reef: 'Coral Reef', cavern: 'Crystal Cave', desert: 'Desert',
 };
 
 // Full names matching the title screen's own scene-selector option text
@@ -4232,7 +4263,7 @@ const SCENE_DISPLAY_NAMES = {
 const SCENE_HUD_NAMES = {
   space: 'Space', forest: 'Night Forest', beach: 'Beach',
   birthday: 'Birthday Party', halloween: 'Halloween', christmas: 'Christmas', safari: 'Safari',
-  aurora: 'Aurora Skies', reef: 'Coral Reef Glow', cavern: 'Crystal Cave',
+  aurora: 'Aurora Skies', reef: 'Coral Reef Glow', cavern: 'Crystal Cave', desert: 'Desert',
 };
 
 function queueSceneCompleteToast(scene) {
@@ -7978,6 +8009,9 @@ function startWave(waveNumber) {
   // blockPosition 0, every single wave (see resolveSceneBlock), which
   // would reroll on every wave instead of just the first.
   STATE.safariScene = STATE.scene === 'safari' ? generateSafariScene(STATE.safariScene) : null;
+  // No previousScene carried forward -- see generateDesertScene's own
+  // comment for why this scene has nothing that needs to survive a reroll.
+  STATE.desertScene = STATE.scene === 'desert' ? generateDesertScene() : null;
   // Stop any leftover ambience from whatever scene the previous wave was
   // on the instant this wave's scene turns out to be different -- see
   // syncAmbienceToScene's own comment for why this can't just wait for
@@ -10086,6 +10120,410 @@ function drawBeachScene() {
   const vignette = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.25, w / 2, h / 2, Math.max(w, h) * 0.72);
   vignette.addColorStop(0, 'rgba(0,0,0,0)');
   vignette.addColorStop(1, nightTint ? 'rgba(0,0,0,0.5)' : 'rgba(10,14,8,0.4)');
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, w, h);
+}
+
+// ============================================================
+// SECTION 7F-2: DESERT BACKGROUND
+// ============================================================
+// A new scene, built in one pass against SOURCE_OF_TRUTH.md's Required
+// Method (established across Beach's several rounds of player-reported
+// failures -- overhang palm removal, cruise-ship scale/anchor/dock fixes,
+// dolphin water-region fixes -- see that file's Known Open Risk Areas
+// history) applied PROACTIVELY rather than reactively: every category
+// below is addressed up front, not bolted on after a screenshot catches
+// it. Player request, verbatim: "a desert scene with a thunder and
+// lightning storm way off in the distance," desert-specific flora/fauna,
+// randomly placed, with naturally-connected items (cactuses on the
+// ground, not floating) -- explicitly framed as a single-attempt test of
+// the framework's own effectiveness.
+//
+// Real photo (art/desert-day.jpg, "Gray Sky over Mountains on Desert" --
+// see art/CREDITS.md), single variant (no day/night split -- the brief
+// asks for one specific mood, an overcast desert with a storm visible in
+// the distance, not two). Built the same cover-fit Ken Burns pan/zoom as
+// every other real-photo scene (Beach/Forest/Safari).
+const DESERT_CONFIG = {
+  image: 'art/desert-day.jpg',
+  PAN_CYCLE_FRAMES: 5400, // same speed as Beach/Forest -- see their own comments on why 5400 (90s), not the original 2700
+  ZOOM_MIN: 1.05,
+  ZOOM_MAX: 1.18,
+  // Where the flat scrubland foreground actually starts in the SOURCE
+  // photo, as a fraction of its own height -- everything ground-anchored
+  // below (cacti, the Joshua tree, the tumbleweed, the roadrunner) plants
+  // its base at or below this line, mapped through the same pan/zoom
+  // transform the photo itself uses (same technique as
+  // BEACH_CONFIG.HORIZON_FRAC). Measured with a full-row brightness scan
+  // of desert-day.jpg plus a visual reference-line overlay to confirm the
+  // measurement against the actual crop -- not just accepted on sight, the
+  // exact mistake that produced BEACH_CONFIG.HORIZON_FRAC.day's original
+  // wrong value. Rows above this are the mountain/foothill band (varying
+  // silhouette texture against an overcast sky); rows at/below it are the
+  // real flat ground the source photo shows underfoot.
+  GROUND_FRAC: 0.88,
+  // Named per-species height ranges (not inline literals), same reasoning
+  // as BEACH_CONFIG.DOLPHIN_SIZE_FRAC/CRUISE_SHIP_SIZE_FRAC: lets a test
+  // assert the size relationships deterministically. Saguaro and Joshua
+  // tree are both real desert "tree-scale" flora with genuinely
+  // overlapping real-world height ranges (a tall Joshua tree and a short
+  // saguaro are comparably sized) -- unlike Beach's dolphin/ship, there's
+  // no real-world reason to force one species above the other, so these
+  // two ranges are allowed to overlap. Kept modest (well under half the
+  // screen even at max depth-scale) so they read as scattered background
+  // flora, not a canopy crowding the dots -- same restraint Beach's own
+  // palm-tree sizing comment describes.
+  SAGUARO_HEIGHT_FRAC: { min: 0.16, max: 0.3 },
+  JOSHUA_TREE_HEIGHT_FRAC: { min: 0.14, max: 0.26 },
+  // Tumbleweed and the roadrunner are both real ground-level fauna/debris,
+  // dramatically smaller than either flora species above (a tumbleweed is
+  // roughly waist-high at most; a roadrunner is a small bird) -- ceilings
+  // set below the flora species' floors at matching depth-scale, same
+  // margin-based non-overlap technique as Beach's own size constants, so
+  // no random draw can produce a tumbleweed or roadrunner reading bigger
+  // than a nearby cactus.
+  TUMBLEWEED_SIZE_FRAC: { min: 0.035, max: 0.06 },
+  ROADRUNNER_SIZE_FRAC: 0.065,
+  FLORA_COUNT: { min: 3, max: 5 },
+  // Frame gap between lightning flashes -- ~6-20s at 60fps, an occasional
+  // sighting like Beach's whale, not constant flicker (the request is a
+  // storm "way off in the distance," meant to be a rare, subtle thing to
+  // notice, not a strobing light show next to gameplay dots).
+  LIGHTNING_MIN_GAP_FRAMES: 360,
+  LIGHTNING_MAX_GAP_FRAMES: 1200,
+};
+const DESERT_IMAGE = Object.assign(new Image(), { src: DESERT_CONFIG.image });
+
+// Real photo cutouts (background removed with rembg, sourcing + process
+// notes in art/CREDITS.md) -- same technique as Beach/Safari's own
+// libraries. Each is a SINGLE real photo showing the entire object in its
+// natural context (a whole saguaro base-to-crown, a whole Joshua tree, an
+// intact tumbleweed, a roadrunner standing on visible ground with its feet
+// in frame) -- not a composited part, per the lesson Beach's palm-overhang
+// failure and cruise-ship dock failure both taught (see BEACH_CUTOUT_SOURCES'
+// own comment): a structurally-wrong or partial source photo cannot be
+// patched into looking right no matter how it's cropped afterward.
+const DESERT_CUTOUT_SOURCES = ['saguaro', 'joshua-tree', 'tumbleweed', 'roadrunner'];
+const DESERT_CUTOUT_IMAGES = {};
+for (const name of DESERT_CUTOUT_SOURCES) {
+  DESERT_CUTOUT_IMAGES[name] = Object.assign(new Image(), { src: `art/desert-cutouts/${name}.webp` });
+}
+
+function generateDesertScene() {
+  // Not persisted across waves the way Beach's day/night pick is (there's
+  // no variant to preserve) -- same as Forest, a fresh phase/layout every
+  // time the block starts, since there's nothing here that would read as
+  // jarring to reroll (unlike Beach's variant, which WOULD visibly flip
+  // day/night mid-block if re-rolled every wave).
+  const phase = Math.floor(Math.random() * DESERT_CONFIG.PAN_CYCLE_FRAMES);
+
+  const cfg = DESERT_CONFIG;
+  const floraCount = cfg.FLORA_COUNT.min + Math.floor(Math.random() * (cfg.FLORA_COUNT.max - cfg.FLORA_COUNT.min + 1));
+  const flora = [];
+  for (let i = 0; i < floraCount; i++) {
+    const source = Math.random() < 0.5 ? 'saguaro' : 'joshua-tree';
+    const range = source === 'saguaro' ? cfg.SAGUARO_HEIGHT_FRAC : cfg.JOSHUA_TREE_HEIGHT_FRAC;
+    flora.push({
+      source,
+      xFrac: 0.03 + Math.random() * 0.94,
+      // 0 = far edge of the ground band (right at the mountains' base),
+      // 1 = nearest, nearly the bottom of the screen -- same full-band
+      // roaming Beach's dolphins use, and for the same reason: real desert
+      // flora is scattered at every distance across open ground, not
+      // pinned to one fixed line.
+      yFrac: Math.random(),
+      baseHeightFrac: range.min + Math.random() * (range.max - range.min),
+      direction: Math.random() < 0.5 ? 1 : -1,
+    });
+  }
+
+  const tumbleweed = {
+    xFrac: Math.random(),
+    yFrac: 0.25 + Math.random() * 0.65,
+    direction: Math.random() < 0.5 ? 1 : -1,
+    speed: 0.00025 + Math.random() * 0.00035,
+    sizeFrac: cfg.TUMBLEWEED_SIZE_FRAC.min + Math.random() * (cfg.TUMBLEWEED_SIZE_FRAC.max - cfg.TUMBLEWEED_SIZE_FRAC.min),
+    wobblePhase: Math.random() * Math.PI * 2,
+  };
+
+  const lightning = {
+    flashLife: 0,
+    maxFlashLife: 1,
+    boltXFrac: 0.5,
+    boltDepthFrac: 0.5,
+    boltSeed: 0,
+    nextFlashFrame: phase + cfg.LIGHTNING_MIN_GAP_FRAMES + Math.floor(Math.random() * (cfg.LIGHTNING_MAX_GAP_FRAMES - cfg.LIGHTNING_MIN_GAP_FRAMES)),
+  };
+
+  return {
+    phase,
+    flora,
+    tumbleweed,
+    // Occasional roadrunner sprint across the near foreground -- same
+    // active/life/nextSpawnFrame sighting pattern as Beach's whale.
+    roadrunner: { active: false, xFrac: -0.1, yFrac: 0.85, direction: 1, speed: 0, life: 0, maxLife: 1, nextSpawnFrame: phase + 400 + Math.floor(Math.random() * 800) },
+    lightning,
+  };
+}
+
+function updateDesertScene() {
+  if (STATE.scene !== 'desert' || !STATE.desertScene) return;
+  const scene = STATE.desertScene;
+  scene.phase += 1;
+  const cfg = DESERT_CONFIG;
+
+  const tw = scene.tumbleweed;
+  tw.xFrac += tw.speed * tw.direction;
+  if (tw.xFrac > 1.08) tw.xFrac = -0.08;
+  else if (tw.xFrac < -0.08) tw.xFrac = 1.08;
+
+  const rr = scene.roadrunner;
+  if (rr.active) {
+    rr.xFrac += rr.speed * rr.direction;
+    rr.life--;
+    if (rr.life <= 0 || rr.xFrac > 1.1 || rr.xFrac < -0.1) {
+      rr.active = false;
+      rr.nextSpawnFrame = scene.phase + 500 + Math.floor(Math.random() * 900);
+    }
+  } else if (scene.phase >= rr.nextSpawnFrame) {
+    rr.active = true;
+    rr.direction = Math.random() < 0.5 ? 1 : -1;
+    rr.xFrac = rr.direction > 0 ? -0.08 : 1.08;
+    // A real sprint -- much faster than the tumbleweed's wind-driven
+    // drift or any Beach/Safari creature -- a roadrunner's whole identity
+    // is outrunning things.
+    rr.speed = 0.0018 + Math.random() * 0.0012;
+    rr.yFrac = 0.75 + Math.random() * 0.2; // fixed near-camera band, not the full ground range -- see ROADRUNNER_SIZE_FRAC's own comment
+    rr.maxLife = 200 + Math.floor(Math.random() * 100);
+    rr.life = rr.maxLife;
+  }
+
+  const lightning = scene.lightning;
+  if (lightning.flashLife > 0) lightning.flashLife--;
+  if (scene.phase >= lightning.nextFlashFrame) {
+    lightning.maxFlashLife = 10 + Math.floor(Math.random() * 6);
+    lightning.flashLife = lightning.maxFlashLife;
+    lightning.boltXFrac = 0.1 + Math.random() * 0.8;
+    lightning.boltDepthFrac = Math.random();
+    lightning.boltSeed = Math.random() * 1000;
+    lightning.nextFlashFrame = scene.phase + cfg.LIGHTNING_MIN_GAP_FRAMES + Math.floor(Math.random() * (cfg.LIGHTNING_MAX_GAP_FRAMES - cfg.LIGHTNING_MIN_GAP_FRAMES));
+  }
+}
+
+// Draws a real-photo cutout bottom-anchored at (xCenter, groundY) and
+// scaled to targetHeight, preserving the source image's own aspect ratio
+// -- same technique as drawBeachCutout/drawSafariCutout. No night-tint
+// filter (this scene has no night variant).
+function drawDesertCutout(source, xCenter, groundY, targetHeight, direction) {
+  const img = DESERT_CUTOUT_IMAGES[source];
+  if (!img.complete || img.naturalWidth === 0) return;
+  const targetWidth = targetHeight * (img.naturalWidth / img.naturalHeight);
+  ctx.save();
+  ctx.translate(xCenter, groundY);
+  if (direction < 0) ctx.scale(-1, 1);
+  ctx.drawImage(img, -targetWidth / 2, -targetHeight, targetWidth, targetHeight);
+  ctx.restore();
+}
+
+// The explicit, source-of-truth depth model for every Desert foreground
+// element, farthest-to-nearest -- same idiom as BEACH_DEPTH_LAYERS (see
+// its own comment for why this exists: a fast-but-far element must never
+// draw on top of a slow-but-near one just because it happens to move).
+// Desert's ground-level elements don't share Beach's clean sea-vs-land
+// split (everything here is on the same flat ground plane), so this is a
+// category-based ordering instead: rooted flora is scattered across the
+// WHOLE ground band (far and near alike) and draws first; the tumbleweed
+// rolls along the ground in front of it; the roadrunner is a rare,
+// close-up sprint and always draws nearest/last -- the same "always
+// nearest regardless of its own roaming position" treatment Beach gives
+// its whale sighting.
+const DESERT_DEPTH_LAYERS = ['flora', 'tumbleweed', 'roadrunner'];
+
+// Pulled into its own named function specifically so tests can hook it the
+// same way they hook drawDesertCutout/drawBeachBoat, to observe real draw
+// order -- see DESERT_DEPTH_LAYERS above. The tumbleweed doesn't go
+// through drawDesertCutout itself (it needs its own rotate/bounce
+// transform, not a plain bottom-anchor), so without this wrapper the
+// depth-order test would have no way to see it draw at all.
+function drawDesertTumbleweed(tw, groundY, w, h, t) {
+  const twDepthScale = 0.4 + 0.6 * tw.yFrac;
+  const twY = groundY + tw.yFrac * (h - groundY);
+  const twSize = tw.sizeFrac * twDepthScale * h;
+  const twImg = DESERT_CUTOUT_IMAGES.tumbleweed;
+  if (!twImg.complete || twImg.naturalWidth === 0) return;
+  // A small rotation wobble + a matching vertical bounce (bounded to 10%
+  // of its own rendered size) reads as tumbling/hopping along the ground
+  // without ever letting the bounce lift it clear of its own anchor point
+  // or the rotation flip it into an obviously-wrong orientation -- unlike
+  // an unbounded spin, which would eventually point the image sideways or
+  // upside down relative to the ground it's meant to be rolling across.
+  const wobble = Math.sin(t * 0.2 + tw.wobblePhase) * 0.3;
+  const bounce = Math.abs(Math.sin(t * 0.2 + tw.wobblePhase)) * twSize * 0.1;
+  const twWidth = twSize * (twImg.naturalWidth / twImg.naturalHeight);
+  ctx.save();
+  ctx.translate(tw.xFrac * w, twY - bounce);
+  ctx.rotate(wobble);
+  ctx.drawImage(twImg, -twWidth / 2, -twSize, twWidth, twSize);
+  ctx.restore();
+}
+
+function drawDesertScene() {
+  const scene = STATE.desertScene;
+  if (!scene) return;
+  const w = canvas.width, h = canvas.height, t = scene.phase;
+  const img = DESERT_IMAGE;
+
+  // Still loading -- a flat fill close to the photo's own dominant
+  // overcast tone beats a blank/white flash (same technique as every
+  // other real-photo scene here).
+  if (!img.complete || img.naturalWidth === 0) {
+    ctx.fillStyle = '#b8ac93';
+    ctx.fillRect(0, 0, w, h);
+    return;
+  }
+
+  const cfg = DESERT_CONFIG;
+  const cycle = (t % cfg.PAN_CYCLE_FRAMES) / cfg.PAN_CYCLE_FRAMES;
+  const easedT = 0.5 - 0.5 * Math.cos(cycle * Math.PI * 2);
+  const zoom = cfg.ZOOM_MIN + (cfg.ZOOM_MAX - cfg.ZOOM_MIN) * easedT;
+
+  // Cover-fit (like CSS object-fit: cover), same as every other real-photo scene.
+  const imgAspect = img.naturalWidth / img.naturalHeight;
+  const canvasAspect = w / h;
+  let drawW, drawH;
+  if (imgAspect > canvasAspect) {
+    drawH = h * zoom;
+    drawW = drawH * imgAspect;
+  } else {
+    drawW = w * zoom;
+    drawH = drawW / imgAspect;
+  }
+  const panX = (drawW - w) * easedT;
+  let panY = (drawH - h) * (0.5 + 0.3 * Math.sin(cycle * Math.PI * 2));
+  // Clamped so the ground line -- and every ground-anchored element --
+  // never drifts off-screen, same reasoning and technique as Beach's own
+  // horizonY clamp (Codex review catch, PR #101, on that scene). Kept in
+  // the LOWER half of the screen specifically (55%-97% of h, not Beach's
+  // 15%-85%): this is desert floor dressing, not an open horizon view --
+  // the ground band needs to stay believably low in frame at every pan
+  // state, with the mountain/storm sky always occupying the space above it.
+  const desiredGroundY = cfg.GROUND_FRAC * drawH;
+  const minPanY = desiredGroundY - h * 0.97;
+  const maxPanY = desiredGroundY - h * 0.55;
+  panY = Math.min(maxPanY, Math.max(minPanY, panY));
+  // Still a valid crop of the actual image -- never reveal area outside it.
+  panY = Math.min(Math.max(panY, 0), Math.max(0, drawH - h));
+  ctx.drawImage(img, -panX, -panY, drawW, drawH);
+
+  // Mapped through the SAME pan/zoom space the photo itself just used --
+  // see BEACH_CONFIG.HORIZON_FRAC's own comment for why a plain
+  // screen-fraction line would drift away from the photo's real content
+  // as panY shifts the image underneath it.
+  const groundY = -panY + cfg.GROUND_FRAC * drawH;
+  const skyTopY = h * 0.05;
+
+  // Distant lightning: a brief, subtle forked bolt plus a soft whole-sky
+  // brightness flash, confined to the sky/mountain band strictly ABOVE
+  // groundY (never drawn over the real photographed ground, and never
+  // touching it -- a strike "way off in the distance," per the request,
+  // reads as suspended in the far sky, not a nearby ground strike). Both
+  // the bolt geometry and the flash gradient are bounded by skyTopY and
+  // groundY, both of which are themselves clamped above (skyTopY is a
+  // fixed 5% margin; groundY is held within the 55%-97% band by the
+  // panY clamp above), so this stays correctly contained across the full
+  // pan/zoom/canvas-shape parameter space, the same requirement Beach's
+  // water-region elements were held to (see WATER_END_FRAC's own comment
+  // on the ultrawide clamp that fixed a real regression there).
+  const lightning = scene.lightning;
+  if (lightning.flashLife > 0) {
+    // A quick double-pulse flicker rather than one flat linear fade --
+    // more convincing at the low opacity a genuinely distant strike should
+    // read at.
+    const flicker = 0.55 + 0.45 * Math.sin((lightning.maxFlashLife - lightning.flashLife) * 2.6);
+    const alpha = Math.min(1, (lightning.flashLife / lightning.maxFlashLife) * flicker);
+    const boltX = lightning.boltXFrac * w;
+    const boltTopY = skyTopY + (groundY - skyTopY) * 0.04;
+    const boltBottomY = skyTopY + (groundY - skyTopY) * (0.3 + lightning.boltDepthFrac * 0.4);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = 'rgba(255, 250, 232, 0.85)';
+    ctx.lineWidth = 1.5;
+    const segments = 6;
+    // Two mismatched frequencies (not one clean sine) so the zigzag reads
+    // as a jagged real bolt rather than a smooth wavy scratch -- a plain
+    // low-amplitude single-sine wobble looked like a thin straight
+    // contrail in an actual render (visually confirmed, not just assumed
+    // -- see this section's own history for why "looks right" always
+    // means a real rendered check, not a read of the formula).
+    const points = [[boltX, boltTopY]];
+    for (let i = 1; i <= segments; i++) {
+      const segY = boltTopY + (boltBottomY - boltTopY) * (i / segments);
+      const wobble = (Math.sin(lightning.boltSeed + i * 13.7) * 0.7 + Math.sin(lightning.boltSeed * 2.3 + i * 5.1) * 0.3) * w * 0.05;
+      points.push([boltX + wobble, segY]);
+    }
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (const [px, py] of points) ctx.lineTo(px, py);
+    ctx.stroke();
+    // A single short forked branch partway down, the one clear visual cue
+    // (alongside the zigzag itself) that this is a bolt and not a stray
+    // line -- real strikes fork, a smooth curve never does.
+    const forkFrom = points[Math.floor(segments / 2)];
+    const forkAngle = (lightning.boltSeed % 1) * 0.6 - 0.3 + Math.PI / 2.3;
+    const forkLen = (boltBottomY - boltTopY) / segments * 1.1;
+    ctx.beginPath();
+    ctx.moveTo(forkFrom[0], forkFrom[1]);
+    ctx.lineTo(forkFrom[0] + Math.cos(forkAngle) * forkLen, forkFrom[1] + Math.sin(forkAngle) * forkLen);
+    ctx.stroke();
+    ctx.restore();
+
+    const skyFlash = ctx.createLinearGradient(0, skyTopY, 0, groundY);
+    skyFlash.addColorStop(0, `rgba(255, 250, 235, ${(alpha * 0.22).toFixed(3)})`);
+    skyFlash.addColorStop(1, 'rgba(255, 250, 235, 0)');
+    ctx.fillStyle = skyFlash;
+    ctx.fillRect(0, skyTopY, w, Math.max(0, groundY - skyTopY));
+  }
+
+  // Foreground cutouts -- see DESERT_DEPTH_LAYERS' own comment for why
+  // flora draws before the tumbleweed, which draws before the roadrunner.
+  // Sorted by yFrac WITHIN the flora layer itself (not just by random
+  // generation order): two rooted plants both draw in the "flora" depth
+  // slot, but a farther one (smaller yFrac) should still visually sit
+  // behind a nearer one when their bases happen to be close together on
+  // screen, same painter's-algorithm reasoning Beach's within-water-band
+  // elements already rely on implicitly.
+  const floraSorted = [...scene.flora].sort((a, b) => a.yFrac - b.yFrac);
+  for (const plant of floraSorted) {
+    // Depth-scaled the same way Beach's dolphins are (see that comment):
+    // a plant near the far edge of the ground band renders smaller than
+    // the SAME plant's own baseHeightFrac would give it near the camera --
+    // required so one element's OWN roamed position can't break scale
+    // plausibility even when it never overlaps another element directly.
+    const depthScale = 0.4 + 0.6 * plant.yFrac;
+    const plantY = groundY + plant.yFrac * (h - groundY);
+    drawDesertCutout(plant.source, plant.xFrac * w, plantY, plant.baseHeightFrac * depthScale * h, plant.direction);
+  }
+
+  drawDesertTumbleweed(scene.tumbleweed, groundY, w, h, t);
+
+  if (scene.roadrunner.active) {
+    const rr = scene.roadrunner;
+    const rrY = groundY + rr.yFrac * (h - groundY);
+    // Fades in/out over its short life rather than popping, same as
+    // Beach's whale sighting.
+    const fadeFrames = 20;
+    const alpha = Math.min(1, Math.min(rr.maxLife - rr.life, rr.life, fadeFrames) / fadeFrames);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    drawDesertCutout('roadrunner', rr.xFrac * w, rrY, cfg.ROADRUNNER_SIZE_FRAC * h, rr.direction);
+    ctx.restore();
+  }
+
+  // Same reasoning as Beach/Safari's own vignette: a real photo has
+  // arbitrary local contrast a hand-drawn scene never does.
+  const vignette = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.25, w / 2, h / 2, Math.max(w, h) * 0.72);
+  vignette.addColorStop(0, 'rgba(0,0,0,0)');
+  vignette.addColorStop(1, 'rgba(40,30,14,0.4)');
   ctx.fillStyle = vignette;
   ctx.fillRect(0, 0, w, h);
 }
@@ -13648,6 +14086,7 @@ function update() {
   updateReefScene();
   updateCavernScene();
   updateSafariScene();
+  updateDesertScene();
   // Asteroids/satellites/comets only drift through once the whole wave's
   // line-galaxy is complete — they'd be a distraction while still connecting.
   if (STATE.phase === 'WAVE_COMPLETE') { updateSpaceObjects(); updateCelestialBodies(); }
@@ -13724,6 +14163,8 @@ function render() {
     drawCavernScene();
   } else if (STATE.scene === 'safari') {
     drawSafariScene();
+  } else if (STATE.scene === 'desert') {
+    drawDesertScene();
   } else {
     drawStars();
     if (STATE.phase === 'WAVE_COMPLETE') { drawCelestialBodies(); drawSpaceObjects(); }
