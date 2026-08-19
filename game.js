@@ -9866,7 +9866,23 @@ function drawBeachScene() {
   // identical transform as horizonY, so it stays correctly aligned with
   // the real photo's water/sand boundary at every pan/zoom state, not
   // just the one this constant happened to be measured at.
-  const waterEndY = -panY + cfg.WATER_END_FRAC.day * drawH;
+  //
+  // Clamped to never exceed sandY (Codex review catch, PR #109): on a
+  // sufficiently wide canvas (confirmed: 3840x1080 day, pan phase ~0.736)
+  // drawH's own cover-fit math can map WATER_END_FRAC.day far enough down
+  // that the unclamped result lands BELOW sandY -- meaning "the real
+  // water/sand boundary," a value meant to keep dolphins off the sand,
+  // could itself sit underneath the decorative sand-color strip that gets
+  // painted afterward, covering roughly the lower half of a max-depth
+  // dolphin. sandY was the ONE thing this whole fix was moving away from
+  // as the water-region bound, precisely because it doesn't track real
+  // photo content -- but it's still a hard, reliable ceiling on where
+  // anything "in the water" can visually survive being drawn at all,
+  // regardless of what the real photo content says, so clamping against
+  // it here doesn't reintroduce the original bug (that bug was USING
+  // sandY as the primary bound; this is using it only as a backstop when
+  // the real measurement runs past it).
+  const waterEndY = Math.min(-panY + cfg.WATER_END_FRAC.day * drawH, sandY);
   const nightTint = scene.variant === 'night';
 
   // Player report, screenshot: even with horizonY correctly measured
@@ -10020,7 +10036,20 @@ function drawBeachScene() {
     // sand" (player report, screenshot) despite technically staying within
     // [0,1] of yFrac the whole time. Staying within the stored range was
     // never the actual bug; the range itself pointed at the wrong place.
-    const dolphinY = waterTopY + dolphin.yFrac * (waterBottomY - waterTopY) + bob;
+    //
+    // Clamped to sandY as a final step, AFTER bob (review catch, Codex,
+    // PR #109, caught by the required geometry test across pan phases and
+    // an ultrawide canvas -- see that test's own comment): waterEndY's own
+    // Math.min(..., sandY) clamp only bounds the yFrac interpolation's
+    // endpoint, but `bob` is added on top of it and can be positive,
+    // pushing a max-yFrac dolphin a few pixels past sandY regardless (up
+    // to renderSizeFrac * h * 0.15, ~11px at full size on a 1080-tall
+    // canvas) -- right back underneath the decorative sand strip painted
+    // afterward. sandY is a hard backstop here, same reasoning as
+    // waterEndY's own clamp: it doesn't track real photo content, but
+    // nothing can be allowed to render below it and still be visible as
+    // "in the water," regardless of which term pushed it there.
+    const dolphinY = Math.min(waterTopY + dolphin.yFrac * (waterBottomY - waterTopY) + bob, sandY);
     drawBeachCutout('dolphin', dolphin.xFrac * w, dolphinY, renderSizeFrac * h, dolphin.direction, nightTint);
   }
   if (scene.whale.active) {

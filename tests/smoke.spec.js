@@ -7435,6 +7435,70 @@ test('Beach: dolphins can appear anywhere in the water but never past the sand l
   expect(errors).toEqual([]);
 });
 
+// Review catch (Codex, PR #109): the newly-measured WATER_END_FRAC.day,
+// mapped through the SAME cover-fit/pan/zoom transform as horizonY, isn't
+// a fixed screen fraction -- on a sufficiently wide canvas (confirmed:
+// 3840x1080, pan phase ~0.736) that mapping can push it BELOW sandY, the
+// decorative sand-color strip painted afterward, which would then cover
+// roughly the lower half of a max-depth dolphin -- the exact "on the
+// sand" defect this whole fix exists to prevent, just approached from the
+// opposite direction (the real-photo measurement running PAST the
+// decorative strip, instead of the decorative strip being mistaken for
+// the real measurement). Fixed with a clamp (Math.min against sandY) where
+// waterEndY is computed. Sweeps day pan phases across several canvas
+// shapes, INCLUDING ultrawide, and hooks the real drawBeachCutout call
+// (not a reimplementation of the transform math) to confirm a max-depth
+// (yFrac 1) dolphin's actual anchor point never lands below sandY.
+test('Beach: a max-depth dolphin never anchors below the decorative sand strip, even on an ultrawide day canvas', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    const canvasShapes = [
+      { w: 420, h: 860 },   // narrow phone portrait
+      { w: 1920, h: 1080 }, // standard landscape
+      { w: 3840, h: 1080 }, // ultrawide -- the exact shape the review catch reported
+    ];
+    const violations = [];
+    let sampleCount = 0;
+
+    for (const shape of canvasShapes) {
+      canvas.width = shape.w; canvas.height = shape.h;
+      STATE.scene = 'beach';
+      STATE.beachVariant = 'day';
+      STATE.beachScene = generateBeachScene();
+      STATE.beachScene.dolphins = [{ xFrac: 0.5, yFrac: 1, direction: 1, speed: 0, bobPhase: 0, sizeFrac: BEACH_CONFIG.DOLPHIN_SIZE_FRAC.max }];
+      await new Promise((r) => setTimeout(r, 200));
+
+      const sandY = shape.h - BEACH_CONFIG.SAND_HEIGHT_FRAC * shape.h;
+      let captured = null;
+      const original = drawBeachCutout;
+      window.drawBeachCutout = (source, xCenter, groundY, targetHeight, ...rest) => {
+        if (source === 'dolphin') captured = groundY;
+        return original(source, xCenter, groundY, targetHeight, ...rest);
+      };
+
+      for (let frac = 0; frac < 1; frac += 0.02) {
+        STATE.beachScene.phase = Math.round(frac * BEACH_CONFIG.PAN_CYCLE_FRAMES);
+        captured = null;
+        drawBeachScene();
+        sampleCount++;
+        if (captured !== null && captured > sandY) {
+          violations.push({ shape: `${shape.w}x${shape.h}`, phase: frac, groundY: captured, sandY });
+        }
+      }
+      window.drawBeachCutout = original;
+    }
+
+    return { violations, sampleCount };
+  });
+
+  expect(result.sampleCount).toBeGreaterThan(100);
+  expect(result.violations, `dolphin anchored below sandY: ${JSON.stringify(result.violations)}`).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
 // Player report, screenshot: a dolphin rendered up near a shore palm's
 // crown height, reading as jumping higher than the tree. Letting dolphins
 // roam the full water depth (the test above) without also scaling their
