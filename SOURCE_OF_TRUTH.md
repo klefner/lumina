@@ -142,11 +142,56 @@ placement, and asset composition — that the method didn't have yet).
    not by guessing a new number.
 2. **Medium legibility** — is the surface an element is anchored to/in
    visually distinguishable in the actual rendered pixels, not just
-   mathematically positioned there? Not generically automatable (it depends
-   on what a specific photo shows) — verify per photo, and if the photo
-   doesn't make the medium legible on its own (Beach's night photo shows no
-   visible water surface at all), add a deliberate rendered treatment (a
-   tinted gradient) rather than relying on an unaided dark photo.
+   mathematically positioned there? Whether the medium itself needs a
+   deliberate rendered treatment (Beach's night photo shows no visible
+   water surface at all, so glitter/wave lines get a tinted gradient
+   rather than relying on an unaided dark photo) is still per-photo manual
+   judgment. But ONE piece of this category IS now testable and enforced,
+   after it produced three separate bugs across this repo's history before
+   getting a real check: **any `*_FRAC` constant that claims to mark a
+   boundary between two regions in a source photo (HORIZON_FRAC,
+   WATER_END_FRAC) must actually sit at a measurable brightness transition
+   in that photo, not float in the middle of one uniform region.**
+   `HORIZON_FRAC.night` was originally measured with a single-column scan
+   that locked onto a star instead of the real horizon.
+   `HORIZON_FRAC.day` (0.413) was simply never verified against
+   `beach-day.jpg` at all -- accepted because renders "looked plausible in
+   isolation" (nothing else in frame contradicted it, since the cruise
+   ship would still be drawn somewhere within the visibly blue-green sea
+   either way) -- until a player screenshot showed the ship rendering
+   roughly halfway between the real horizon and the beach, and a fresh
+   full-row brightness scan found the real transition at 0.278, not 0.413.
+   The comment sitting right next to the old `waterBottomY` line even
+   asserted, confidently and specifically, "day keeps using that real
+   photographed water band unchanged" -- a claim that sounded like
+   verified fact and had never actually been checked against the photo.
+   `WATER_END_FRAC.day` didn't exist at all until the same round: once
+   dolphins could roam the water freely, they were bounded by `sandY` (a
+   fixed CANVAS fraction for a decorative color strip, never tied to
+   photo content), which sat deep in real photographed dry sand -- a
+   dolphin could render "on the sand" while every stored value stayed
+   validly within its own [0,1] range the whole time. All three are now
+   covered by `tests/smoke.spec.js`'s "Photo boundary fractions" test:
+   loads the real source photo, samples average row brightness just above
+   and below each claimed boundary, and asserts a real, sizable difference
+   between them. While fixing this, also used the same test to check
+   `SAFARI_CONFIG.HORIZON_FRAC.day` -- the 2026-08-17 audit (see Known
+   Open Risk Areas below) had "visually confirmed" it once against a crop,
+   the same kind of one-time-eyeballed claim that turned out wrong for
+   Beach's day horizon, so it deserved the same automated check rather
+   than trusting the prior audit's word for it. It's genuinely correct,
+   but not for the reason assumed: raw brightness is nearly FLAT across
+   that boundary (no usable jump at all) -- the real transition is a HUE
+   shift, blue sky to tan grass, only visible by comparing the blue and
+   green channels separately. Safari's night `HORIZON_FRAC` is honestly
+   documented in its own comment as eyeballed from tree silhouette
+   position, not a measured transition, so it's intentionally NOT in this
+   test -- there's no brightness or hue jump to check there by design.
+   **Any new `*_FRAC` boundary constant, for Beach, Safari, or any future
+   photo scene, must be added to this test** (using whichever channel/
+   metric actually shows the real jump in that specific photo -- confirm
+   which one with a one-off measurement first, the way both of these
+   were), not just spot-checked once and trusted from then on.
 3. **Depth order** — for every pair of elements whose position ranges can
    overlap on screen, does draw order put the nearer one on top? Testable
    and enforced: define an explicit, ordered, farthest-to-nearest depth
@@ -276,6 +321,7 @@ their source photos, `HORIZON_FRAC` values, or cutout library ever change.
 
 ## Known Open Risk Areas
 
+- **Resolved (2026-08-18)**: `HORIZON_FRAC.day` (0.413) and the implicit assumption that `sandY` marked the real water/sand boundary were both wrong, discovered via player report/screenshot: the cruise ship rendering roughly halfway between the real horizon and the beach, and separately a dolphin rendering on real photographed sand. Neither had ever been verified against `beach-day.jpg` directly -- 0.413 was accepted on the strength of renders "looking plausible" (nothing else in frame contradicted it), and a comment beside the old `waterBottomY` line confidently asserted "day keeps using that real photographed water band unchanged," a claim that had never actually been checked. A fresh full-row brightness scan found the real horizon at 0.278 (not 0.413) and a new `WATER_END_FRAC.day` (0.49) marking where real water actually ends before wave-break foam/dry sand begins (previously conflated with `sandY`, a decorative canvas-fixed strip with no relationship to photo content). Both fixes verified by rendering the exact reported scenarios (ship across six pan phases, a max-depth dolphin) and inspecting real pixel output, not just re-deriving the formula. Closed the gap that let this go unverified for two rounds running: `tests/smoke.spec.js`'s new "Photo boundary fractions" test loads the real source photos and asserts every `HORIZON_FRAC`/`WATER_END_FRAC` constant (Beach day/night, Safari day) sits at a measurable brightness or hue transition, not floating inside one uniform region — see the Required Method's category 2 above for the full account, including why Safari's day value needed a hue-channel check instead of brightness (confirmed correct, but the earlier "visually confirmed" audit claim had never been backed by an automated check either).
 - The audio "no sound" fix (sample-loading race + AudioContext resume hardening, shipped in PR #18) is verified by automated tests but not yet confirmed against a real device that's had an actual interruption (phone call, notification) mid-session — see the Beta Group 2 readiness checklist for the full context.
 - The wide-playfield/zoom-out onboarding mechanic (PR #20) is covered by Playwright but not yet confirmed on a real touch device's pinch-zoom/pan gestures.
 - One-off incident: the PR #42 merge deploy (2026-07-31) hit a transient Cloudflare API 522 on the "Deploy to Cloudflare Pages" step while the GitHub Pages step in the same job succeeded, leaving `lumina-8f0.pages.dev` briefly stale relative to `klefner.github.io/lumina/`. Resolved with a fresh push to `main` to re-run the whole job (neither `rerun_workflow_run` nor `workflow_dispatch` were available to the token used, 403). Single occurrence so far — not worth permanent dual-host verification unless it recurs. See the Non-Negotiable Distinctions entry above for why that same 403 shaped the 2026-08-16 itch.io auto-deploy revert.

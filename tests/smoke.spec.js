@@ -7435,6 +7435,70 @@ test('Beach: dolphins can appear anywhere in the water but never past the sand l
   expect(errors).toEqual([]);
 });
 
+// Review catch (Codex, PR #109): the newly-measured WATER_END_FRAC.day,
+// mapped through the SAME cover-fit/pan/zoom transform as horizonY, isn't
+// a fixed screen fraction -- on a sufficiently wide canvas (confirmed:
+// 3840x1080, pan phase ~0.736) that mapping can push it BELOW sandY, the
+// decorative sand-color strip painted afterward, which would then cover
+// roughly the lower half of a max-depth dolphin -- the exact "on the
+// sand" defect this whole fix exists to prevent, just approached from the
+// opposite direction (the real-photo measurement running PAST the
+// decorative strip, instead of the decorative strip being mistaken for
+// the real measurement). Fixed with a clamp (Math.min against sandY) where
+// waterEndY is computed. Sweeps day pan phases across several canvas
+// shapes, INCLUDING ultrawide, and hooks the real drawBeachCutout call
+// (not a reimplementation of the transform math) to confirm a max-depth
+// (yFrac 1) dolphin's actual anchor point never lands below sandY.
+test('Beach: a max-depth dolphin never anchors below the decorative sand strip, even on an ultrawide day canvas', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    const canvasShapes = [
+      { w: 420, h: 860 },   // narrow phone portrait
+      { w: 1920, h: 1080 }, // standard landscape
+      { w: 3840, h: 1080 }, // ultrawide -- the exact shape the review catch reported
+    ];
+    const violations = [];
+    let sampleCount = 0;
+
+    for (const shape of canvasShapes) {
+      canvas.width = shape.w; canvas.height = shape.h;
+      STATE.scene = 'beach';
+      STATE.beachVariant = 'day';
+      STATE.beachScene = generateBeachScene();
+      STATE.beachScene.dolphins = [{ xFrac: 0.5, yFrac: 1, direction: 1, speed: 0, bobPhase: 0, sizeFrac: BEACH_CONFIG.DOLPHIN_SIZE_FRAC.max }];
+      await new Promise((r) => setTimeout(r, 200));
+
+      const sandY = shape.h - BEACH_CONFIG.SAND_HEIGHT_FRAC * shape.h;
+      let captured = null;
+      const original = drawBeachCutout;
+      window.drawBeachCutout = (source, xCenter, groundY, targetHeight, ...rest) => {
+        if (source === 'dolphin') captured = groundY;
+        return original(source, xCenter, groundY, targetHeight, ...rest);
+      };
+
+      for (let frac = 0; frac < 1; frac += 0.02) {
+        STATE.beachScene.phase = Math.round(frac * BEACH_CONFIG.PAN_CYCLE_FRAMES);
+        captured = null;
+        drawBeachScene();
+        sampleCount++;
+        if (captured !== null && captured > sandY) {
+          violations.push({ shape: `${shape.w}x${shape.h}`, phase: frac, groundY: captured, sandY });
+        }
+      }
+      window.drawBeachCutout = original;
+    }
+
+    return { violations, sampleCount };
+  });
+
+  expect(result.sampleCount).toBeGreaterThan(100);
+  expect(result.violations, `dolphin anchored below sandY: ${JSON.stringify(result.violations)}`).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
 // Player report, screenshot: a dolphin rendered up near a shore palm's
 // crown height, reading as jumping higher than the tree. Letting dolphins
 // roam the full water depth (the test above) without also scaling their
@@ -7479,6 +7543,98 @@ test('Beach: a dolphin far from shore renders visibly smaller than one near shor
   expect(result.farSize, 'a dolphin at yFrac 0 (far from shore) must render smaller than its own nominal max size').toBeLessThan(result.nominalMaxSize);
   expect(result.nearSize, 'a dolphin at yFrac 1 (at the shore) renders at its full nominal size').toBeCloseTo(result.nominalMaxSize, 5);
   expect(result.farSize, 'the far dolphin must render meaningfully smaller than the near one, not just marginally').toBeLessThan(result.nearSize * 0.7);
+  expect(errors).toEqual([]);
+});
+
+// Generic, reusable across every *_FRAC constant that claims to mark a
+// real boundary in a source photo (HORIZON_FRAC, WATER_END_FRAC, and any
+// future one): does that fraction actually sit at a real brightness
+// transition in the photo, or does it just float somewhere inside one
+// uniform region? This is the exact bug class that shipped TWICE this
+// session for Beach's HORIZON_FRAC alone (night: a single-column scan
+// locked onto a star instead of the real horizon; day: 0.413 was never
+// actually verified at all and sat 60% of the way into open water,
+// player report/screenshot: the cruise ship rendering roughly halfway to
+// the beach) plus a third time for the never-previously-measured
+// WATER_END_FRAC (player report/screenshot: a dolphin rendering on real
+// photographed sand). All three were root-caused by loading the real
+// photo, averaging each row's brightness, and inspecting a rendered
+// reference line against a crop -- this test automates exactly that
+// verification instead of needing a screenshot to catch the next one.
+// Samples a window of rows just above and just below the claimed
+// boundary and asserts a real, sizable brightness difference between
+// them -- a boundary sitting in the middle of a uniform region (sky, or
+// deep water) would show almost no difference.
+test('Photo boundary fractions (HORIZON_FRAC, WATER_END_FRAC) sit at real brightness transitions, not floating mid-region', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    function rowStats(img, rowFrac) {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = 1;
+      const cx = c.getContext('2d');
+      const row = Math.max(0, Math.min(img.naturalHeight - 1, Math.round(rowFrac * img.naturalHeight)));
+      cx.drawImage(img, 0, -row);
+      const data = cx.getImageData(0, 0, c.width, 1).data;
+      let r = 0, g = 0, b = 0;
+      const n = data.length / 4;
+      for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i + 1]; b += data[i + 2]; }
+      return { brightness: (r + g + b) / (3 * n), blueMinusGreen: (b - g) / n };
+    }
+    function loadImage(src) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = src;
+      });
+    }
+
+    const dayImg = await loadImage('art/beach-day.jpg');
+    const nightImg = await loadImage('art/beach-night.jpg');
+    const safariDayImg = await loadImage('art/safari-day.jpg');
+    const margin = 0.01; // fraction of image height, sampled just off the boundary each side
+
+    const dayHorizonAbove = rowStats(dayImg, BEACH_CONFIG.HORIZON_FRAC.day - margin);
+    const dayHorizonBelow = rowStats(dayImg, BEACH_CONFIG.HORIZON_FRAC.day + margin);
+    const dayWaterEndAbove = rowStats(dayImg, BEACH_CONFIG.WATER_END_FRAC.day - margin);
+    const dayWaterEndBelow = rowStats(dayImg, BEACH_CONFIG.WATER_END_FRAC.day + margin);
+    const nightHorizonAbove = rowStats(nightImg, BEACH_CONFIG.HORIZON_FRAC.night - margin);
+    const nightHorizonBelow = rowStats(nightImg, BEACH_CONFIG.HORIZON_FRAC.night + margin);
+    const safariHorizonAbove = rowStats(safariDayImg, SAFARI_CONFIG.HORIZON_FRAC.day - margin);
+    const safariHorizonBelow = rowStats(safariDayImg, SAFARI_CONFIG.HORIZON_FRAC.day + margin);
+
+    return {
+      dayHorizonDrop: dayHorizonAbove.brightness - dayHorizonBelow.brightness, // sky brighter than water
+      dayWaterEndRise: dayWaterEndBelow.brightness - dayWaterEndAbove.brightness, // sand brighter than water
+      nightHorizonRise: nightHorizonBelow.brightness - nightHorizonAbove.brightness, // sand brighter than the dark starfield above it, verified visually (moonlit sand vs. near-black sky) -- NOT a drop like day's horizon, the opposite direction
+      // safari-day.jpg's sky-to-grass line is a HUE shift, not a brightness
+      // one (confirmed: raw brightness is nearly flat across the claimed
+      // boundary, ~153 to ~165, no usable jump there at all) -- blue sky
+      // reads blue-dominant (B-G positive), tan/green grass reads
+      // red/green-dominant (B-G sharply negative). This is why this whole
+      // category can't be a single generic brightness check forever; a
+      // future photo might need a different channel/metric too.
+      safariHorizonBlueGreenSwing: safariHorizonAbove.blueMinusGreen - safariHorizonBelow.blueMinusGreen,
+    };
+  });
+
+  // Thresholds calibrated against the actual measured jumps (day horizon:
+  // ~115-165 brightness units across the transition zone; day water-end:
+  // a real but gentler rise into the foam, ~15-30; night horizon: a
+  // subtler but still real dark-sky-to-lit-sand rise, ~30-40; Safari's
+  // day horizon: a B-G swing from about +23 to -86, well over 100) -- see
+  // this constant's own comment in game.js (Beach) or the measurement
+  // above (Safari) for the exact numbers a fresh measurement produced. A
+  // boundary sitting mid-region would show a difference near zero, not
+  // comfortably above these floors.
+  expect(result.dayHorizonDrop, 'HORIZON_FRAC.day should sit at a real sky-to-water brightness drop').toBeGreaterThan(50);
+  expect(result.dayWaterEndRise, 'WATER_END_FRAC.day should sit at a real water-to-sand brightness rise').toBeGreaterThan(5);
+  expect(result.nightHorizonRise, 'HORIZON_FRAC.night should sit at a real dark-sky-to-lit-sand brightness rise').toBeGreaterThan(5);
+  expect(result.safariHorizonBlueGreenSwing, 'SAFARI_CONFIG.HORIZON_FRAC.day should sit at a real blue-sky-to-tan-grass hue swing').toBeGreaterThan(80);
   expect(errors).toEqual([]);
 });
 
