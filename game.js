@@ -3945,12 +3945,18 @@ const SCENE_AMBIENT_CONFIG = {
   // own beach-whale.mp3 event layer are two separately-randomized systems
   // too (see BEACH_CONFIG.WHALE_SIZE_FRAC's own comment), the established
   // pattern for a visual "sighting" and its matching audio "event" in this
-  // codebase.
+  // codebase. Gap tightened from 20-48s to 8-22s alongside
+  // DESERT_CONFIG.LIGHTNING_MIN/MAX_GAP_FRAMES's own tightening (player
+  // correction, 2026-08-19: an active storm is a busy, frequent backdrop,
+  // not a rare sighting) -- still noticeably sparser than the visual
+  // flashes (real distant thunder is often below the audible threshold
+  // even when the flash itself is visible), so this isn't a 1:1 sync,
+  // just a proportionally busier cadence to match.
   desert: {
     order: ['wind', 'thunder'],
     sounds: {
       wind: { file: 'desert-wind.mp3', gain: 0.42, isEvent: false },
-      thunder: { file: 'desert-thunder.mp3', gain: 0.4, isEvent: true, minGapSec: 20, maxGapSec: 48 },
+      thunder: { file: 'desert-thunder.mp3', gain: 0.4, isEvent: true, minGapSec: 8, maxGapSec: 22 },
     },
   },
 };
@@ -10185,12 +10191,30 @@ const DESERT_CONFIG = {
   TUMBLEWEED_SIZE_FRAC: { min: 0.035, max: 0.06 },
   ROADRUNNER_SIZE_FRAC: 0.065,
   FLORA_COUNT: { min: 3, max: 5 },
-  // Frame gap between lightning flashes -- ~6-20s at 60fps, an occasional
-  // sighting like Beach's whale, not constant flicker (the request is a
-  // storm "way off in the distance," meant to be a rare, subtle thing to
-  // notice, not a strobing light show next to gameplay dots).
-  LIGHTNING_MIN_GAP_FRAMES: 360,
-  LIGHTNING_MAX_GAP_FRAMES: 1200,
+  // Frame gap between lightning flashes -- ~1.5-6.5s at 60fps. Player
+  // correction (2026-08-19): the first version of this storm used Beach's
+  // whale-sighting cadence (6-20s, a rare occasional thing to notice) --
+  // wrong model entirely. A whale surfacing once in a while IS a rare
+  // sighting; an active thunderstorm is not a rare event, it's a
+  // continuous, busy backdrop of frequent activity that only reads as
+  // "storm" because of how OFTEN it flickers, not despite it. Distance is
+  // what keeps it from competing with the dots (small, quiet, subtle per
+  // flash -- see LIGHTNING_KIND_WEIGHTS/drawDesertScene), not rarity.
+  LIGHTNING_MIN_GAP_FRAMES: 90,
+  LIGHTNING_MAX_GAP_FRAMES: 400,
+  // Three distinct real storm phenomena, not one bolt shape repeated --
+  // player's own description named all three separately ("lightning
+  // flashes in the storm clouds," "occasional lightning streaked across
+  // the sky," "lightning strikes to the ground"): 'cloud' (a diffuse
+  // in-cloud glow, no visible bolt -- the most common real event, most
+  // lightning never leaves the cloud layer at all), 'streak' (a jagged
+  // bolt forking between two points roughly across the sky, cloud-to-
+  // cloud), 'strike' (a mostly-vertical bolt reaching down to the real
+  // ground line -- see drawDesertScene's own comment on why THIS is the
+  // one kind allowed to touch groundY). Weights favor 'cloud' for the
+  // same reason real storms do: most flashes are internal cloud
+  // illumination, not a visible full bolt.
+  LIGHTNING_KIND_WEIGHTS: { cloud: 0.45, streak: 0.3, strike: 0.25 },
 };
 const DESERT_IMAGE = Object.assign(new Image(), { src: DESERT_CONFIG.image });
 
@@ -10249,7 +10273,9 @@ function generateDesertScene() {
   const lightning = {
     flashLife: 0,
     maxFlashLife: 1,
+    kind: 'cloud',
     boltXFrac: 0.5,
+    boltXFrac2: 0.5,
     boltDepthFrac: 0.5,
     boltSeed: 0,
     nextFlashFrame: phase + cfg.LIGHTNING_MIN_GAP_FRAMES + Math.floor(Math.random() * (cfg.LIGHTNING_MAX_GAP_FRAMES - cfg.LIGHTNING_MIN_GAP_FRAMES)),
@@ -10301,9 +10327,22 @@ function updateDesertScene() {
   const lightning = scene.lightning;
   if (lightning.flashLife > 0) lightning.flashLife--;
   if (scene.phase >= lightning.nextFlashFrame) {
-    lightning.maxFlashLife = 10 + Math.floor(Math.random() * 6);
+    // Weighted pick across LIGHTNING_KIND_WEIGHTS -- see that constant's
+    // own comment for why 'cloud' is the most common of the three.
+    const roll = Math.random();
+    const w = cfg.LIGHTNING_KIND_WEIGHTS;
+    lightning.kind = roll < w.cloud ? 'cloud' : roll < w.cloud + w.streak ? 'streak' : 'strike';
+    // In-cloud glows linger a little longer than a hard bolt (a real
+    // cloud-flash reads as a slow-fading internal glow, not a snap) --
+    // everything else uses the same short flicker window.
+    lightning.maxFlashLife = lightning.kind === 'cloud' ? (16 + Math.floor(Math.random() * 8)) : (10 + Math.floor(Math.random() * 6));
     lightning.flashLife = lightning.maxFlashLife;
     lightning.boltXFrac = 0.1 + Math.random() * 0.8;
+    // Only 'streak' uses this (its second endpoint, well clear of either
+    // canvas edge so the whole visible span stays on-screen) -- harmless
+    // for the other two kinds, which never read it.
+    const spread = 0.12 + Math.random() * 0.18;
+    lightning.boltXFrac2 = Math.min(0.95, Math.max(0.05, lightning.boltXFrac + (Math.random() < 0.5 ? -spread : spread)));
     lightning.boltDepthFrac = Math.random();
     lightning.boltSeed = Math.random() * 1000;
     lightning.nextFlashFrame = scene.phase + cfg.LIGHTNING_MIN_GAP_FRAMES + Math.floor(Math.random() * (cfg.LIGHTNING_MAX_GAP_FRAMES - cfg.LIGHTNING_MIN_GAP_FRAMES));
@@ -10422,63 +10461,150 @@ function drawDesertScene() {
   const groundY = -panY + cfg.GROUND_FRAC * drawH;
   const skyTopY = h * 0.05;
 
-  // Distant lightning: a brief, subtle forked bolt plus a soft whole-sky
-  // brightness flash, confined to the sky/mountain band strictly ABOVE
-  // groundY (never drawn over the real photographed ground, and never
-  // touching it -- a strike "way off in the distance," per the request,
-  // reads as suspended in the far sky, not a nearby ground strike). Both
-  // the bolt geometry and the flash gradient are bounded by skyTopY and
-  // groundY, both of which are themselves clamped above (skyTopY is a
-  // fixed 5% margin; groundY is held within the 55%-97% band by the
-  // panY clamp above), so this stays correctly contained across the full
-  // pan/zoom/canvas-shape parameter space, the same requirement Beach's
-  // water-region elements were held to (see WATER_END_FRAC's own comment
-  // on the ultrawide clamp that fixed a real regression there).
+  // Distant storm: three real phenomena the player specifically called
+  // out by name (2026-08-19 correction to the first version, which only
+  // drew one bolt shape) -- 'cloud' (a diffuse in-cloud glow, no visible
+  // bolt), 'streak' (a jagged bolt forking roughly across the sky,
+  // cloud-to-cloud), 'strike' (a mostly-vertical bolt reaching down to
+  // the real ground line). All three stay confined to the sky/mountain
+  // band strictly at-or-above groundY -- 'strike' is the one kind
+  // deliberately allowed to touch groundY itself (a real distant strike
+  // DOES visually connect to the terrain it hits, at the horizon/
+  // mountain line; the other two never reach that low), but none of the
+  // three ever cross below groundY into the real photographed ground the
+  // flora/fauna stand on, and groundY is itself held within the 55%-97%
+  // screen-fraction band by the panY clamp above -- same containment
+  // discipline as Beach's water-region elements (see WATER_END_FRAC's own
+  // comment on the ultrawide clamp that fixed a real regression there).
   const lightning = scene.lightning;
   if (lightning.flashLife > 0) {
     // A quick double-pulse flicker rather than one flat linear fade --
-    // more convincing at the low opacity a genuinely distant strike should
+    // more convincing at the low opacity a genuinely distant flash should
     // read at.
     const flicker = 0.55 + 0.45 * Math.sin((lightning.maxFlashLife - lightning.flashLife) * 2.6);
     const alpha = Math.min(1, (lightning.flashLife / lightning.maxFlashLife) * flicker);
+    const skyBandH = groundY - skyTopY;
     const boltX = lightning.boltXFrac * w;
-    const boltTopY = skyTopY + (groundY - skyTopY) * 0.04;
-    const boltBottomY = skyTopY + (groundY - skyTopY) * (0.3 + lightning.boltDepthFrac * 0.4);
+
+    function drawJaggedBolt(x1, y1, x2, y2, seed, wobbleAmp) {
+      const segments = 6;
+      // Wobble applied perpendicular to the bolt's own direction so it
+      // reads as jagged along ANY bolt angle, not just a vertical one
+      // (streak's endpoints can be mostly horizontal).
+      const dx = x2 - x1, dy = y2 - y1;
+      const len = Math.hypot(dx, dy) || 1;
+      const perpX = -dy / len, perpY = dx / len;
+      const points = [[x1, y1]];
+      for (let i = 1; i <= segments; i++) {
+        const t2 = i / segments;
+        const baseX = x1 + dx * t2;
+        const baseY = y1 + dy * t2;
+        // Two mismatched frequencies (not one clean sine) so the zigzag
+        // reads as a jagged real bolt rather than a smooth wavy scratch --
+        // a plain low-amplitude single-sine wobble looked like a thin
+        // straight contrail in an actual render (visually confirmed, not
+        // just assumed -- see this section's own history for why "looks
+        // right" always means a real rendered check, not a read of the
+        // formula).
+        const wobble = (Math.sin(seed + i * 13.7) * 0.7 + Math.sin(seed * 2.3 + i * 5.1) * 0.3) * wobbleAmp;
+        points.push([baseX + perpX * wobble, baseY + perpY * wobble]);
+      }
+      ctx.beginPath();
+      ctx.moveTo(points[0][0], points[0][1]);
+      for (const [px, py] of points) ctx.lineTo(px, py);
+      ctx.stroke();
+      // A single short forked branch partway down, the one clear visual
+      // cue (alongside the zigzag itself) that this is a bolt and not a
+      // stray line -- real strikes fork, a smooth curve never does.
+      const forkFrom = points[Math.floor(segments / 2)];
+      const forkAngle = Math.atan2(dy, dx) + Math.PI / 2.3 + ((seed % 1) * 0.6 - 0.3);
+      const forkLen = len / segments * 1.1;
+      ctx.beginPath();
+      ctx.moveTo(forkFrom[0], forkFrom[1]);
+      ctx.lineTo(forkFrom[0] + Math.cos(forkAngle) * forkLen, forkFrom[1] + Math.sin(forkAngle) * forkLen);
+      ctx.stroke();
+    }
+
     ctx.save();
     ctx.globalAlpha = alpha;
     ctx.strokeStyle = 'rgba(255, 250, 232, 0.85)';
     ctx.lineWidth = 1.5;
-    const segments = 6;
-    // Two mismatched frequencies (not one clean sine) so the zigzag reads
-    // as a jagged real bolt rather than a smooth wavy scratch -- a plain
-    // low-amplitude single-sine wobble looked like a thin straight
-    // contrail in an actual render (visually confirmed, not just assumed
-    // -- see this section's own history for why "looks right" always
-    // means a real rendered check, not a read of the formula).
-    const points = [[boltX, boltTopY]];
-    for (let i = 1; i <= segments; i++) {
-      const segY = boltTopY + (boltBottomY - boltTopY) * (i / segments);
-      const wobble = (Math.sin(lightning.boltSeed + i * 13.7) * 0.7 + Math.sin(lightning.boltSeed * 2.3 + i * 5.1) * 0.3) * w * 0.05;
-      points.push([boltX + wobble, segY]);
+    if (lightning.kind === 'streak') {
+      // Roughly horizontal, cloud-to-cloud -- stays in the upper-to-mid
+      // sky band, well clear of groundY (a streak between distant
+      // thunderheads never reaches down to the terrain).
+      const y1 = skyTopY + skyBandH * (0.12 + lightning.boltDepthFrac * 0.22);
+      const y2 = y1 + skyBandH * (0.06 + (1 - lightning.boltDepthFrac) * 0.1);
+      drawJaggedBolt(boltX, y1, lightning.boltXFrac2 * w, y2, lightning.boltSeed, w * 0.035);
+    } else if (lightning.kind === 'strike') {
+      // Mostly vertical, reaching down to groundY itself -- the one kind
+      // that visually connects to the terrain, always at the real ground
+      // line (the base of the distant mountains), never closer. Thicker
+      // stroke and a wider wobble than 'streak' (a ground contact reads as
+      // more forceful than a cloud-to-cloud crossing) -- the first version
+      // used the same 1.5px/narrow-wobble treatment as everything else and
+      // was nearly invisible against the photo's own busy terrain texture
+      // at the point it reached down to (player screenshot/report, this
+      // round): a thin near-straight hairline, no visible fork, an
+      // impact glow too small and too faint to read against bright
+      // sunlit ground. Boosted until it visibly reads at production size.
+      ctx.lineWidth = 2.5;
+      const topY = skyTopY + skyBandH * 0.05;
+      const bottomY = groundY - skyBandH * 0.015;
+      drawJaggedBolt(boltX, topY, boltX + (lightning.boltDepthFrac - 0.5) * w * 0.1, bottomY, lightning.boltSeed, w * 0.07);
+      // A soft, brief glow right at the contact point -- a real distant
+      // strike visibly lights up the terrain it hits for an instant.
+      const glowR = w * 0.1;
+      const impactGlow = ctx.createRadialGradient(boltX, bottomY, 0, boltX, bottomY, glowR);
+      impactGlow.addColorStop(0, 'rgba(255, 250, 225, 0.75)');
+      impactGlow.addColorStop(0.5, 'rgba(255, 248, 220, 0.35)');
+      impactGlow.addColorStop(1, 'rgba(255, 248, 220, 0)');
+      ctx.fillStyle = impactGlow;
+      ctx.beginPath();
+      ctx.arc(boltX, bottomY, glowR, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      // 'cloud' -- no visible bolt at all, just diffuse internal glow(s)
+      // within the cloud layer (real lightning's most common form: most
+      // strikes never leave the clouds). Two blobs, not one, for a less
+      // obviously-uniform, more organic in-cloud-lit look.
+      const blobY1 = skyTopY + skyBandH * (0.15 + lightning.boltDepthFrac * 0.3);
+      // Player report (screenshot, this round): the first version of this
+      // blob (0.09-0.14 * w radius, 0.55 peak alpha) measured as a real,
+      // present pixel difference but was visually a non-event against the
+      // photo's own already-bright, already-textured cloud cover -- too
+      // small and too faint to actually read as "a flash lit up the
+      // clouds." Widened and brightened until it visibly wins against that
+      // background at production size, confirmed by a real render, not
+      // just a bigger number.
+      const blobR1 = w * (0.18 + lightning.boltDepthFrac * 0.08);
+      const glow1 = ctx.createRadialGradient(boltX, blobY1, 0, boltX, blobY1, blobR1);
+      glow1.addColorStop(0, 'rgba(255, 252, 240, 0.85)');
+      glow1.addColorStop(0.4, 'rgba(255, 250, 235, 0.4)');
+      glow1.addColorStop(1, 'rgba(255, 250, 235, 0)');
+      ctx.fillStyle = glow1;
+      ctx.beginPath();
+      ctx.arc(boltX, blobY1, blobR1, 0, Math.PI * 2);
+      ctx.fill();
+      const secondaryX = lightning.boltXFrac2 * w;
+      const blobY2 = skyTopY + skyBandH * (0.1 + (1 - lightning.boltDepthFrac) * 0.25);
+      const blobR2 = blobR1 * 0.65;
+      const glow2 = ctx.createRadialGradient(secondaryX, blobY2, 0, secondaryX, blobY2, blobR2);
+      glow2.addColorStop(0, 'rgba(255, 250, 235, 0.55)');
+      glow2.addColorStop(1, 'rgba(255, 250, 235, 0)');
+      ctx.fillStyle = glow2;
+      ctx.beginPath();
+      ctx.arc(secondaryX, blobY2, blobR2, 0, Math.PI * 2);
+      ctx.fill();
     }
-    ctx.beginPath();
-    ctx.moveTo(points[0][0], points[0][1]);
-    for (const [px, py] of points) ctx.lineTo(px, py);
-    ctx.stroke();
-    // A single short forked branch partway down, the one clear visual cue
-    // (alongside the zigzag itself) that this is a bolt and not a stray
-    // line -- real strikes fork, a smooth curve never does.
-    const forkFrom = points[Math.floor(segments / 2)];
-    const forkAngle = (lightning.boltSeed % 1) * 0.6 - 0.3 + Math.PI / 2.3;
-    const forkLen = (boltBottomY - boltTopY) / segments * 1.1;
-    ctx.beginPath();
-    ctx.moveTo(forkFrom[0], forkFrom[1]);
-    ctx.lineTo(forkFrom[0] + Math.cos(forkAngle) * forkLen, forkFrom[1] + Math.sin(forkAngle) * forkLen);
-    ctx.stroke();
     ctx.restore();
 
+    // A soft, whole-sky brightness wash on top of every kind -- real
+    // nearby lightning (even fully internal to a cloud) dimly brightens
+    // the whole visible sky for an instant, not just the immediate flash
+    // point.
     const skyFlash = ctx.createLinearGradient(0, skyTopY, 0, groundY);
-    skyFlash.addColorStop(0, `rgba(255, 250, 235, ${(alpha * 0.22).toFixed(3)})`);
+    skyFlash.addColorStop(0, `rgba(255, 250, 235, ${(alpha * 0.18).toFixed(3)})`);
     skyFlash.addColorStop(1, 'rgba(255, 250, 235, 0)');
     ctx.fillStyle = skyFlash;
     ctx.fillRect(0, skyTopY, w, Math.max(0, groundY - skyTopY));

@@ -478,11 +478,25 @@ being written into game.js -- not just eyeballed, the exact mistake that
 produced `BEACH_CONFIG.HORIZON_FRAC.day`'s original wrong value earlier
 this project (see that constant's own comment).
 
-The lightning bolt and its soft sky-flash (`drawDesertScene`, game.js)
-are drawn procedurally, not photographed -- confined to the screen-space
-band strictly above `GROUND_FRAC`'s mapped position, positioned and sized
-to read as "way off in the distance" per the request (a thin, occasional,
-subtle flicker, not a dramatic close strike).
+The storm (`drawDesertScene`, game.js) is drawn procedurally, not
+photographed -- confined to the screen-space band at-or-above
+`GROUND_FRAC`'s mapped position. Player correction (2026-08-19,
+screenshot): the first version drew one bolt shape at a rare cadence and
+read as too sparse/uniform to feel like an actual storm -- "the storm
+needs to be stormy... rolling thunder, lightning flashes in the storm
+clouds, occasional lightning streaked across the sky and lightning
+strikes to the ground (again, all in the distance)." Rebuilt as three
+distinct real phenomena (`DESERT_CONFIG.LIGHTNING_KIND_WEIGHTS`), picked
+at random each trigger, all still "in the distance" per the request (the
+player is never IN the storm) but now at a genuinely active cadence:
+'cloud' (a diffuse in-cloud glow, no visible bolt -- the most common real
+event, weighted highest since most lightning never leaves the cloud
+layer), 'streak' (a jagged, forked bolt crossing roughly horizontally
+between two points in the sky, cloud-to-cloud), 'strike' (a jagged,
+mostly-vertical bolt reaching down to the real ground line itself, with a
+brief soft impact glow where it lands -- the one kind deliberately
+allowed to touch `GROUND_FRAC`'s mapped line, since a real distant strike
+does visibly connect to the terrain it hits at the horizon).
 
 ## Desert foreground cutouts (art/desert-cutouts/*.webp)
 

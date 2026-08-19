@@ -8091,6 +8091,146 @@ test('the Desert boat-equivalents (tumbleweed) wrap to the opposite edge instead
   expect(errors).toEqual([]);
 });
 
+// Player correction (2026-08-19, screenshot of the first version): "the
+// storm needs to be stormy -- rolling thunder, lightning flashes in the
+// storm clouds, occasional lightning streaked across the sky and
+// lightning strikes to the ground (again, all in the distance)." The
+// first version only ever drew one bolt shape at a rare, whale-sighting
+// cadence -- this covers all three named phenomena (DESERT_CONFIG.
+// LIGHTNING_KIND_WEIGHTS' 'cloud'/'streak'/'strike') draw without error,
+// and specifically that 'strike' -- the one kind deliberately allowed to
+// touch the real ground line -- never actually crosses PAST it, across
+// the same pan/canvas-shape sweep the general ground-containment test
+// above uses.
+test('Desert storm draws all three lightning kinds (cloud/streak/strike) without error', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await page.evaluate(async () => {
+    canvas.width = 420; canvas.height = 860;
+    STATE.scene = 'desert';
+    STATE.desertScene = generateDesertScene();
+    await new Promise((r) => setTimeout(r, 200));
+    for (const kind of ['cloud', 'streak', 'strike']) {
+      const l = STATE.desertScene.lightning;
+      l.kind = kind;
+      l.flashLife = l.maxFlashLife = 15;
+      l.boltXFrac = 0.2 + Math.random() * 0.6;
+      l.boltXFrac2 = 0.2 + Math.random() * 0.6;
+      l.boltDepthFrac = Math.random();
+      l.boltSeed = Math.random() * 1000;
+      drawDesertScene();
+    }
+  });
+
+  expect(errors).toEqual([]);
+});
+
+// Deterministic sanity check on the weighted kind-pick itself -- a typo'd
+// weight (the three don't sum to 1) wouldn't crash anything, just quietly
+// skew the storm's mix (or make one kind unreachable) in a way nothing
+// else here would catch.
+test('Desert: LIGHTNING_KIND_WEIGHTS sums to 1', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const sum = await page.evaluate(() => {
+    const w = DESERT_CONFIG.LIGHTNING_KIND_WEIGHTS;
+    return w.cloud + w.streak + w.strike;
+  });
+
+  expect(sum).toBeCloseTo(1, 5);
+  expect(errors).toEqual([]);
+});
+
+// The 'strike' kind is the one deliberately allowed to touch the real
+// ground line (see drawDesertScene's own comment) -- confirms it actually
+// gets picked across enough random triggers (not an unreachable dead
+// weight) and, across the same pan-phase/canvas-shape sweep the general
+// ground-containment test above uses, never renders past groundY: hooks
+// the real drawDesertCutout call each frame to read the actual groundY
+// that frame produced (not a recomputed value), same technique as the
+// general containment test.
+test('Desert lightning "strike" is actually reachable and stays correctly contained across the full pan cycle, including an ultrawide canvas', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 420; canvas.height = 860;
+    STATE.scene = 'desert';
+    STATE.desertScene = generateDesertScene();
+    await new Promise((r) => setTimeout(r, 200));
+    // Let phase advance NATURALLY via repeated updateDesertScene() calls
+    // (each increments scene.phase by 1 itself) rather than overwriting
+    // it directly -- nextFlashFrame was set relative to this scene's own
+    // (possibly large, up to PAN_CYCLE_FRAMES) starting phase, so forcing
+    // phase back down to a small loop counter could keep it perpetually
+    // BEFORE nextFlashFrame and never trigger a single flash at all.
+    // LIGHTNING_MAX_GAP_FRAMES is 400 -- 20000 frames covers roughly 50
+    // average-length trigger cycles, so even 'strike' at a 25% pick
+    // weight has a (1-0.25)^50, effectively-zero chance of never once
+    // appearing by chance; a real failure here means the weight is
+    // actually unreachable, not an unlucky sample.
+    let strikeSeen = false;
+    for (let i = 0; i < 20000 && !strikeSeen; i++) {
+      updateDesertScene();
+      if (STATE.desertScene.lightning.flashLife > 0 && STATE.desertScene.lightning.kind === 'strike') strikeSeen = true;
+    }
+
+    const canvasShapes = [
+      { w: 420, h: 860 },
+      { w: 1920, h: 1080 },
+      { w: 3840, h: 1080 },
+    ];
+    const violations = [];
+    let sampleCount = 0;
+    for (const shape of canvasShapes) {
+      canvas.width = shape.w; canvas.height = shape.h;
+      STATE.desertScene = generateDesertScene();
+      STATE.desertScene.lightning.kind = 'strike';
+      STATE.desertScene.lightning.flashLife = STATE.desertScene.lightning.maxFlashLife = 15;
+      STATE.desertScene.flora = [{ source: 'saguaro', xFrac: 0.5, yFrac: 0, baseHeightFrac: DESERT_CONFIG.SAGUARO_HEIGHT_FRAC.max, direction: 1 }];
+      await new Promise((r) => setTimeout(r, 100));
+
+      let capturedGroundY = null;
+      const originalCutout = drawDesertCutout;
+      window.drawDesertCutout = (source, xCenter, groundY, ...rest) => {
+        if (source === 'saguaro') capturedGroundY = groundY;
+        return originalCutout(source, xCenter, groundY, ...rest);
+      };
+
+      for (let frac = 0; frac < 1; frac += 0.05) {
+        STATE.desertScene.phase = Math.round(frac * DESERT_CONFIG.PAN_CYCLE_FRAMES);
+        STATE.desertScene.lightning.boltDepthFrac = Math.random();
+        capturedGroundY = null;
+        drawDesertScene();
+        sampleCount++;
+        // groundY itself must stay on-screen -- the same requirement the
+        // general ground-containment test enforces -- which is what
+        // guarantees 'strike'`s own groundY-relative bottomY formula
+        // (groundY - skyBandH*0.015, always strictly less than groundY
+        // by construction whenever skyBandH > 0) stays meaningful rather
+        // than degenerating on a canvas shape that pushes groundY
+        // somewhere invalid.
+        if (capturedGroundY !== null && (capturedGroundY < 0 || capturedGroundY > shape.h)) {
+          violations.push({ shape: `${shape.w}x${shape.h}`, phase: frac, groundY: capturedGroundY });
+        }
+      }
+      window.drawDesertCutout = originalCutout;
+    }
+
+    return { strikeSeen, violations, sampleCount };
+  });
+
+  expect(result.strikeSeen, "'strike' never got picked across 300 update ticks -- LIGHTNING_KIND_WEIGHTS.strike may be unreachable").toBe(true);
+  expect(result.sampleCount).toBeGreaterThan(50);
+  expect(result.violations, `groundY left the visible canvas while a strike was active: ${JSON.stringify(result.violations)}`).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
 test('the Birthday Party scene generates and draws without error', async ({ page }) => {
   const errors = trackErrors(page);
   await page.goto('/index.html');
