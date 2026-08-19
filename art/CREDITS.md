@@ -287,8 +287,46 @@ attribution legally required, credited anyway):
 - `cruise-ship.webp` — cropped from "White Cruise Ship on Sea" (the
   *Marella Dream*, docked), via
   [Pexels](https://www.pexels.com/photo/white-cruise-ship-on-sea-13486900/).
-  The dock/ropes visible in the original source photo were cleanly
-  removed by `rembg` along with the sky -- no manual masking needed.
+
+  Originally described here as "the dock/ropes visible in the original
+  source photo were cleanly removed by `rembg` along with the sky -- no
+  manual masking needed." That claim was wrong and had never actually
+  been checked against the asset -- `rembg` correctly removed the sky
+  (a different color/texture it could segment against) but the dock/pier
+  is physically touching the hull in the source photo and reads as one
+  continuous foreground object; `rembg` kept all of it, including the
+  raised concrete pier deck, mooring bollards, and a receding line of
+  dockside lamp posts. Because `drawBeachCutout` anchors the image's
+  bottom edge at the horizon, the ship rendered with the FULL HEIGHT of
+  that pier structure between its hull and the waterline -- reading as a
+  cruise ship floating well above the water (player report, screenshot).
+  This passed the Required Method's category-1 "contact" test the whole
+  time, because that test only checks whether real opaque content exists
+  at the bottom edge, not whether that content is the semantically
+  correct part of the object -- a dock IS real, non-transparent content,
+  just not the ship's own hull. See SOURCE_OF_TRUTH.md's Required Method
+  for the note this added to category 1.
+
+  Fixed by cropping the pier out entirely: the source photo shows the
+  pier as a continuous structure running the full width in front of/
+  below the hull, with no point where the hull's own true waterline is
+  visible (the pier physically occludes it everywhere, typical of a
+  dockside photo) -- so there is no pixel-perfect "hull meets water" line
+  available in this photo at all. Cropped at the highest point that
+  reliably clears the pier across the hull's full width (measured
+  directly: the pier's walkway surface sits close to a consistent height
+  across most of the ship, confirmed by rendering horizontal reference
+  lines over the asset and inspecting the crop, the same technique used
+  throughout this library), accepting that the new bottom edge is a flat
+  cut through the lower hull/deck level rather than a true draft line --
+  the ship renders small and distant at every production size, where this
+  reads as a normal ship silhouette, not a floating one. Re-tightened to
+  the new alpha bbox afterward (904x734, down from the original
+  1200x931). Verified by rendering at full production `sizeFrac`
+  (`CRUISE_SHIP_SIZE_FRAC.max`) across multiple pan phases and both mirror
+  directions, inspecting each result -- the ship's hull now sits directly
+  on the rendered horizon in every case, no gap. (Re-tightened alpha bbox:
+  1096x734, down from the original 1200x931.)
 - `palm-overhang.webp` (REMOVED 2026-08-18, kept here only as the record
   of why) — cropped from "View of a Palm Tree on the Beach," via
   [Pexels](https://www.pexels.com/photo/view-of-a-palm-tree-on-the-beach-26551139/).
