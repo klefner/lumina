@@ -317,6 +317,41 @@ pass produced silent output on this project's ffmpeg build, since the
 filter read `afade`'s start time against the untrimmed file's original
 timestamps rather than the seeked clip's own).
 
+## Desert ambience (sounds/ambient/desert-*.mp3)
+
+Player request (2026-08-19): "a desert scene with a thunder and
+lightning storm way off in the distance." Two real field recordings (not
+synthesized), matching this project's established real-over-synthetic
+preference for ambience, both from the same USC Cinema/Sunset Editorial
+Collection archive already used for Halloween's creak/Forest's owl/
+Christmas's wind/Safari's own prairie wind (via
+[Internet Archive](https://archive.org/), CC0 1.0 Universal, no
+attribution legally required, credited anyway):
+
+- `desert-wind.mp3` — "Gusty desert wind," from
+  [SSE Library: WIND](https://archive.org/details/SSE_Library_WIND) --
+  the same collection's "desert wind" option Safari's own wind entry
+  above explicitly passed over in favor of prairie wind (a savanna is
+  grassland, not sand); Desert is exactly the scene that option was
+  always the right fit for. Downmixed to mono, resampled to 44.1kHz, 1s
+  fade in/out; otherwise unedited.
+- `desert-thunder.mp3` — "Thunder; long distant rolling sound," from
+  [SSE Library: WEATHER](https://archive.org/details/SSE_Library_WEATHER)
+  -- picked specifically for already being a distant ROLL, not a sharp
+  nearby crack, matching "way off in the distance" directly without
+  needing extra effects processing to sell the distance. Downmixed to
+  mono, resampled to 44.1kHz, short fade in/out; otherwise unedited.
+  `SCENE_AMBIENT_CONFIG.desert`'s own gain (0.4) sits well under this
+  recording's raw measured loudness (mean -15.4dB/peak -2.7dB, against
+  `desert-wind.mp3`'s -19.8dB/-3.5dB and `beach-wind.mp3`'s comparable
+  -19.9dB/-6.0dB) specifically so it reads as a faraway rumble under the
+  wind bed rather than a crack on top of it -- the same
+  distance-reads-as-restraint choice the visual lightning flash
+  (`drawDesertScene`, game.js) makes independently.
+
+Both trimmed/faded with ffmpeg, same two-pass technique as Safari's own
+recordings above.
+
 ## The 'savanna' genre family's kalimba voice (interactive gameplay music)
 
 Distinct from the two entries above -- those are the Safari scene's
