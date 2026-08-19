@@ -79,6 +79,19 @@ photos were rejected after cutout testing revealed they were tight
 crops of a single bare branch, not a full tree, despite reading as
 plausible from their thumbnails.
 
+**Depth-order fix (2026-08-19, player report/screenshot):** animals
+rendered on top of trees they should read as behind, and trees rendered
+nested underneath other trees. These cutout files themselves were never
+the problem — `drawSafariScene` was: every tree/animal used to bottom-
+anchor at the exact same `SAFARI_CONFIG.HORIZON_FRAC` line (no depth
+variance at all), then drew as two separate "all trees, then all
+animals" loops, so draw order came down to `Math.random()`-driven array
+generation, not actual on-screen depth. Fixed by giving both a real
+`yFrac` and merging them into one list sorted by it every frame — see
+`SOURCE_OF_TRUTH.md`'s Known Open Risk Areas for the full account
+(including the other Required Method categories re-audited in the same
+pass, not just this one).
+
 ## Forest scene (forest-night.jpg)
 
 Player request (2026-08-17): extend Safari's real-photo treatment to
@@ -448,3 +461,111 @@ up and brightened toward the high end reads as a smaller, quicker chop
 repeat, the same way a pitch-shifted repeat already reads as a
 different individual animal call for wildlife/owl/shorebirds elsewhere
 in this file.
+
+## Desert scene (desert-day.jpg)
+
+Player request (2026-08-19): "a desert scene with a thunder and
+lightning storm way off in the distance," desert-specific flora/fauna,
+randomly placed, framed explicitly as a single-attempt test of
+SOURCE_OF_TRUTH.md's Required Method (see that file, and this file's own
+"Desert foreground cutouts" section below, for how each category was
+applied proactively rather than after a reported failure). A real
+photograph, single variant (no day/night split -- see `DESERT_CONFIG` in
+game.js for why):
+
+- `desert-day.jpg` — "Gray Sky over Mountains on Desert," by Mahdi
+  Bafande, via
+  [Pexels](https://www.pexels.com/photo/gray-sky-over-mountains-on-desert-14755105/),
+  free to use for commercial purposes, no attribution legally required,
+  credited anyway. Chosen specifically for its dramatic, storm-capable
+  overcast sky over open desert mountains with a flat scrubland
+  foreground -- exactly what the lightning effect and ground-anchored
+  flora/fauna both need. Resized from the original to 1266×1900 and
+  re-encoded for web delivery; otherwise unedited.
+
+`DESERT_CONFIG.GROUND_FRAC` (0.88) marks where the photo's own flat
+scrubland foreground actually starts, measured with a full-row
+brightness scan (a real, verified jump from ~161 to ~191 across the
+transition) and confirmed against a visual reference-line overlay before
+being written into game.js -- not just eyeballed, the exact mistake that
+produced `BEACH_CONFIG.HORIZON_FRAC.day`'s original wrong value earlier
+this project (see that constant's own comment).
+
+The storm (`drawDesertScene`, game.js) is drawn procedurally, not
+photographed -- confined to the screen-space band at-or-above
+`GROUND_FRAC`'s mapped position. Player correction (2026-08-19,
+screenshot): the first version drew one bolt shape at a rare cadence and
+read as too sparse/uniform to feel like an actual storm -- "the storm
+needs to be stormy... rolling thunder, lightning flashes in the storm
+clouds, occasional lightning streaked across the sky and lightning
+strikes to the ground (again, all in the distance)." Rebuilt as three
+distinct real phenomena (`DESERT_CONFIG.LIGHTNING_KIND_WEIGHTS`), picked
+at random each trigger, all still "in the distance" per the request (the
+player is never IN the storm) but now at a genuinely active cadence:
+'cloud' (a diffuse in-cloud glow, no visible bolt -- the most common real
+event, weighted highest since most lightning never leaves the cloud
+layer), 'streak' (a jagged, forked bolt crossing roughly horizontally
+between two points in the sky, cloud-to-cloud), 'strike' (a jagged,
+mostly-vertical bolt reaching down to the real ground line itself, with a
+brief soft impact glow where it lands -- the one kind deliberately
+allowed to touch `GROUND_FRAC`'s mapped line, since a real distant strike
+does visibly connect to the terrain it hits at the horizon).
+
+## Desert foreground cutouts (art/desert-cutouts/*.webp)
+
+Same real-photo-cutout technique as Safari/Beach's own libraries: two
+desert flora species (saguaro cactus, Joshua tree) and two fauna/debris
+elements (tumbleweed, roadrunner), each a SINGLE real photo showing the
+entire object in its natural context -- not a composited part, per the
+lesson Beach's palm-overhang and cruise-ship-dock failures both taught
+(see that file's own history). Each file has its background removed via
+`rembg` (`isnet-general-use` model, same choice as every other cutout
+library here), sourced from Pexels (free to use for commercial purposes,
+no attribution legally required, credited anyway), and every one was
+checked for real "foot" contact (a contiguous run of opaque pixels at its
+own bottom edge, not just a peak-alpha reading) before being wired in --
+see SOURCE_OF_TRUTH.md's Required Method, category 1.
+
+- `saguaro.webp` — from a Thalia Perla photo, via
+  [Pexels](https://www.pexels.com/photo/saguaro-cactus-in-a-desert-landscape-4061938/),
+  cropped to isolate a single specimen. `rembg` left one small artifact:
+  a teal patch of leftover sky color at the left arm's base junction,
+  fixed by targeting that exact small pixel region with a color test
+  (not a broad color-based heuristic across the whole image, which was
+  tried first and caught legitimate cool-toned shadow detail across the
+  whole cactus instead -- reverted). Verified contact: a 41px contiguous
+  opaque run at the base, tapering naturally over the final ~15 rows.
+- `joshua-tree.webp` — from an Ines Martineau photo, via
+  [Pexels](https://www.pexels.com/photo/joshua-tree-in-desert-landscape-35127936/),
+  cropped to isolate the tree on the right side of frame. `rembg` left a
+  ghosted, low-alpha remnant of a smaller background tree; a first fix
+  attempt (a simple x-axis crop) didn't fully remove it, since the
+  ghosting extended further into frame than expected. Fixed with a
+  strict global alpha threshold (anything under alpha 200 zeroed out),
+  which cleanly removed the low-confidence ghosting while preserving the
+  tree's own real dead lower branch (confirmed genuine tree material, not
+  a separate object, once it rendered solidly after the threshold fix).
+  Verified contact: an 85px contiguous opaque run at the base.
+- `tumbleweed.webp` — from an Alfo Medeiros photo, via
+  [Pexels](https://www.pexels.com/photo/close-up-of-a-tumbleweed-on-a-dirt-path-14894603/),
+  a single isolated tumbleweed on a dirt path. `rembg` produced a clean
+  cutout with no artifacts to fix -- the wispy, fading edge texture is
+  real tumbleweed detail, not a background leftover. Verified contact: a
+  72px contiguous opaque run near the base (the very bottom few rows fade
+  below the alpha threshold, the same real wispy taper visually confirmed
+  on every other edge of this cutout, not a defect).
+- `roadrunner.webp` — from a Ken Jacobsen photo, via
+  [Pexels](https://www.pexels.com/photo/roadrunner-standing-on-rocky-ground-35388821/),
+  a roadrunner standing on visible rocky ground with its feet in frame.
+  `rembg` produced a clean cutout with no artifacts to fix. Verified
+  contact: a 28px contiguous opaque run at the base (appropriately narrow
+  for a bird's feet, confirmed to be the actual feet position, not a
+  stray tail-feather wisp, by checking the x-range of the bottom-most
+  opaque pixels against the visible bird shape).
+
+`drawDesertCutout`/`drawDesertTumbleweed` (game.js) apply no night-tint
+filter (unlike Beach/Safari's cutouts) -- Desert has no night variant, so
+there's no darkened-for-moonlight case to handle.
+
+Desert's ambient sounds (`desert-wind.mp3`, `desert-thunder.mp3`) are
+credited in `sounds/CREDITS.md`, alongside every other scene's ambience.

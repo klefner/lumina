@@ -7596,6 +7596,7 @@ test('Photo boundary fractions (HORIZON_FRAC, WATER_END_FRAC) sit at real bright
     const dayImg = await loadImage('art/beach-day.jpg');
     const nightImg = await loadImage('art/beach-night.jpg');
     const safariDayImg = await loadImage('art/safari-day.jpg');
+    const desertImg = await loadImage('art/desert-day.jpg');
     const margin = 0.01; // fraction of image height, sampled just off the boundary each side
 
     const dayHorizonAbove = rowStats(dayImg, BEACH_CONFIG.HORIZON_FRAC.day - margin);
@@ -7606,6 +7607,8 @@ test('Photo boundary fractions (HORIZON_FRAC, WATER_END_FRAC) sit at real bright
     const nightHorizonBelow = rowStats(nightImg, BEACH_CONFIG.HORIZON_FRAC.night + margin);
     const safariHorizonAbove = rowStats(safariDayImg, SAFARI_CONFIG.HORIZON_FRAC.day - margin);
     const safariHorizonBelow = rowStats(safariDayImg, SAFARI_CONFIG.HORIZON_FRAC.day + margin);
+    const desertGroundAbove = rowStats(desertImg, DESERT_CONFIG.GROUND_FRAC - margin);
+    const desertGroundBelow = rowStats(desertImg, DESERT_CONFIG.GROUND_FRAC + margin);
 
     return {
       dayHorizonDrop: dayHorizonAbove.brightness - dayHorizonBelow.brightness, // sky brighter than water
@@ -7619,6 +7622,10 @@ test('Photo boundary fractions (HORIZON_FRAC, WATER_END_FRAC) sit at real bright
       // category can't be a single generic brightness check forever; a
       // future photo might need a different channel/metric too.
       safariHorizonBlueGreenSwing: safariHorizonAbove.blueMinusGreen - safariHorizonBelow.blueMinusGreen,
+      // desert-day.jpg's foothill-to-scrubland line IS a brightness rise
+      // (measured directly: ~161 to ~191 across the transition), same
+      // direction as Beach's night horizon.
+      desertGroundRise: desertGroundBelow.brightness - desertGroundAbove.brightness,
     };
   });
 
@@ -7626,15 +7633,19 @@ test('Photo boundary fractions (HORIZON_FRAC, WATER_END_FRAC) sit at real bright
   // ~115-165 brightness units across the transition zone; day water-end:
   // a real but gentler rise into the foam, ~15-30; night horizon: a
   // subtler but still real dark-sky-to-lit-sand rise, ~30-40; Safari's
-  // day horizon: a B-G swing from about +23 to -86, well over 100) -- see
-  // this constant's own comment in game.js (Beach) or the measurement
-  // above (Safari) for the exact numbers a fresh measurement produced. A
+  // day horizon: a B-G swing from about +23 to -86, well over 100; desert's
+  // ground line: ~30 brightness units, measured the same full-row-average
+  // way, confirmed against a visual reference-line overlay before this
+  // constant was ever written into DESERT_CONFIG) -- see this constant's
+  // own comment in game.js (Beach/Desert) or the measurement above
+  // (Safari) for the exact numbers a fresh measurement produced. A
   // boundary sitting mid-region would show a difference near zero, not
   // comfortably above these floors.
   expect(result.dayHorizonDrop, 'HORIZON_FRAC.day should sit at a real sky-to-water brightness drop').toBeGreaterThan(50);
   expect(result.dayWaterEndRise, 'WATER_END_FRAC.day should sit at a real water-to-sand brightness rise').toBeGreaterThan(5);
   expect(result.nightHorizonRise, 'HORIZON_FRAC.night should sit at a real dark-sky-to-lit-sand brightness rise').toBeGreaterThan(5);
   expect(result.safariHorizonBlueGreenSwing, 'SAFARI_CONFIG.HORIZON_FRAC.day should sit at a real blue-sky-to-tan-grass hue swing').toBeGreaterThan(80);
+  expect(result.desertGroundRise, 'DESERT_CONFIG.GROUND_FRAC should sit at a real foothill-to-scrubland brightness rise').toBeGreaterThan(15);
   expect(errors).toEqual([]);
 });
 
@@ -7663,6 +7674,10 @@ test('Every ground/water-anchored cutout touches its own bottom edge (has a real
     'art/safari-cutouts/animal-zebra.webp',
     'art/safari-cutouts/animal-giraffe.webp',
     'art/safari-cutouts/animal-elephant.webp',
+    'art/desert-cutouts/saguaro.webp',
+    'art/desert-cutouts/joshua-tree.webp',
+    'art/desert-cutouts/tumbleweed.webp',
+    'art/desert-cutouts/roadrunner.webp',
   ];
 
   const result = await page.evaluate(async (paths) => {
@@ -7821,6 +7836,398 @@ test('the Beach boat wraps to the opposite edge instead of resetting mid-crossin
 
   expect(result.wrapped).toBe(true);
   expect(result.directionAfter).toBe(result.directionBefore);
+  expect(errors).toEqual([]);
+});
+
+// ============================================================
+// DESERT SCENE
+// ============================================================
+// Built in one pass against SOURCE_OF_TRUTH.md's Required Method,
+// applied proactively rather than reactively -- see DESERT_CONFIG's own
+// header comment in game.js. These tests mirror the exact techniques
+// Beach's own several rounds of player-reported failures established
+// (structural draw-order hooking, geometry sweeps across pan phase AND
+// canvas shape, deterministic named-constant scale checks, real photo
+// brightness measurement) -- applied here up front, not bolted on after
+// a screenshot catches a problem.
+
+test('the Desert scene generates and draws without error, with every optional element forced present', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await page.evaluate(async () => {
+    canvas.width = 420; canvas.height = 860;
+    STATE.scene = 'desert';
+    STATE.desertScene = generateDesertScene();
+    STATE.desertScene.roadrunner.active = true;
+    STATE.desertScene.roadrunner.life = 50;
+    STATE.desertScene.roadrunner.maxLife = 100;
+    STATE.desertScene.lightning.flashLife = STATE.desertScene.lightning.maxFlashLife = 15;
+    await new Promise((r) => setTimeout(r, 200));
+    updateDesertScene();
+    drawDesertScene();
+  });
+
+  expect(errors).toEqual([]);
+});
+
+// Same structural technique as "Beach foreground elements draw in depth
+// order" -- hooks every Desert foreground draw entry point and asserts
+// the sequence never goes backwards through DESERT_DEPTH_LAYERS, so any
+// future reordering mistake fails CI immediately regardless of whether a
+// given run's random positions happened to visibly collide.
+test('Desert foreground elements draw in depth order (far-to-near) every frame, not motion-speed order', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'desert';
+    STATE.desertScene = generateDesertScene();
+    STATE.desertScene.roadrunner.active = true;
+    STATE.desertScene.roadrunner.life = 50;
+    STATE.desertScene.roadrunner.maxLife = 100;
+    await new Promise((r) => setTimeout(r, 300));
+
+    const layers = [];
+    const originalCutout = drawDesertCutout;
+    const originalTumbleweed = drawDesertTumbleweed;
+    window.drawDesertCutout = (source, ...rest) => {
+      layers.push(source === 'saguaro' || source === 'joshua-tree' ? 'flora' : source);
+      return originalCutout(source, ...rest);
+    };
+    window.drawDesertTumbleweed = (...args) => { layers.push('tumbleweed'); return originalTumbleweed(...args); };
+    drawDesertScene();
+    window.drawDesertCutout = originalCutout;
+    window.drawDesertTumbleweed = originalTumbleweed;
+
+    return { layers, model: DESERT_DEPTH_LAYERS };
+  });
+
+  expect(result.layers.length).toBeGreaterThan(0);
+  let lastIndex = -1;
+  for (const layer of result.layers) {
+    const idx = result.model.indexOf(layer);
+    expect(idx, `drawn layer "${layer}" is missing from DESERT_DEPTH_LAYERS`).toBeGreaterThanOrEqual(0);
+    expect(idx, `"${layer}" (depth index ${idx}) drew after something nearer the camera -- full sequence: ${result.layers.join(', ')}`).toBeGreaterThanOrEqual(lastIndex);
+    lastIndex = idx;
+  }
+  expect(errors).toEqual([]);
+});
+
+// Required Method, "Relative scale plausibility": tumbleweed and the
+// roadrunner are real ground-level fauna/debris, dramatically smaller
+// than either flora species -- deterministic constant check (not
+// statistical sampling), same technique as Beach's own dolphin/cruise-ship/
+// whale scale test.
+test('Desert: tumbleweed and roadrunner size ranges stay smaller than either flora species, at any shared depth', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const cfg = await page.evaluate(() => ({
+    tumbleweed: DESERT_CONFIG.TUMBLEWEED_SIZE_FRAC,
+    roadrunner: DESERT_CONFIG.ROADRUNNER_SIZE_FRAC,
+    saguaro: DESERT_CONFIG.SAGUARO_HEIGHT_FRAC,
+    joshuaTree: DESERT_CONFIG.JOSHUA_TREE_HEIGHT_FRAC,
+  }));
+
+  // Both flora and the tumbleweed use the identical depthScale formula
+  // (0.4 + 0.6*yFrac) in drawDesertScene, so at any SHARED yFrac the
+  // depth multiplier cancels out of the comparison -- checking the raw
+  // named constants directly is equivalent to checking the rendered
+  // sizes at every possible depth, not just one sampled position.
+  expect(cfg.tumbleweed.max).toBeLessThan(cfg.saguaro.min);
+  expect(cfg.tumbleweed.max).toBeLessThan(cfg.joshuaTree.min);
+  // The roadrunner spawns in a fixed near-camera band (yFrac 0.75-0.95,
+  // not the full 0-1 range flora/tumbleweed roam -- see
+  // generateDesertScene's own comment), so its comparison uses flora's
+  // OWN size at that same near-camera depth (baseHeightFrac * depthScale
+  // at yFrac=0.75, i.e. roughly 0.85x of the stored max), not the raw
+  // stored constant -- a fair "would a real roadrunner ever render bigger
+  // than a nearby cactus" check, not a stricter-than-necessary one.
+  const nearDepthScale = 0.4 + 0.6 * 0.75;
+  expect(cfg.roadrunner).toBeLessThan(cfg.saguaro.min * nearDepthScale);
+  expect(cfg.roadrunner).toBeLessThan(cfg.joshuaTree.min * nearDepthScale);
+  expect(errors).toEqual([]);
+});
+
+// Same category-8 "one element's OWN roamed position must not break scale
+// plausibility" fix Beach's dolphins needed -- flora scattered across the
+// full ground band must render smaller near the far edge (small yFrac)
+// than the SAME plant's own baseHeightFrac would give it near the camera.
+test('Desert: a far flora plant renders visibly smaller than the same plant would near the camera (depth-consistent)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'desert';
+    STATE.desertScene = generateDesertScene();
+    await new Promise((r) => setTimeout(r, 300));
+
+    function renderedHeightFor(yFrac) {
+      STATE.desertScene.flora = [{ source: 'saguaro', xFrac: 0.5, yFrac, baseHeightFrac: DESERT_CONFIG.SAGUARO_HEIGHT_FRAC.max, direction: 1 }];
+      STATE.desertScene.tumbleweed.sizeFrac = 0;
+      STATE.desertScene.roadrunner.active = false;
+      let captured = null;
+      const original = drawDesertCutout;
+      window.drawDesertCutout = (source, xCenter, groundY, targetHeight, ...rest) => {
+        if (source === 'saguaro') captured = targetHeight;
+        return original(source, xCenter, groundY, targetHeight, ...rest);
+      };
+      drawDesertScene();
+      window.drawDesertCutout = original;
+      return captured;
+    }
+
+    return { far: renderedHeightFor(0), near: renderedHeightFor(1) };
+  });
+
+  expect(result.far).not.toBeNull();
+  expect(result.near).not.toBeNull();
+  expect(result.near, `near-camera plant (${result.near}px) should render taller than the same plant far away (${result.far}px)`).toBeGreaterThan(result.far);
+  expect(errors).toEqual([]);
+});
+
+// Region containment across the full pan/zoom/canvas-shape parameter
+// space, same requirement (and same ultrawide shape) the Codex catch on
+// Beach's WATER_END_FRAC established -- every ground-anchored element's Y
+// must stay within [groundY, canvas height] at every sampled pan phase.
+test('Desert ground line (and every ground-anchored element) stays correctly contained across the full pan cycle, including an ultrawide canvas', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    const canvasShapes = [
+      { w: 420, h: 860 },
+      { w: 1920, h: 1080 },
+      { w: 3840, h: 1080 }, // ultrawide -- the exact shape class the Beach WATER_END_FRAC review catch was found on
+    ];
+    const violations = [];
+    let sampleCount = 0;
+
+    for (const shape of canvasShapes) {
+      canvas.width = shape.w; canvas.height = shape.h;
+      STATE.scene = 'desert';
+      STATE.desertScene = generateDesertScene();
+      STATE.desertScene.flora = [{ source: 'saguaro', xFrac: 0.5, yFrac: 1, baseHeightFrac: DESERT_CONFIG.SAGUARO_HEIGHT_FRAC.max, direction: 1 }];
+      await new Promise((r) => setTimeout(r, 200));
+
+      let capturedGroundY = null, capturedPlantY = null;
+      const original = drawDesertCutout;
+      window.drawDesertCutout = (source, xCenter, groundY, targetHeight, ...rest) => {
+        if (source === 'saguaro') { capturedGroundY = groundY; capturedPlantY = groundY; }
+        return original(source, xCenter, groundY, targetHeight, ...rest);
+      };
+
+      for (let frac = 0; frac < 1; frac += 0.02) {
+        STATE.desertScene.phase = Math.round(frac * DESERT_CONFIG.PAN_CYCLE_FRAMES);
+        capturedGroundY = null;
+        drawDesertScene();
+        sampleCount++;
+        // groundY itself must stay within the screen (never negative,
+        // never past the bottom edge) -- the plant anchored at yFrac=1 is
+        // drawn AT groundY-mapped-to-the-bottom, i.e. very close to h, so
+        // checking capturedGroundY against [0, shape.h] covers both.
+        if (capturedGroundY !== null && (capturedGroundY < 0 || capturedGroundY > shape.h)) {
+          violations.push({ shape: `${shape.w}x${shape.h}`, phase: frac, groundY: capturedGroundY, canvasHeight: shape.h });
+        }
+      }
+      window.drawDesertCutout = original;
+    }
+
+    return { violations, sampleCount };
+  });
+
+  expect(result.sampleCount).toBeGreaterThan(100);
+  expect(result.violations, `a ground-anchored element left the visible canvas: ${JSON.stringify(result.violations)}`).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+// The lightning flash is deliberately excluded from Sleep mode (see
+// SLEEP_SAFE_SCENES' own comment in game.js) -- a sudden brightness
+// change is exactly the stimulus Sleep mode exists to avoid, independent
+// of how calm the rest of the scene reads.
+test('Desert is excluded from Sleep mode\'s scene list (the lightning flash is not sleep-safe)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.difficulty = 'sleep';
+    return { included: activeSceneList().includes('desert'), sleepSafeSetHas: isSceneSleepSafe('desert') };
+  });
+
+  expect(result.sleepSafeSetHas).toBe(false);
+  expect(result.included).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('the Desert boat-equivalents (tumbleweed) wrap to the opposite edge instead of resetting mid-crossing, keeping direction', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    STATE.scene = 'desert';
+    STATE.desertScene = generateDesertScene();
+    const tw = STATE.desertScene.tumbleweed;
+    tw.xFrac = 1.079;
+    tw.direction = 1;
+    tw.speed = 0.01;
+    const directionBefore = tw.direction;
+    updateDesertScene();
+    const wrapped = tw.xFrac < 0;
+    return { wrapped, directionBefore, directionAfter: tw.direction };
+  });
+
+  expect(result.wrapped).toBe(true);
+  expect(result.directionAfter).toBe(result.directionBefore);
+  expect(errors).toEqual([]);
+});
+
+// Player correction (2026-08-19, screenshot of the first version): "the
+// storm needs to be stormy -- rolling thunder, lightning flashes in the
+// storm clouds, occasional lightning streaked across the sky and
+// lightning strikes to the ground (again, all in the distance)." The
+// first version only ever drew one bolt shape at a rare, whale-sighting
+// cadence -- this covers all three named phenomena (DESERT_CONFIG.
+// LIGHTNING_KIND_WEIGHTS' 'cloud'/'streak'/'strike') draw without error,
+// and specifically that 'strike' -- the one kind deliberately allowed to
+// touch the real ground line -- never actually crosses PAST it, across
+// the same pan/canvas-shape sweep the general ground-containment test
+// above uses.
+test('Desert storm draws all three lightning kinds (cloud/streak/strike) without error', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await page.evaluate(async () => {
+    canvas.width = 420; canvas.height = 860;
+    STATE.scene = 'desert';
+    STATE.desertScene = generateDesertScene();
+    await new Promise((r) => setTimeout(r, 200));
+    for (const kind of ['cloud', 'streak', 'strike']) {
+      const l = STATE.desertScene.lightning;
+      l.kind = kind;
+      l.flashLife = l.maxFlashLife = 15;
+      l.boltXFrac = 0.2 + Math.random() * 0.6;
+      l.boltXFrac2 = 0.2 + Math.random() * 0.6;
+      l.boltDepthFrac = Math.random();
+      l.boltSeed = Math.random() * 1000;
+      drawDesertScene();
+    }
+  });
+
+  expect(errors).toEqual([]);
+});
+
+// Deterministic sanity check on the weighted kind-pick itself -- a typo'd
+// weight (the three don't sum to 1) wouldn't crash anything, just quietly
+// skew the storm's mix (or make one kind unreachable) in a way nothing
+// else here would catch.
+test('Desert: LIGHTNING_KIND_WEIGHTS sums to 1', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const sum = await page.evaluate(() => {
+    const w = DESERT_CONFIG.LIGHTNING_KIND_WEIGHTS;
+    return w.cloud + w.streak + w.strike;
+  });
+
+  expect(sum).toBeCloseTo(1, 5);
+  expect(errors).toEqual([]);
+});
+
+// The 'strike' kind is the one deliberately allowed to touch the real
+// ground line (see drawDesertScene's own comment) -- confirms it actually
+// gets picked across enough random triggers (not an unreachable dead
+// weight) and, across the same pan-phase/canvas-shape sweep the general
+// ground-containment test above uses, never renders past groundY: hooks
+// the real drawDesertCutout call each frame to read the actual groundY
+// that frame produced (not a recomputed value), same technique as the
+// general containment test.
+test('Desert lightning "strike" is actually reachable and stays correctly contained across the full pan cycle, including an ultrawide canvas', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 420; canvas.height = 860;
+    STATE.scene = 'desert';
+    STATE.desertScene = generateDesertScene();
+    await new Promise((r) => setTimeout(r, 200));
+    // Let phase advance NATURALLY via repeated updateDesertScene() calls
+    // (each increments scene.phase by 1 itself) rather than overwriting
+    // it directly -- nextFlashFrame was set relative to this scene's own
+    // (possibly large, up to PAN_CYCLE_FRAMES) starting phase, so forcing
+    // phase back down to a small loop counter could keep it perpetually
+    // BEFORE nextFlashFrame and never trigger a single flash at all.
+    // LIGHTNING_MAX_GAP_FRAMES is 400 -- 20000 frames covers roughly 50
+    // average-length trigger cycles, so even 'strike' at a 25% pick
+    // weight has a (1-0.25)^50, effectively-zero chance of never once
+    // appearing by chance; a real failure here means the weight is
+    // actually unreachable, not an unlucky sample.
+    let strikeSeen = false;
+    for (let i = 0; i < 20000 && !strikeSeen; i++) {
+      updateDesertScene();
+      if (STATE.desertScene.lightning.flashLife > 0 && STATE.desertScene.lightning.kind === 'strike') strikeSeen = true;
+    }
+
+    const canvasShapes = [
+      { w: 420, h: 860 },
+      { w: 1920, h: 1080 },
+      { w: 3840, h: 1080 },
+    ];
+    const violations = [];
+    let sampleCount = 0;
+    for (const shape of canvasShapes) {
+      canvas.width = shape.w; canvas.height = shape.h;
+      STATE.desertScene = generateDesertScene();
+      STATE.desertScene.lightning.kind = 'strike';
+      STATE.desertScene.lightning.flashLife = STATE.desertScene.lightning.maxFlashLife = 15;
+      STATE.desertScene.flora = [{ source: 'saguaro', xFrac: 0.5, yFrac: 0, baseHeightFrac: DESERT_CONFIG.SAGUARO_HEIGHT_FRAC.max, direction: 1 }];
+      await new Promise((r) => setTimeout(r, 100));
+
+      let capturedGroundY = null;
+      const originalCutout = drawDesertCutout;
+      window.drawDesertCutout = (source, xCenter, groundY, ...rest) => {
+        if (source === 'saguaro') capturedGroundY = groundY;
+        return originalCutout(source, xCenter, groundY, ...rest);
+      };
+
+      for (let frac = 0; frac < 1; frac += 0.05) {
+        STATE.desertScene.phase = Math.round(frac * DESERT_CONFIG.PAN_CYCLE_FRAMES);
+        STATE.desertScene.lightning.boltDepthFrac = Math.random();
+        capturedGroundY = null;
+        drawDesertScene();
+        sampleCount++;
+        // groundY itself must stay on-screen -- the same requirement the
+        // general ground-containment test enforces -- which is what
+        // guarantees 'strike'`s own groundY-relative bottomY formula
+        // (groundY - skyBandH*0.015, always strictly less than groundY
+        // by construction whenever skyBandH > 0) stays meaningful rather
+        // than degenerating on a canvas shape that pushes groundY
+        // somewhere invalid.
+        if (capturedGroundY !== null && (capturedGroundY < 0 || capturedGroundY > shape.h)) {
+          violations.push({ shape: `${shape.w}x${shape.h}`, phase: frac, groundY: capturedGroundY });
+        }
+      }
+      window.drawDesertCutout = originalCutout;
+    }
+
+    return { strikeSeen, violations, sampleCount };
+  });
+
+  expect(result.strikeSeen, "'strike' never got picked across 300 update ticks -- LIGHTNING_KIND_WEIGHTS.strike may be unreachable").toBe(true);
+  expect(result.sampleCount).toBeGreaterThan(50);
+  expect(result.violations, `groundY left the visible canvas while a strike was active: ${JSON.stringify(result.violations)}`).toEqual([]);
   expect(errors).toEqual([]);
 });
 
@@ -8379,7 +8786,18 @@ test("Safari's day/night background stays the same across every wave of one bloc
     STATE.sceneMode = 'rotate';
     STATE.rotateSeed = 555444;
     const log = [];
-    for (let wave = 1; wave <= 60; wave++) {
+    // Rotate mode picks each next package genuinely at random (see
+    // resolveSceneBlock's own comment: "randomly chosen next package, not
+    // necessarily the next array entry"), not a shuffle-once-then-cycle --
+    // so seeing every specific scene at least once is a coupon-collector
+    // problem, and its expected cost grows with SCENE_LIST's own size.
+    // 60 was tuned back when SCENE_LIST had 7 entries; adding Desert (an
+    // 8th) pushed this fixed seed's first 'safari' block out to wave 112
+    // (confirmed by direct measurement, not guessed) -- well past the old
+    // sample size, which made this test fail for a reason that has
+    // nothing to do with Safari's actual behavior. 300 gives a real margin
+    // over that measured value, not just a bumped magic number.
+    for (let wave = 1; wave <= 300; wave++) {
       startWave(wave);
       log.push({ scene: STATE.scene, variant: STATE.scene === 'safari' ? STATE.safariScene.variant : null });
     }
@@ -8510,6 +8928,200 @@ test('Safari\'s foreground wildlife (birds, real-photo trees/animals, night shoo
     expect(result[variant].phaseAdvanced).toBe(true);
     expect(result[variant].hasShootingStarState).toBe(true);
   }
+  expect(errors).toEqual([]);
+});
+
+// Player report, screenshot (2026-08-19): animals rendering on top of
+// trees they should read as behind/beside, and trees rendering nested
+// underneath other trees. Root cause: every tree/animal was bottom-
+// anchored at the exact same horizonY (no depth variance at all), then
+// drawn as "all trees, then all animals" -- two separate loops whose
+// internal order came straight from Math.random()-driven array
+// generation, an axis with no relationship to actual on-screen depth
+// (the same wrong-axis mistake BEACH_DEPTH_LAYERS' own history
+// describes). Fixed by giving both a real yFrac and merging them into
+// ONE list sorted by it every frame (see SAFARI_CONFIG's own comment for
+// why this is a continuous sort, not a fixed category array the way
+// Beach/Desert's own depth models are). This is the structural test:
+// hooks drawSafariCutout, forces a known mix of tree/animal yFracs, and
+// asserts the actual sequence of groundY values drawSafariCutout receives
+// is non-decreasing (farther/smaller-yFrac elements always draw before
+// nearer/larger-yFrac ones, regardless of which array -- tree or animal
+// -- either one came from).
+test('Safari trees and animals draw in real depth order (far-to-near, by their own yFrac), not by which array they came from', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'safari';
+    STATE.safariVariant = 'day';
+    STATE.safariScene = generateSafariScene(null);
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Deliberately interleaved so a "trees first, then animals" draw
+    // order would visibly violate depth (a far animal, yFrac 0.1, would
+    // draw AFTER a near tree, yFrac 0.9, if grouped by array instead of
+    // sorted by yFrac).
+    STATE.safariScene.trees[0].yFrac = 0.1;
+    STATE.safariScene.trees[1].yFrac = 0.9;
+    STATE.safariScene.trees[2].yFrac = 0.5;
+    STATE.safariScene.animals[0].yFrac = 0.3;
+    STATE.safariScene.animals[1].yFrac = 0.7;
+    STATE.safariScene.animals[2].yFrac = 0.05;
+
+    const groundYs = [];
+    const original = drawSafariCutout;
+    window.drawSafariCutout = (source, xCenter, groundY, ...rest) => {
+      groundYs.push(groundY);
+      return original(source, xCenter, groundY, ...rest);
+    };
+    drawSafariScene();
+    window.drawSafariCutout = original;
+
+    return { groundYs };
+  });
+
+  expect(result.groundYs.length).toBe(6); // 3 trees + 3 animals
+  let last = -Infinity;
+  for (const gy of result.groundYs) {
+    expect(gy, `groundY sequence went backwards -- an element drew nearer-then-farther instead of far-to-near: ${JSON.stringify(result.groundYs)}`).toBeGreaterThanOrEqual(last);
+    last = gy;
+  }
+  expect(errors).toEqual([]);
+});
+
+// The literal reported case, pinned down directly rather than relying
+// only on the general structural test above -- same technique as Beach's
+// own "a palm and the cruise ship forced to the same x" pin. A near
+// animal and a far tree forced to the exact same x: the animal (nearer,
+// larger yFrac) must draw on top. If this regresses, an animal nests
+// behind foliage it should stand in front of again (or vice versa).
+test('Safari: a near animal and a far tree forced to the same x still draw animal-on-top', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const layers = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'safari';
+    STATE.safariVariant = 'day';
+    STATE.safariScene = generateSafariScene(null);
+    STATE.safariScene.trees = [{ source: 'tree-acacia', xFrac: 0.5, yFrac: 0.1, sizeFrac: SAFARI_CONFIG.TREE_SIZE_FRAC.max }];
+    STATE.safariScene.animals = [{ source: 'animal-elephant', xFrac: 0.5, yFrac: 0.9, direction: 1, speed: 0, sizeFrac: SAFARI_CONFIG.ANIMAL_SIZE_FRAC.max, bobPhase: 0 }];
+    await new Promise((r) => setTimeout(r, 300));
+
+    const seen = [];
+    const original = drawSafariCutout;
+    window.drawSafariCutout = (source, ...rest) => { seen.push(source); return original(source, ...rest); };
+    drawSafariScene();
+    window.drawSafariCutout = original;
+    return seen;
+  });
+
+  const treeIdx = layers.indexOf('tree-acacia');
+  const animalIdx = layers.indexOf('animal-elephant');
+  expect(treeIdx).toBeGreaterThanOrEqual(0);
+  expect(animalIdx).toBeGreaterThanOrEqual(0);
+  expect(animalIdx, 'the nearer animal must draw after (on top of) the farther tree').toBeGreaterThan(treeIdx);
+  expect(errors).toEqual([]);
+});
+
+// Same category-8 "one element's OWN roamed position must not break scale
+// plausibility" requirement Beach's dolphins and Desert's flora needed --
+// a tree/animal near the far edge of the depth band must render smaller
+// than the SAME element's own sizeFrac would give it near the camera.
+test('Safari: a far tree/animal renders visibly smaller than the same element would near the camera (depth-consistent)', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 500; canvas.height = 900;
+    STATE.scene = 'safari';
+    STATE.safariVariant = 'day';
+    STATE.safariScene = generateSafariScene(null);
+    await new Promise((r) => setTimeout(r, 300));
+
+    function renderedHeightFor(yFrac) {
+      STATE.safariScene.trees = [{ source: 'tree-acacia', xFrac: 0.5, yFrac, sizeFrac: SAFARI_CONFIG.TREE_SIZE_FRAC.max }];
+      STATE.safariScene.animals = [];
+      let captured = null;
+      const original = drawSafariCutout;
+      window.drawSafariCutout = (source, xCenter, groundY, targetHeight, ...rest) => {
+        captured = targetHeight;
+        return original(source, xCenter, groundY, targetHeight, ...rest);
+      };
+      drawSafariScene();
+      window.drawSafariCutout = original;
+      return captured;
+    }
+
+    return { far: renderedHeightFor(0), near: renderedHeightFor(1) };
+  });
+
+  expect(result.far).not.toBeNull();
+  expect(result.near).not.toBeNull();
+  expect(result.near, `near-camera tree (${result.near}px) should render taller than the same tree far away (${result.far}px)`).toBeGreaterThan(result.far);
+  expect(errors).toEqual([]);
+});
+
+// Region containment across the full pan/zoom/canvas-shape parameter
+// space -- Safari's panY was completely unclamped before this pass (see
+// drawSafariScene's own comment); confirms the new clamp actually holds
+// horizonY (and therefore the whole depth band trees/animals now roam)
+// on-screen, same requirement and same ultrawide shape Beach's own
+// WATER_END_FRAC review catch was found on.
+test('Safari horizon (and the depth band every tree/animal roams) stays on-screen across the full pan cycle, including an ultrawide canvas', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    const canvasShapes = [
+      { w: 420, h: 860 },
+      { w: 1920, h: 1080 },
+      { w: 3840, h: 1080 },
+    ];
+    const violations = [];
+    let sampleCount = 0;
+
+    for (const shape of canvasShapes) {
+      for (const variant of ['day', 'night']) {
+        canvas.width = shape.w; canvas.height = shape.h;
+        STATE.scene = 'safari';
+        STATE.safariVariant = variant;
+        STATE.safariScene = generateSafariScene(null);
+        STATE.safariScene.trees = [{ source: 'tree-acacia', xFrac: 0.5, yFrac: 0, sizeFrac: SAFARI_CONFIG.TREE_SIZE_FRAC.max }];
+        STATE.safariScene.animals = [];
+        await new Promise((r) => setTimeout(r, 100));
+
+        let capturedGroundY = null;
+        const original = drawSafariCutout;
+        window.drawSafariCutout = (source, xCenter, groundY, ...rest) => {
+          capturedGroundY = groundY;
+          return original(source, xCenter, groundY, ...rest);
+        };
+
+        for (let frac = 0; frac < 1; frac += 0.05) {
+          STATE.safariScene.phase = Math.round(frac * SAFARI_CONFIG.PAN_CYCLE_FRAMES);
+          capturedGroundY = null;
+          drawSafariScene();
+          sampleCount++;
+          if (capturedGroundY !== null && (capturedGroundY < 0 || capturedGroundY > shape.h)) {
+            violations.push({ shape: `${shape.w}x${shape.h}`, variant, phase: frac, groundY: capturedGroundY });
+          }
+        }
+        window.drawSafariCutout = original;
+      }
+    }
+
+    return { violations, sampleCount };
+  });
+
+  expect(result.sampleCount).toBeGreaterThan(100);
+  expect(result.violations, `a horizon-anchored element left the visible canvas: ${JSON.stringify(result.violations)}`).toEqual([]);
   expect(errors).toEqual([]);
 });
 
@@ -9013,13 +9625,14 @@ test('activeSceneList only narrows things down under Sleep mode -- every other d
   expect(result.perDifficulty.relaxed).toEqual(result.fullList);
   expect(result.perDifficulty.normal).toEqual(result.fullList);
   expect(result.perDifficulty.intense).toEqual(result.fullList);
-  // Birthday (party horns, upbeat crowd noise) and Halloween (wolf howls,
-  // raven caws -- gentle, but "spooky" still trades on a little tension)
+  // Birthday (party horns, upbeat crowd noise), Halloween (wolf howls,
+  // raven caws -- gentle, but "spooky" still trades on a little tension),
+  // and Desert (the lightning flash -- see SLEEP_SAFE_SCENES' own comment)
   // are the non-sleep-safe scenes shipped so far -- Sleep mode should
-  // narrow both out while every other difficulty still offers them.
+  // narrow all three out while every other difficulty still offers them.
   // Christmas is genuinely calm and stays available under Sleep mode same
   // as Forest/Beach/Space.
-  const nonSleepSafe = ['birthday', 'halloween'];
+  const nonSleepSafe = ['birthday', 'halloween', 'desert'];
   expect(result.perDifficulty.sleep).toEqual(result.fullList.filter(s => !nonSleepSafe.includes(s)));
   for (const scene of nonSleepSafe) expect(result.perDifficulty.sleep).not.toContain(scene);
   expect(result.perDifficulty.sleep).toContain('christmas');
