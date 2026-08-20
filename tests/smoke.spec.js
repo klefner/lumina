@@ -8117,7 +8117,6 @@ test('Desert storm draws all three lightning kinds (cloud/streak/strike) without
       l.kind = kind;
       l.flashLife = l.maxFlashLife = 15;
       l.boltXFrac = 0.2 + Math.random() * 0.6;
-      l.boltXFrac2 = 0.2 + Math.random() * 0.6;
       l.boltDepthFrac = Math.random();
       l.boltSeed = Math.random() * 1000;
       drawDesertScene();
@@ -8169,11 +8168,11 @@ test('Desert lightning "strike" is actually reachable and stays correctly contai
     // (possibly large, up to PAN_CYCLE_FRAMES) starting phase, so forcing
     // phase back down to a small loop counter could keep it perpetually
     // BEFORE nextFlashFrame and never trigger a single flash at all.
-    // LIGHTNING_MAX_GAP_FRAMES is 400 -- 20000 frames covers roughly 50
-    // average-length trigger cycles, so even 'strike' at a 25% pick
-    // weight has a (1-0.25)^50, effectively-zero chance of never once
-    // appearing by chance; a real failure here means the weight is
-    // actually unreachable, not an unlucky sample.
+    // LIGHTNING_MAX_GAP_FRAMES is 55 -- 20000 frames covers several
+    // hundred average-length trigger cycles, so even 'strike' at a 15%
+    // pick weight has an effectively-zero chance of never once appearing
+    // by chance; a real failure here means the weight is actually
+    // unreachable, not an unlucky sample.
     let strikeSeen = false;
     for (let i = 0; i < 20000 && !strikeSeen; i++) {
       updateDesertScene();
@@ -8228,6 +8227,162 @@ test('Desert lightning "strike" is actually reachable and stays correctly contai
   expect(result.strikeSeen, "'strike' never got picked across 300 update ticks -- LIGHTNING_KIND_WEIGHTS.strike may be unreachable").toBe(true);
   expect(result.sampleCount).toBeGreaterThan(50);
   expect(result.violations, `groundY left the visible canvas while a strike was active: ${JSON.stringify(result.violations)}`).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+// PR review catch (Codex, P1, on klefner/lumina#112): the 'cloud' glow's
+// blobR (0.32-0.46 * canvas width) is large enough to reach well past
+// groundY on plenty of real canvas shapes -- 1229px at 3840x1080, against
+// a skyBandH that can be much smaller -- and the blobs were being filled
+// with no clip at all, so the additive glow could bleed straight into the
+// photographed ground/foreground, breaking the "only 'strike' ever
+// touches groundY" containment rule 'cloud' isn't supposed to be an
+// exception to. Fixed with a hard rectangular clip to the sky band before
+// any blob is filled (see drawDesertScene's own comment). This test
+// verifies that at the pixel level, not just by re-reading the geometry:
+// renders 'cloud' at max intensity vs. an identical frame with no flash
+// at all, across the same canvas-shape/pan-phase sweep the general
+// containment tests use, and asserts the row immediately below groundY
+// is byte-for-byte identical between the two -- if the clip ever gets
+// dropped or miscomputed, this fails on real rendered pixels, not a
+// recomputed formula that could share the same bug as the code under test.
+test('Desert lightning "cloud" never brightens so much as a single pixel below the real ground line, across the full canvas-shape sweep', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    const canvasShapes = [
+      { w: 420, h: 860 },
+      { w: 1920, h: 1080 },
+      { w: 3840, h: 1080 },
+    ];
+    const mismatches = [];
+    let sampleCount = 0;
+    for (const shape of canvasShapes) {
+      canvas.width = shape.w; canvas.height = shape.h;
+      for (let frac = 0; frac < 1; frac += 0.2) {
+        STATE.desertScene = generateDesertScene();
+        STATE.desertScene.phase = Math.round(frac * DESERT_CONFIG.PAN_CYCLE_FRAMES);
+        STATE.desertScene.lightning.boltXFrac = 0.1 + Math.random() * 0.8;
+        STATE.desertScene.lightning.boltDepthFrac = Math.random(); // drives blobR up to its max (0.32 + 0.14)*w
+        STATE.desertScene.lightning.boltSeed = Math.random() * 1000;
+        STATE.desertScene.flora = [{ source: 'saguaro', xFrac: 0.5, yFrac: 0, baseHeightFrac: DESERT_CONFIG.SAGUARO_HEIGHT_FRAC.max, direction: 1 }];
+        await new Promise((r) => setTimeout(r, 20));
+
+        // Read the REAL groundY this frame produced, same technique the
+        // strike containment test above uses -- not a formula re-derived
+        // here that could share a bug with the code under test.
+        let groundY = null;
+        const originalCutout = drawDesertCutout;
+        window.drawDesertCutout = (source, xCenter, gY, ...rest) => {
+          if (source === 'saguaro') groundY = gY;
+          return originalCutout(source, xCenter, gY, ...rest);
+        };
+
+        // Baseline: identical scene/phase, flash fully off.
+        STATE.desertScene.lightning.flashLife = 0;
+        drawDesertScene();
+        window.drawDesertCutout = originalCutout;
+        const belowY = Math.min(shape.h - 1, Math.round(groundY) + 3);
+        const baseline = ctx.getImageData(0, belowY, shape.w, 1).data;
+
+        // Same scene/phase, 'cloud' at peak intensity (flashLife === maxFlashLife, the brightest frame).
+        STATE.desertScene.lightning.kind = 'cloud';
+        STATE.desertScene.lightning.maxFlashLife = 30;
+        STATE.desertScene.lightning.flashLife = 30;
+        drawDesertScene();
+        const flashed = ctx.getImageData(0, belowY, shape.w, 1).data;
+
+        sampleCount++;
+        for (let i = 0; i < baseline.length; i++) {
+          if (baseline[i] !== flashed[i]) {
+            mismatches.push({ shape: `${shape.w}x${shape.h}`, phase: frac, belowY, byteIndex: i });
+            break;
+          }
+        }
+      }
+    }
+    return { mismatches, sampleCount };
+  });
+
+  expect(result.sampleCount).toBeGreaterThan(10);
+  expect(result.mismatches, `'cloud' flash changed pixels below the real ground line: ${JSON.stringify(result.mismatches)}`).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+// Player correction (2026-08-19, second round, eyewitness reference: a
+// real ~50-mile-distant Arizona storm cell): "sounding like it's right at
+// the player not way off in the distance." Fixed by giving
+// startEventAmbientLayer an optional lowpass filter (see its own comment)
+// and wiring SCENE_AMBIENT_CONFIG.desert.sounds.thunder.lowpassHz into it.
+// Confirms the filter node actually gets created and inserted into the
+// signal chain (source -> filter -> gain) when a sound configures
+// lowpassHz, and that a sound WITHOUT lowpassHz (every other event layer:
+// owl, gulls, whale, wildlife...) still gets no filter at all -- this is
+// an opt-in per-sound treatment, not a blanket change to every event
+// layer's signal chain.
+test('Desert thunder\'s event layer gets a lowpass filter inserted into its signal chain (source -> filter -> gain), while a sound with no lowpassHz configured gets none', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForTimeout(300);
+  await page.click('#start-game-button'); // unlocks a real AudioContext
+  await page.waitForTimeout(300);
+
+  const result = await page.evaluate(async () => {
+    const ctx = STATE.audioCtx;
+    const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.05), ctx.sampleRate);
+
+    let filtersCreated = 0;
+    let lastFilter = null;
+    const originalCreateBiquadFilter = ctx.createBiquadFilter.bind(ctx);
+    ctx.createBiquadFilter = (...args) => {
+      filtersCreated++;
+      lastFilter = originalCreateBiquadFilter(...args);
+      return lastFilter;
+    };
+
+    const originalRandom = Math.random;
+    Math.random = () => 0; // fire the very first playOnce as fast as its own setTimeout floor allows
+
+    // With lowpassHz set (thunder's own config value).
+    const withFilter = startEventAmbientLayer(buffer, 0.3, 0.01, 0.02, undefined, 900);
+    await new Promise((r) => setTimeout(r, 1700));
+    const filterCountAfterWithLowpass = filtersCreated;
+    const filterType = lastFilter ? lastFilter.type : null;
+    const filterFreq = lastFilter ? lastFilter.frequency.value : null;
+    withFilter.stop();
+
+    // Without lowpassHz (every other event layer's own call shape).
+    filtersCreated = 0;
+    const withoutFilter = startEventAmbientLayer(buffer, 0.3, 0.01, 0.02, undefined, undefined);
+    await new Promise((r) => setTimeout(r, 1700));
+    const filterCountWithoutLowpass = filtersCreated;
+    withoutFilter.stop();
+
+    Math.random = originalRandom;
+    ctx.createBiquadFilter = originalCreateBiquadFilter;
+
+    return { filterCountAfterWithLowpass, filterType, filterFreq, filterCountWithoutLowpass };
+  });
+
+  expect(result.filterCountAfterWithLowpass).toBeGreaterThan(0);
+  expect(result.filterType).toBe('lowpass');
+  expect(result.filterFreq).toBe(900);
+  expect(result.filterCountWithoutLowpass).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test('Desert thunder\'s own SCENE_AMBIENT_CONFIG entry actually sets a distance-appropriate lowpassHz and a quieter gain than the raw recording', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const thunder = await page.evaluate(() => SCENE_AMBIENT_CONFIG.desert.sounds.thunder);
+
+  expect(thunder.lowpassHz).toBeGreaterThan(0);
+  expect(thunder.lowpassHz).toBeLessThan(2000); // a genuinely muffling cutoff, not a no-op near the top of the audible range
+  expect(thunder.gain).toBeLessThan(0.3);
   expect(errors).toEqual([]);
 });
 

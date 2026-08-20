@@ -3952,11 +3952,23 @@ const SCENE_AMBIENT_CONFIG = {
   // flashes (real distant thunder is often below the audible threshold
   // even when the flash itself is visible), so this isn't a 1:1 sync,
   // just a proportionally busier cadence to match.
+  //
+  // gain dropped again (0.4 -> 0.24) and lowpassHz added on a second,
+  // much more specific player correction (2026-08-19, quoting a real
+  // ~50-mile-distant Arizona storm cell as the reference): "sounding like
+  // it's right at the player not way off in the distance." A cut in gain
+  // alone still leaves the recording's full crack/crackle frequency
+  // content intact, which reads as "quiet but close" rather than "far
+  // away" -- real distance rolls off high frequencies over range (air
+  // absorption), which is what the lowpass on startEventAmbientLayer
+  // actually simulates. 900Hz keeps the low rumble the ear identifies as
+  // "thunder" while shaving off the crack transient a nearby strike would
+  // have.
   desert: {
     order: ['wind', 'thunder'],
     sounds: {
       wind: { file: 'desert-wind.mp3', gain: 0.42, isEvent: false },
-      thunder: { file: 'desert-thunder.mp3', gain: 0.4, isEvent: true, minGapSec: 8, maxGapSec: 22 },
+      thunder: { file: 'desert-thunder.mp3', gain: 0.24, isEvent: true, minGapSec: 8, maxGapSec: 22, lowpassHz: 900 },
     },
   },
 };
@@ -4122,7 +4134,7 @@ function startLoopingAmbientLayer(buffer, baseGain, rateRange) {
 // a beat after first being revealed). Same per-repeat pitch/gain/pan
 // variation as the looping layers above, plus a short fade-in so the
 // sound eases in rather than snapping straight to full volume.
-function startEventAmbientLayer(buffer, baseGain, minGapSec, maxGapSec, rateRange) {
+function startEventAmbientLayer(buffer, baseGain, minGapSec, maxGapSec, rateRange, lowpassHz) {
   let stopped = false;
   let timer = null;
   const cfg = AMBIENT_VARIATION;
@@ -4138,13 +4150,27 @@ function startEventAmbientLayer(buffer, baseGain, minGapSec, maxGapSec, rateRang
     const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
     if (panner) panner.pan.value = randRange(cfg.PAN_RANGE);
 
+    // Real distance isn't just "quieter" -- air absorbs high frequencies
+    // over range, so a storm miles off reads as a soft, dull rumble even
+    // though it's plenty loud where it's actually happening. Optional so
+    // every other event layer (owl, gulls, whale, wildlife...) keeps its
+    // full-bandwidth crack/call unless a scene explicitly asks for this
+    // (player correction, 2026-08-19: desert thunder "sounding like it's
+    // right at the player not way off in the distance").
+    const filter = lowpassHz && ctx.createBiquadFilter ? ctx.createBiquadFilter() : null;
+    if (filter) {
+      filter.type = 'lowpass';
+      filter.frequency.value = lowpassHz;
+    }
+
     const gain = ctx.createGain();
     const peakGain = baseGain * randRange(cfg.GAIN_RANGE);
     const fadeIn = Math.min(cfg.EVENT_FADE_IN_SEC, buffer.duration / source.playbackRate.value / 3);
     gain.gain.setValueAtTime(0, now);
     gain.gain.linearRampToValueAtTime(peakGain, now + fadeIn);
 
-    source.connect(gain);
+    source.connect(filter || gain);
+    if (filter) filter.connect(gain);
     if (panner) { gain.connect(panner); panner.connect(STATE.ambientGain); }
     else gain.connect(STATE.ambientGain);
 
@@ -4172,7 +4198,7 @@ async function startSceneAmbienceLayer(scene, name) {
 
   const cfg = SCENE_AMBIENT_CONFIG[scene].sounds[name];
   STATE.ambienceLayers[name] = cfg.isEvent
-    ? startEventAmbientLayer(buffer, cfg.gain, cfg.minGapSec, cfg.maxGapSec, cfg.rateRange)
+    ? startEventAmbientLayer(buffer, cfg.gain, cfg.minGapSec, cfg.maxGapSec, cfg.rateRange, cfg.lowpassHz)
     : startLoopingAmbientLayer(buffer, cfg.gain, cfg.rateRange);
 }
 
@@ -10191,30 +10217,39 @@ const DESERT_CONFIG = {
   TUMBLEWEED_SIZE_FRAC: { min: 0.035, max: 0.06 },
   ROADRUNNER_SIZE_FRAC: 0.065,
   FLORA_COUNT: { min: 3, max: 5 },
-  // Frame gap between lightning flashes -- ~1.5-6.5s at 60fps. Player
-  // correction (2026-08-19): the first version of this storm used Beach's
-  // whale-sighting cadence (6-20s, a rare occasional thing to notice) --
-  // wrong model entirely. A whale surfacing once in a while IS a rare
-  // sighting; an active thunderstorm is not a rare event, it's a
-  // continuous, busy backdrop of frequent activity that only reads as
-  // "storm" because of how OFTEN it flickers, not despite it. Distance is
-  // what keeps it from competing with the dots (small, quiet, subtle per
-  // flash -- see LIGHTNING_KIND_WEIGHTS/drawDesertScene), not rarity.
-  LIGHTNING_MIN_GAP_FRAMES: 90,
-  LIGHTNING_MAX_GAP_FRAMES: 400,
+  // Frame gap between lightning flashes -- ~0.13-0.9s at 60fps. Third
+  // player correction (2026-08-19, same day, after actually seeing the
+  // 0.4-2.3s version in the browser): "I saw the clouds lighting up...
+  // needs more activity." The gap here is measured from one flash's own
+  // START to the next flash's START (see updateDesertScene below), not
+  // from one flash ending to the next beginning -- with flash durations
+  // of only ~10-24 frames, a 25-140 frame gap meant most of each cycle was
+  // genuinely empty sky, reading as "occasional blips" rather than
+  // "constantly active" even though the earlier numeric target (the
+  // player's own "once every second or two" framing) was already met on
+  // paper. Tightened further so overlap between consecutive flashes
+  // becomes common rather than a near-miss (a real active cell's flashes
+  // frequently DO overlap -- one still fading as the next starts), and
+  // MAX_FLASH_LIFE below lengthened alongside it so each individual flash
+  // reads longer, not just more frequent. Distance is still what keeps
+  // any one flash from competing with the dots (small, quiet, subtle per
+  // flash -- see LIGHTNING_KIND_WEIGHTS/drawDesertScene) -- frequency and
+  // subtlety remain independent knobs, not a tradeoff against each other.
+  LIGHTNING_MIN_GAP_FRAMES: 8,
+  LIGHTNING_MAX_GAP_FRAMES: 55,
   // Three distinct real storm phenomena, not one bolt shape repeated --
-  // player's own description named all three separately ("lightning
-  // flashes in the storm clouds," "occasional lightning streaked across
-  // the sky," "lightning strikes to the ground"): 'cloud' (a diffuse
-  // in-cloud glow, no visible bolt -- the most common real event, most
-  // lightning never leaves the cloud layer at all), 'streak' (a jagged
-  // bolt forking between two points roughly across the sky, cloud-to-
-  // cloud), 'strike' (a mostly-vertical bolt reaching down to the real
-  // ground line -- see drawDesertScene's own comment on why THIS is the
-  // one kind allowed to touch groundY). Weights favor 'cloud' for the
-  // same reason real storms do: most flashes are internal cloud
-  // illumination, not a visible full bolt.
-  LIGHTNING_KIND_WEIGHTS: { cloud: 0.45, streak: 0.3, strike: 0.25 },
+  // player's own description named all three separately ("lightning lit
+  // up the clouds constantly," "bolts flew across the sky," "occasionally
+  // downward"): 'cloud' (a diffuse in-cloud glow, no visible bolt --
+  // weighted highest and given the strongest visual treatment, since the
+  // player's own account makes this the DOMINANT impression of an active
+  // storm, not a rare aside -- most real lightning never leaves the cloud
+  // layer at all), 'streak' (a jagged bolt forking across a wide span of
+  // sky, cloud-to-cloud -- "flew across the sky"), 'strike' (a mostly-
+  // vertical bolt reaching down to the real ground line -- "occasionally
+  // downward," the least common of the three by the player's own word
+  // "occasionally," unlike the other two which read as near-constant).
+  LIGHTNING_KIND_WEIGHTS: { cloud: 0.5, streak: 0.35, strike: 0.15 },
 };
 const DESERT_IMAGE = Object.assign(new Image(), { src: DESERT_CONFIG.image });
 
@@ -10275,7 +10310,6 @@ function generateDesertScene() {
     maxFlashLife: 1,
     kind: 'cloud',
     boltXFrac: 0.5,
-    boltXFrac2: 0.5,
     boltDepthFrac: 0.5,
     boltSeed: 0,
     nextFlashFrame: phase + cfg.LIGHTNING_MIN_GAP_FRAMES + Math.floor(Math.random() * (cfg.LIGHTNING_MAX_GAP_FRAMES - cfg.LIGHTNING_MIN_GAP_FRAMES)),
@@ -10334,15 +10368,16 @@ function updateDesertScene() {
     lightning.kind = roll < w.cloud ? 'cloud' : roll < w.cloud + w.streak ? 'streak' : 'strike';
     // In-cloud glows linger a little longer than a hard bolt (a real
     // cloud-flash reads as a slow-fading internal glow, not a snap) --
-    // everything else uses the same short flicker window.
-    lightning.maxFlashLife = lightning.kind === 'cloud' ? (16 + Math.floor(Math.random() * 8)) : (10 + Math.floor(Math.random() * 6));
+    // everything else uses the same short flicker window. Lengthened
+    // alongside LIGHTNING_MIN/MAX_GAP_FRAMES's own tightening (player,
+    // having actually seen the tighter-gap version in browser: "needs
+    // more activity") -- a longer individual flash both reads more
+    // clearly on its own AND makes the now-common overlap with the next
+    // flash actually visible as sustained activity, not just two separate
+    // blips that happen to be close together.
+    lightning.maxFlashLife = lightning.kind === 'cloud' ? (24 + Math.floor(Math.random() * 10)) : (16 + Math.floor(Math.random() * 8));
     lightning.flashLife = lightning.maxFlashLife;
     lightning.boltXFrac = 0.1 + Math.random() * 0.8;
-    // Only 'streak' uses this (its second endpoint, well clear of either
-    // canvas edge so the whole visible span stays on-screen) -- harmless
-    // for the other two kinds, which never read it.
-    const spread = 0.12 + Math.random() * 0.18;
-    lightning.boltXFrac2 = Math.min(0.95, Math.max(0.05, lightning.boltXFrac + (Math.random() < 0.5 ? -spread : spread)));
     lightning.boltDepthFrac = Math.random();
     lightning.boltSeed = Math.random() * 1000;
     lightning.nextFlashFrame = scene.phase + cfg.LIGHTNING_MIN_GAP_FRAMES + Math.floor(Math.random() * (cfg.LIGHTNING_MAX_GAP_FRAMES - cfg.LIGHTNING_MIN_GAP_FRAMES));
@@ -10527,15 +10562,58 @@ function drawDesertScene() {
 
     ctx.save();
     ctx.globalAlpha = alpha;
+    // 'lighter' (additive) for the same reason the cloud blobs below use
+    // it -- a bright bolt/impact glow drawn source-over a dark mountain
+    // photo reads as a gray smudge, not electric light (real screenshot
+    // comparison, this section's own history). Local override inside the
+    // 'cloud' branch further down is now redundant with this but kept
+    // explicit for clarity at that call site.
+    ctx.globalCompositeOperation = 'lighter';
     ctx.strokeStyle = 'rgba(255, 250, 232, 0.85)';
     ctx.lineWidth = 1.5;
     if (lightning.kind === 'streak') {
       // Roughly horizontal, cloud-to-cloud -- stays in the upper-to-mid
       // sky band, well clear of groundY (a streak between distant
-      // thunderheads never reaches down to the terrain).
-      const y1 = skyTopY + skyBandH * (0.12 + lightning.boltDepthFrac * 0.22);
-      const y2 = y1 + skyBandH * (0.06 + (1 - lightning.boltDepthFrac) * 0.1);
-      drawJaggedBolt(boltX, y1, lightning.boltXFrac2 * w, y2, lightning.boltSeed, w * 0.035);
+      // thunderheads never reaches down to the terrain). Player correction
+      // (2026-08-19, second round, eyewitness reference: a real ~50-mile-
+      // distant storm cell -- "lightning bolts flew across the sky"): the
+      // first version spanned only 12-30% of the canvas width and used the
+      // same thin 1.5px stroke as everything else -- it read as "a little
+      // line," not a bolt actually crossing the sky. Widened the span to
+      // 35-65% of width (a real distant streak crosses a large visible
+      // arc, not a short local hop) and added a soft wide glow stroke
+      // UNDER the crisp bright core -- the same glow-then-core layering a
+      // real photographed bolt shows (the human eye/camera sensor blooms
+      // around anything this bright), which a single flat-color line
+      // can't sell no matter how thick.
+      const y1 = skyTopY + skyBandH * (0.1 + lightning.boltDepthFrac * 0.2);
+      const y2 = y1 + skyBandH * (0.05 + (1 - lightning.boltDepthFrac) * 0.12);
+      // Direction picked by available room, not lightning.boltXFrac2's
+      // stored (effectively coin-flip) sign -- PR review catch (Codex,
+      // P2): clamping only x2 against the [0.03, 0.97] edges while the
+      // direction was chosen independently of boltXFrac's own position
+      // let a start point near one edge, paired with a direction pointing
+      // further toward that same edge, collapse the whole span down to a
+      // few percent of the canvas -- boltXFrac=0.9 with a rightward pick
+      // producing a 7%-wide "streak," the exact "little line" regression
+      // this round exists to fix. Picking whichever side has more room
+      // (and capping span to whatever that side actually has) guarantees
+      // at least ~35% of canvas width every time: the worst case is
+      // boltXFrac sitting dead center (both sides ~47% of width), never
+      // an edge-adjacent collapse.
+      const spanFrac = 0.35 + lightning.boltDepthFrac * 0.3;
+      const roomRight = 0.97 - lightning.boltXFrac;
+      const roomLeft = lightning.boltXFrac - 0.03;
+      const goRight = roomRight >= roomLeft;
+      const actualSpan = Math.min(spanFrac, goRight ? roomRight : roomLeft);
+      const x2 = goRight ? (lightning.boltXFrac + actualSpan) * w : (lightning.boltXFrac - actualSpan) * w;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 250, 235, 0.35)';
+      ctx.lineWidth = 9;
+      drawJaggedBolt(boltX, y1, x2, y2, lightning.boltSeed, w * 0.045);
+      ctx.restore();
+      ctx.lineWidth = 2.2;
+      drawJaggedBolt(boltX, y1, x2, y2, lightning.boltSeed, w * 0.045);
     } else if (lightning.kind === 'strike') {
       // Mostly vertical, reaching down to groundY itself -- the one kind
       // that visually connects to the terrain, always at the real ground
@@ -10564,50 +10642,86 @@ function drawDesertScene() {
       ctx.arc(boltX, bottomY, glowR, 0, Math.PI * 2);
       ctx.fill();
     } else {
-      // 'cloud' -- no visible bolt at all, just diffuse internal glow(s)
+      // 'cloud' -- no visible bolt at all, just diffuse internal glow
       // within the cloud layer (real lightning's most common form: most
-      // strikes never leave the clouds). Two blobs, not one, for a less
-      // obviously-uniform, more organic in-cloud-lit look.
-      const blobY1 = skyTopY + skyBandH * (0.15 + lightning.boltDepthFrac * 0.3);
-      // Player report (screenshot, this round): the first version of this
-      // blob (0.09-0.14 * w radius, 0.55 peak alpha) measured as a real,
-      // present pixel difference but was visually a non-event against the
-      // photo's own already-bright, already-textured cloud cover -- too
-      // small and too faint to actually read as "a flash lit up the
-      // clouds." Widened and brightened until it visibly wins against that
-      // background at production size, confirmed by a real render, not
-      // just a bigger number.
-      const blobR1 = w * (0.18 + lightning.boltDepthFrac * 0.08);
-      const glow1 = ctx.createRadialGradient(boltX, blobY1, 0, boltX, blobY1, blobR1);
-      glow1.addColorStop(0, 'rgba(255, 252, 240, 0.85)');
-      glow1.addColorStop(0.4, 'rgba(255, 250, 235, 0.4)');
-      glow1.addColorStop(1, 'rgba(255, 250, 235, 0)');
-      ctx.fillStyle = glow1;
+      // strikes never leave the clouds). Player correction (2026-08-19,
+      // second round, eyewitness reference: a real ~50-mile-distant storm
+      // cell -- "lightning lit up the clouds constantly... nothing that
+      // lights up the clouds" was the direct complaint about the first
+      // version). The first version's blobs (0.18-0.26*w radius, two
+      // separate small spotlights) still read as two dim local patches,
+      // not "the clouds lit up" -- a real distant cloud-flash illuminates
+      // a genuinely large fraction of the visible cloud bank at once, more
+      // like backlighting a lantern than two flashlight beams. Rebuilt as
+      // three overlapping blobs spanning up to ~85% of the canvas width,
+      // brighter, so the dominant impression is "a wide stretch of sky
+      // just lit up," not "a couple of glowing spots."
+      //
+      // Rendered with 'lighter' (additive) compositing, not plain
+      // source-over alpha -- a real screenshot of the source-over version
+      // (this section's own history) read as gray fog smeared across the
+      // mountains, not a bright flash: alpha blending pulls the photo's
+      // own dark tones TOWARD the glow's gray-white, which desaturates
+      // more than it brightens against a photo this dark. Real light adds
+      // to a scene instead of mixing with it -- 'lighter' does that
+      // directly (each channel summed and clamped), which is what makes
+      // the same gradient actually read as illumination.
+      const blobY = skyTopY + skyBandH * (0.12 + lightning.boltDepthFrac * 0.28);
+      const spanX = lightning.boltXFrac * w;
+      const blobR = w * (0.32 + lightning.boltDepthFrac * 0.14);
+      const positions = [
+        { x: spanX, y: blobY, r: blobR, peak: 1 },
+        { x: Math.max(0, spanX - blobR * 0.9), y: blobY - skyBandH * 0.08, r: blobR * 0.72, peak: 0.8 },
+        { x: Math.min(w, spanX + blobR * 0.95), y: blobY + skyBandH * 0.06, r: blobR * 0.68, peak: 0.75 },
+      ];
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      // PR review catch (Codex, P1): blobR alone reaches 1200+px on a
+      // wide/ultrawide canvas (0.32-0.46 * w), and these are unclipped
+      // circles -- well past skyBandH in the vertical direction on any
+      // canvas short/wide enough for skyBandH to be smaller than blobR,
+      // which let the glow bleed down into the photographed ground below
+      // groundY, breaking region containment (category 6) exactly the way
+      // 'strike' is deliberately (and only) allowed to. A hard rectangular
+      // clip to the real sky/mountain band, applied before any blob is
+      // filled, keeps every kind's flash contained by construction rather
+      // than by tuning blobR down until it happens not to reach that far
+      // on the canvas shapes tested.
       ctx.beginPath();
-      ctx.arc(boltX, blobY1, blobR1, 0, Math.PI * 2);
-      ctx.fill();
-      const secondaryX = lightning.boltXFrac2 * w;
-      const blobY2 = skyTopY + skyBandH * (0.1 + (1 - lightning.boltDepthFrac) * 0.25);
-      const blobR2 = blobR1 * 0.65;
-      const glow2 = ctx.createRadialGradient(secondaryX, blobY2, 0, secondaryX, blobY2, blobR2);
-      glow2.addColorStop(0, 'rgba(255, 250, 235, 0.55)');
-      glow2.addColorStop(1, 'rgba(255, 250, 235, 0)');
-      ctx.fillStyle = glow2;
-      ctx.beginPath();
-      ctx.arc(secondaryX, blobY2, blobR2, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.rect(0, skyTopY, w, Math.max(0, groundY - skyTopY));
+      ctx.clip();
+      for (const p of positions) {
+        const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
+        glow.addColorStop(0, `rgba(255, 253, 242, ${p.peak})`);
+        glow.addColorStop(0.35, `rgba(255, 250, 235, ${p.peak * 0.55})`);
+        glow.addColorStop(1, 'rgba(255, 250, 235, 0)');
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
     }
     ctx.restore();
 
     // A soft, whole-sky brightness wash on top of every kind -- real
     // nearby lightning (even fully internal to a cloud) dimly brightens
     // the whole visible sky for an instant, not just the immediate flash
-    // point.
+    // point. Stronger for 'cloud' specifically -- that IS the "the whole
+    // sky lit up" moment the player's eyewitness account centers on, not
+    // an afterthought behind a local blob. Also 'lighter'-composited for
+    // the same reason as the cloud blobs above -- this used to be a flat
+    // source-over wash and read as a translucent gray veil rather than
+    // brightness, especially layered on top of the also-source-over blobs.
+    const washPeak = lightning.kind === 'cloud' ? 0.4 : 0.16;
     const skyFlash = ctx.createLinearGradient(0, skyTopY, 0, groundY);
-    skyFlash.addColorStop(0, `rgba(255, 250, 235, ${(alpha * 0.18).toFixed(3)})`);
+    skyFlash.addColorStop(0, `rgba(255, 250, 235, ${(alpha * washPeak).toFixed(3)})`);
     skyFlash.addColorStop(1, 'rgba(255, 250, 235, 0)');
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
     ctx.fillStyle = skyFlash;
     ctx.fillRect(0, skyTopY, w, Math.max(0, groundY - skyTopY));
+    ctx.restore();
   }
 
   // Foreground cutouts -- see DESERT_DEPTH_LAYERS' own comment for why
