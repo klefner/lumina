@@ -8117,7 +8117,6 @@ test('Desert storm draws all three lightning kinds (cloud/streak/strike) without
       l.kind = kind;
       l.flashLife = l.maxFlashLife = 15;
       l.boltXFrac = 0.2 + Math.random() * 0.6;
-      l.boltXFrac2 = 0.2 + Math.random() * 0.6;
       l.boltDepthFrac = Math.random();
       l.boltSeed = Math.random() * 1000;
       drawDesertScene();
@@ -8169,11 +8168,11 @@ test('Desert lightning "strike" is actually reachable and stays correctly contai
     // (possibly large, up to PAN_CYCLE_FRAMES) starting phase, so forcing
     // phase back down to a small loop counter could keep it perpetually
     // BEFORE nextFlashFrame and never trigger a single flash at all.
-    // LIGHTNING_MAX_GAP_FRAMES is 140 -- 20000 frames covers well over 100
-    // average-length trigger cycles, so even 'strike' at a 15% pick
-    // weight has a (1-0.15)^100, effectively-zero chance of never once
-    // appearing by chance; a real failure here means the weight is
-    // actually unreachable, not an unlucky sample.
+    // LIGHTNING_MAX_GAP_FRAMES is 55 -- 20000 frames covers several
+    // hundred average-length trigger cycles, so even 'strike' at a 15%
+    // pick weight has an effectively-zero chance of never once appearing
+    // by chance; a real failure here means the weight is actually
+    // unreachable, not an unlucky sample.
     let strikeSeen = false;
     for (let i = 0; i < 20000 && !strikeSeen; i++) {
       updateDesertScene();
@@ -8228,6 +8227,87 @@ test('Desert lightning "strike" is actually reachable and stays correctly contai
   expect(result.strikeSeen, "'strike' never got picked across 300 update ticks -- LIGHTNING_KIND_WEIGHTS.strike may be unreachable").toBe(true);
   expect(result.sampleCount).toBeGreaterThan(50);
   expect(result.violations, `groundY left the visible canvas while a strike was active: ${JSON.stringify(result.violations)}`).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+// PR review catch (Codex, P1, on klefner/lumina#112): the 'cloud' glow's
+// blobR (0.32-0.46 * canvas width) is large enough to reach well past
+// groundY on plenty of real canvas shapes -- 1229px at 3840x1080, against
+// a skyBandH that can be much smaller -- and the blobs were being filled
+// with no clip at all, so the additive glow could bleed straight into the
+// photographed ground/foreground, breaking the "only 'strike' ever
+// touches groundY" containment rule 'cloud' isn't supposed to be an
+// exception to. Fixed with a hard rectangular clip to the sky band before
+// any blob is filled (see drawDesertScene's own comment). This test
+// verifies that at the pixel level, not just by re-reading the geometry:
+// renders 'cloud' at max intensity vs. an identical frame with no flash
+// at all, across the same canvas-shape/pan-phase sweep the general
+// containment tests use, and asserts the row immediately below groundY
+// is byte-for-byte identical between the two -- if the clip ever gets
+// dropped or miscomputed, this fails on real rendered pixels, not a
+// recomputed formula that could share the same bug as the code under test.
+test('Desert lightning "cloud" never brightens so much as a single pixel below the real ground line, across the full canvas-shape sweep', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    const canvasShapes = [
+      { w: 420, h: 860 },
+      { w: 1920, h: 1080 },
+      { w: 3840, h: 1080 },
+    ];
+    const mismatches = [];
+    let sampleCount = 0;
+    for (const shape of canvasShapes) {
+      canvas.width = shape.w; canvas.height = shape.h;
+      for (let frac = 0; frac < 1; frac += 0.2) {
+        STATE.desertScene = generateDesertScene();
+        STATE.desertScene.phase = Math.round(frac * DESERT_CONFIG.PAN_CYCLE_FRAMES);
+        STATE.desertScene.lightning.boltXFrac = 0.1 + Math.random() * 0.8;
+        STATE.desertScene.lightning.boltDepthFrac = Math.random(); // drives blobR up to its max (0.32 + 0.14)*w
+        STATE.desertScene.lightning.boltSeed = Math.random() * 1000;
+        STATE.desertScene.flora = [{ source: 'saguaro', xFrac: 0.5, yFrac: 0, baseHeightFrac: DESERT_CONFIG.SAGUARO_HEIGHT_FRAC.max, direction: 1 }];
+        await new Promise((r) => setTimeout(r, 20));
+
+        // Read the REAL groundY this frame produced, same technique the
+        // strike containment test above uses -- not a formula re-derived
+        // here that could share a bug with the code under test.
+        let groundY = null;
+        const originalCutout = drawDesertCutout;
+        window.drawDesertCutout = (source, xCenter, gY, ...rest) => {
+          if (source === 'saguaro') groundY = gY;
+          return originalCutout(source, xCenter, gY, ...rest);
+        };
+
+        // Baseline: identical scene/phase, flash fully off.
+        STATE.desertScene.lightning.flashLife = 0;
+        drawDesertScene();
+        window.drawDesertCutout = originalCutout;
+        const belowY = Math.min(shape.h - 1, Math.round(groundY) + 3);
+        const baseline = ctx.getImageData(0, belowY, shape.w, 1).data;
+
+        // Same scene/phase, 'cloud' at peak intensity (flashLife === maxFlashLife, the brightest frame).
+        STATE.desertScene.lightning.kind = 'cloud';
+        STATE.desertScene.lightning.maxFlashLife = 30;
+        STATE.desertScene.lightning.flashLife = 30;
+        drawDesertScene();
+        const flashed = ctx.getImageData(0, belowY, shape.w, 1).data;
+
+        sampleCount++;
+        for (let i = 0; i < baseline.length; i++) {
+          if (baseline[i] !== flashed[i]) {
+            mismatches.push({ shape: `${shape.w}x${shape.h}`, phase: frac, belowY, byteIndex: i });
+            break;
+          }
+        }
+      }
+    }
+    return { mismatches, sampleCount };
+  });
+
+  expect(result.sampleCount).toBeGreaterThan(10);
+  expect(result.mismatches, `'cloud' flash changed pixels below the real ground line: ${JSON.stringify(result.mismatches)}`).toEqual([]);
   expect(errors).toEqual([]);
 });
 

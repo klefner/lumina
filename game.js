@@ -10217,21 +10217,26 @@ const DESERT_CONFIG = {
   TUMBLEWEED_SIZE_FRAC: { min: 0.035, max: 0.06 },
   ROADRUNNER_SIZE_FRAC: 0.065,
   FLORA_COUNT: { min: 3, max: 5 },
-  // Frame gap between lightning flashes -- ~0.4-2.3s at 60fps. Second
-  // player correction (2026-08-19, same day): the first fix (6-20s ->
-  // 1.5-6.5s) was still nowhere near active enough. Player's own
-  // eyewitness reference: a real storm cell watched from ~50 miles away
-  // in Arizona -- "extremely active... lightning lit up the clouds
-  // constantly, lightning bolts flew across the sky." "Constantly" is the
-  // operative word a 1.5-6.5s gap still doesn't earn -- a genuinely active
-  // cell flashes multiple times per MINUTE at minimum, often closer to
-  // once every second or two during its most active stretch, which this
-  // range now actually targets. Distance is still what keeps it from
-  // competing with the dots (small, quiet, subtle per flash -- see
-  // LIGHTNING_KIND_WEIGHTS/drawDesertScene), same as before -- frequency
-  // and subtlety are independent knobs, not a tradeoff against each other.
-  LIGHTNING_MIN_GAP_FRAMES: 25,
-  LIGHTNING_MAX_GAP_FRAMES: 140,
+  // Frame gap between lightning flashes -- ~0.13-0.9s at 60fps. Third
+  // player correction (2026-08-19, same day, after actually seeing the
+  // 0.4-2.3s version in the browser): "I saw the clouds lighting up...
+  // needs more activity." The gap here is measured from one flash's own
+  // START to the next flash's START (see updateDesertScene below), not
+  // from one flash ending to the next beginning -- with flash durations
+  // of only ~10-24 frames, a 25-140 frame gap meant most of each cycle was
+  // genuinely empty sky, reading as "occasional blips" rather than
+  // "constantly active" even though the earlier numeric target (the
+  // player's own "once every second or two" framing) was already met on
+  // paper. Tightened further so overlap between consecutive flashes
+  // becomes common rather than a near-miss (a real active cell's flashes
+  // frequently DO overlap -- one still fading as the next starts), and
+  // MAX_FLASH_LIFE below lengthened alongside it so each individual flash
+  // reads longer, not just more frequent. Distance is still what keeps
+  // any one flash from competing with the dots (small, quiet, subtle per
+  // flash -- see LIGHTNING_KIND_WEIGHTS/drawDesertScene) -- frequency and
+  // subtlety remain independent knobs, not a tradeoff against each other.
+  LIGHTNING_MIN_GAP_FRAMES: 8,
+  LIGHTNING_MAX_GAP_FRAMES: 55,
   // Three distinct real storm phenomena, not one bolt shape repeated --
   // player's own description named all three separately ("lightning lit
   // up the clouds constantly," "bolts flew across the sky," "occasionally
@@ -10305,7 +10310,6 @@ function generateDesertScene() {
     maxFlashLife: 1,
     kind: 'cloud',
     boltXFrac: 0.5,
-    boltXFrac2: 0.5,
     boltDepthFrac: 0.5,
     boltSeed: 0,
     nextFlashFrame: phase + cfg.LIGHTNING_MIN_GAP_FRAMES + Math.floor(Math.random() * (cfg.LIGHTNING_MAX_GAP_FRAMES - cfg.LIGHTNING_MIN_GAP_FRAMES)),
@@ -10364,15 +10368,16 @@ function updateDesertScene() {
     lightning.kind = roll < w.cloud ? 'cloud' : roll < w.cloud + w.streak ? 'streak' : 'strike';
     // In-cloud glows linger a little longer than a hard bolt (a real
     // cloud-flash reads as a slow-fading internal glow, not a snap) --
-    // everything else uses the same short flicker window.
-    lightning.maxFlashLife = lightning.kind === 'cloud' ? (16 + Math.floor(Math.random() * 8)) : (10 + Math.floor(Math.random() * 6));
+    // everything else uses the same short flicker window. Lengthened
+    // alongside LIGHTNING_MIN/MAX_GAP_FRAMES's own tightening (player,
+    // having actually seen the tighter-gap version in browser: "needs
+    // more activity") -- a longer individual flash both reads more
+    // clearly on its own AND makes the now-common overlap with the next
+    // flash actually visible as sustained activity, not just two separate
+    // blips that happen to be close together.
+    lightning.maxFlashLife = lightning.kind === 'cloud' ? (24 + Math.floor(Math.random() * 10)) : (16 + Math.floor(Math.random() * 8));
     lightning.flashLife = lightning.maxFlashLife;
     lightning.boltXFrac = 0.1 + Math.random() * 0.8;
-    // Only 'streak' uses this (its second endpoint, well clear of either
-    // canvas edge so the whole visible span stays on-screen) -- harmless
-    // for the other two kinds, which never read it.
-    const spread = 0.12 + Math.random() * 0.18;
-    lightning.boltXFrac2 = Math.min(0.95, Math.max(0.05, lightning.boltXFrac + (Math.random() < 0.5 ? -spread : spread)));
     lightning.boltDepthFrac = Math.random();
     lightning.boltSeed = Math.random() * 1000;
     lightning.nextFlashFrame = scene.phase + cfg.LIGHTNING_MIN_GAP_FRAMES + Math.floor(Math.random() * (cfg.LIGHTNING_MAX_GAP_FRAMES - cfg.LIGHTNING_MIN_GAP_FRAMES));
@@ -10583,10 +10588,25 @@ function drawDesertScene() {
       // can't sell no matter how thick.
       const y1 = skyTopY + skyBandH * (0.1 + lightning.boltDepthFrac * 0.2);
       const y2 = y1 + skyBandH * (0.05 + (1 - lightning.boltDepthFrac) * 0.12);
+      // Direction picked by available room, not lightning.boltXFrac2's
+      // stored (effectively coin-flip) sign -- PR review catch (Codex,
+      // P2): clamping only x2 against the [0.03, 0.97] edges while the
+      // direction was chosen independently of boltXFrac's own position
+      // let a start point near one edge, paired with a direction pointing
+      // further toward that same edge, collapse the whole span down to a
+      // few percent of the canvas -- boltXFrac=0.9 with a rightward pick
+      // producing a 7%-wide "streak," the exact "little line" regression
+      // this round exists to fix. Picking whichever side has more room
+      // (and capping span to whatever that side actually has) guarantees
+      // at least ~35% of canvas width every time: the worst case is
+      // boltXFrac sitting dead center (both sides ~47% of width), never
+      // an edge-adjacent collapse.
       const spanFrac = 0.35 + lightning.boltDepthFrac * 0.3;
-      const x2 = lightning.boltXFrac2 > lightning.boltXFrac
-        ? Math.min(0.97, lightning.boltXFrac + spanFrac) * w
-        : Math.max(0.03, lightning.boltXFrac - spanFrac) * w;
+      const roomRight = 0.97 - lightning.boltXFrac;
+      const roomLeft = lightning.boltXFrac - 0.03;
+      const goRight = roomRight >= roomLeft;
+      const actualSpan = Math.min(spanFrac, goRight ? roomRight : roomLeft);
+      const x2 = goRight ? (lightning.boltXFrac + actualSpan) * w : (lightning.boltXFrac - actualSpan) * w;
       ctx.save();
       ctx.strokeStyle = 'rgba(255, 250, 235, 0.35)';
       ctx.lineWidth = 9;
@@ -10656,6 +10676,20 @@ function drawDesertScene() {
       ];
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
+      // PR review catch (Codex, P1): blobR alone reaches 1200+px on a
+      // wide/ultrawide canvas (0.32-0.46 * w), and these are unclipped
+      // circles -- well past skyBandH in the vertical direction on any
+      // canvas short/wide enough for skyBandH to be smaller than blobR,
+      // which let the glow bleed down into the photographed ground below
+      // groundY, breaking region containment (category 6) exactly the way
+      // 'strike' is deliberately (and only) allowed to. A hard rectangular
+      // clip to the real sky/mountain band, applied before any blob is
+      // filled, keeps every kind's flash contained by construction rather
+      // than by tuning blobR down until it happens not to reach that far
+      // on the canvas shapes tested.
+      ctx.beginPath();
+      ctx.rect(0, skyTopY, w, Math.max(0, groundY - skyTopY));
+      ctx.clip();
       for (const p of positions) {
         const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r);
         glow.addColorStop(0, `rgba(255, 253, 242, ${p.peak})`);
