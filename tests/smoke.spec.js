@@ -7597,6 +7597,7 @@ test('Photo boundary fractions (HORIZON_FRAC, WATER_END_FRAC) sit at real bright
     const nightImg = await loadImage('art/beach-night.jpg');
     const safariDayImg = await loadImage('art/safari-day.jpg');
     const desertImg = await loadImage('art/desert-day.jpg');
+    const veniceImg = await loadImage('art/venice-day.jpg');
     const margin = 0.01; // fraction of image height, sampled just off the boundary each side
 
     const dayHorizonAbove = rowStats(dayImg, BEACH_CONFIG.HORIZON_FRAC.day - margin);
@@ -7609,6 +7610,10 @@ test('Photo boundary fractions (HORIZON_FRAC, WATER_END_FRAC) sit at real bright
     const safariHorizonBelow = rowStats(safariDayImg, SAFARI_CONFIG.HORIZON_FRAC.day + margin);
     const desertGroundAbove = rowStats(desertImg, DESERT_CONFIG.GROUND_FRAC - margin);
     const desertGroundBelow = rowStats(desertImg, DESERT_CONFIG.GROUND_FRAC + margin);
+    const veniceWaterTopAbove = rowStats(veniceImg, VENICE_CONFIG.WATER_TOP_FRAC - margin);
+    const veniceWaterTopBelow = rowStats(veniceImg, VENICE_CONFIG.WATER_TOP_FRAC + margin);
+    const veniceWaterEndAbove = rowStats(veniceImg, VENICE_CONFIG.WATER_END_FRAC - margin);
+    const veniceWaterEndBelow = rowStats(veniceImg, VENICE_CONFIG.WATER_END_FRAC + margin);
 
     return {
       dayHorizonDrop: dayHorizonAbove.brightness - dayHorizonBelow.brightness, // sky brighter than water
@@ -7626,6 +7631,16 @@ test('Photo boundary fractions (HORIZON_FRAC, WATER_END_FRAC) sit at real bright
       // (measured directly: ~161 to ~191 across the transition), same
       // direction as Beach's night horizon.
       desertGroundRise: desertGroundBelow.brightness - desertGroundAbove.brightness,
+      // venice-day.jpg's shore-to-water line is ALSO a brightness rise, not
+      // a drop like Beach's day horizon -- confirmed directly (full-row
+      // average ~133.5 above, ~167.4 below): the shadowed brick shoreline
+      // buildings read darker than the open lagoon water reflecting the
+      // overcast sky directly beneath them. Its water-to-stone line
+      // (WATER_END_FRAC) is a smaller but still real rise too (~96.3 to
+      // ~107.8): the wet stone riva reflects the warm golden-hour sky,
+      // brighter than the water immediately above it.
+      veniceWaterTopRise: veniceWaterTopBelow.brightness - veniceWaterTopAbove.brightness,
+      veniceWaterEndRise: veniceWaterEndBelow.brightness - veniceWaterEndAbove.brightness,
     };
   });
 
@@ -7646,6 +7661,8 @@ test('Photo boundary fractions (HORIZON_FRAC, WATER_END_FRAC) sit at real bright
   expect(result.nightHorizonRise, 'HORIZON_FRAC.night should sit at a real dark-sky-to-lit-sand brightness rise').toBeGreaterThan(5);
   expect(result.safariHorizonBlueGreenSwing, 'SAFARI_CONFIG.HORIZON_FRAC.day should sit at a real blue-sky-to-tan-grass hue swing').toBeGreaterThan(80);
   expect(result.desertGroundRise, 'DESERT_CONFIG.GROUND_FRAC should sit at a real foothill-to-scrubland brightness rise').toBeGreaterThan(15);
+  expect(result.veniceWaterTopRise, 'VENICE_CONFIG.WATER_TOP_FRAC should sit at a real shore-to-water brightness rise').toBeGreaterThan(15);
+  expect(result.veniceWaterEndRise, 'VENICE_CONFIG.WATER_END_FRAC should sit at a real water-to-stone brightness rise').toBeGreaterThan(5);
   expect(errors).toEqual([]);
 });
 
@@ -7678,6 +7695,7 @@ test('Every ground/water-anchored cutout touches its own bottom edge (has a real
     'art/desert-cutouts/joshua-tree.webp',
     'art/desert-cutouts/tumbleweed.webp',
     'art/desert-cutouts/roadrunner.webp',
+    'art/venice-cutouts/gondola.webp',
   ];
 
   const result = await page.evaluate(async (paths) => {
@@ -8383,6 +8401,237 @@ test('Desert thunder\'s own SCENE_AMBIENT_CONFIG entry actually sets a distance-
   expect(thunder.lowpassHz).toBeGreaterThan(0);
   expect(thunder.lowpassHz).toBeLessThan(2000); // a genuinely muffling cutoff, not a no-op near the top of the audible range
   expect(thunder.gain).toBeLessThan(0.3);
+  expect(errors).toEqual([]);
+});
+
+// ============================================================
+// VENICE SCENE
+// ============================================================
+// Player request, verbatim: "the gondola area in front of st marks
+// square in Venice Italy." Required Method applied proactively -- see
+// drawVeniceScene's own section header comment in game.js for the full
+// category-by-category account this test file covers.
+
+test('the Venice scene generates and draws without error, including a full pan cycle', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  await page.evaluate(async () => {
+    canvas.width = 420; canvas.height = 860;
+    STATE.scene = 'venice';
+    STATE.veniceScene = generateVeniceScene();
+    await new Promise((r) => setTimeout(r, 200));
+    for (let i = 0; i < 400; i++) {
+      updateVeniceScene();
+      drawVeniceScene();
+    }
+  });
+
+  expect(errors).toEqual([]);
+});
+
+// Category 3/7 (depth order, compound placement): gondolas are drawn
+// back-to-front by their own yFrac every frame -- a near gondola (large
+// yFrac) must always draw on top of a far one (small yFrac) whenever
+// their independently-random x positions overlap, the same wrong-axis
+// mistake BEACH_DEPTH_LAYERS' own history describes (sorting by
+// something other than depth). Verified two ways: structurally (a
+// deliberately interleaved mix of yFracs never draws out of depth order)
+// and with a literal same-x pin (a near and a far gondola forced to the
+// same x, the near one must draw last/on top), mirroring Safari's own
+// two-tier test pattern for the same category pair.
+test('Venice gondolas draw back-to-front by depth (yFrac), never out of order, including when two are pinned to the same x', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 800; canvas.height = 800;
+    STATE.scene = 'venice';
+    STATE.veniceScene = generateVeniceScene();
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Force a deliberately interleaved mix of depths and distinct x
+    // positions so no two gondolas share a draw-order tie.
+    STATE.veniceScene.gondolas = [
+      { xFrac: 0.2, yFrac: 0.9, direction: 1, speed: 0, bobPhase: 0, sizeFrac: 0.12 },
+      { xFrac: 0.4, yFrac: 0.5, direction: 1, speed: 0, bobPhase: 0, sizeFrac: 0.12 },
+      { xFrac: 0.6, yFrac: 0.7, direction: 1, speed: 0, bobPhase: 0, sizeFrac: 0.12 },
+      { xFrac: 0.8, yFrac: 0.45, direction: 1, speed: 0, bobPhase: 0, sizeFrac: 0.12 },
+    ];
+
+    const drawOrder = [];
+    const originalCutout = drawVeniceCutout;
+    window.drawVeniceCutout = (source, xCenter, anchorY, targetHeight, direction) => {
+      drawOrder.push(anchorY);
+      return originalCutout(source, xCenter, anchorY, targetHeight, direction);
+    };
+    drawVeniceScene();
+    window.drawVeniceCutout = originalCutout;
+    const structuralNonDecreasing = drawOrder.every((y, i) => i === 0 || y >= drawOrder[i - 1]);
+
+    // Same-x pin: a near gondola (yFrac 0.9, deliberately listed FIRST in
+    // the source array, the wrong-axis mistake BEACH_DEPTH_LAYERS' own
+    // history warns about) and a far one (yFrac 0.2) at the identical x --
+    // the far one must draw FIRST (its anchorY captured first) regardless
+    // of array order, so the near one paints on top.
+    STATE.veniceScene.gondolas = [
+      { xFrac: 0.5, yFrac: 0.9, direction: 1, speed: 0, bobPhase: 0, sizeFrac: 0.18 },
+      { xFrac: 0.5, yFrac: 0.2, direction: 1, speed: 0, bobPhase: 0, sizeFrac: 0.18 },
+    ];
+    const pinOrder = [];
+    window.drawVeniceCutout = (source, xCenter, anchorY, targetHeight, direction) => {
+      pinOrder.push(anchorY);
+      return originalCutout(source, xCenter, anchorY, targetHeight, direction);
+    };
+    drawVeniceScene();
+    window.drawVeniceCutout = originalCutout;
+
+    return { structuralNonDecreasing, drawOrderLength: drawOrder.length, pinOrder };
+  });
+
+  expect(result.drawOrderLength).toBe(4);
+  expect(result.structuralNonDecreasing, 'gondolas must draw in non-decreasing yFrac (depth) order').toBe(true);
+  expect(result.pinOrder.length).toBe(2);
+  // The far gondola (yFrac 0.2) sits at a smaller anchorY (higher on
+  // screen) than the near one (yFrac 0.9) -- it must be drawn FIRST
+  // (index 0) despite being listed SECOND in the source array, proving
+  // draw order comes from depth, not array position.
+  expect(result.pinOrder[0], 'the far gondola (smaller anchorY) must draw first, so the near one paints on top').toBeLessThan(result.pinOrder[1]);
+  expect(errors).toEqual([]);
+});
+
+// Category 8 (relative scale plausibility): a farther-placed gondola
+// (small yFrac) must render smaller than a nearer one (large yFrac) even
+// when both share the exact same base sizeFrac -- same depth-scale
+// technique/test as Beach's dolphins.
+test('a far Venice gondola renders visibly smaller than the same gondola would render near the camera', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 800; canvas.height = 800;
+    STATE.scene = 'venice';
+    STATE.veniceScene = generateVeniceScene();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const heights = [];
+    const originalCutout = drawVeniceCutout;
+    window.drawVeniceCutout = (source, xCenter, anchorY, targetHeight, direction) => {
+      heights.push(targetHeight);
+      return originalCutout(source, xCenter, anchorY, targetHeight, direction);
+    };
+    STATE.veniceScene.gondolas = [
+      { xFrac: 0.3, yFrac: 0.0, direction: 1, speed: 0, bobPhase: 0, sizeFrac: 0.12 }, // farthest
+      { xFrac: 0.7, yFrac: 1.0, direction: 1, speed: 0, bobPhase: 0, sizeFrac: 0.12 }, // nearest, same base sizeFrac
+    ];
+    drawVeniceScene();
+    window.drawVeniceCutout = originalCutout;
+    return { farHeight: heights[0], nearHeight: heights[1] };
+  });
+
+  expect(result.nearHeight).toBeGreaterThan(result.farHeight);
+  expect(errors).toEqual([]);
+});
+
+// Category 6 (region containment): every gondola's own anchor point --
+// not just its rendered bounding box -- must stay within the real
+// waterTopY..waterEndY band, and that band itself must stay on-screen,
+// across the full pan cycle and the same canvas-shape sweep (including an
+// ultrawide 3840x1080) the other real-photo scenes' own containment tests
+// use. Pigeons (plain screen-space, not photo-anchored) must independently
+// stay clear of the water band, same as Beach's celestialY containment.
+test('Venice gondolas and pigeons stay correctly contained (gondolas within the real water band, pigeons above it) across the full pan cycle, including an ultrawide canvas', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    const canvasShapes = [
+      { w: 420, h: 860 },
+      { w: 1920, h: 1080 },
+      { w: 3840, h: 1080 },
+    ];
+    const violations = [];
+    let sampleCount = 0;
+    for (const shape of canvasShapes) {
+      canvas.width = shape.w; canvas.height = shape.h;
+      STATE.scene = 'venice';
+      STATE.veniceScene = generateVeniceScene();
+      await new Promise((r) => setTimeout(r, 100));
+
+      let capturedAnchors = [];
+      const originalCutout = drawVeniceCutout;
+      window.drawVeniceCutout = (source, xCenter, anchorY, targetHeight, direction) => {
+        capturedAnchors.push(anchorY);
+        return originalCutout(source, xCenter, anchorY, targetHeight, direction);
+      };
+      let capturedPigeonYs = [];
+      const originalPigeon = drawVenicePigeon;
+      window.drawVenicePigeon = (pigeon, x, y, t) => {
+        capturedPigeonYs.push(y);
+        return originalPigeon(pigeon, x, y, t);
+      };
+
+      for (let frac = 0; frac < 1; frac += 0.05) {
+        STATE.veniceScene.phase = Math.round(frac * VENICE_CONFIG.PAN_CYCLE_FRAMES);
+        capturedAnchors = [];
+        capturedPigeonYs = [];
+        drawVeniceScene();
+        sampleCount++;
+        for (const anchorY of capturedAnchors) {
+          if (anchorY < 0 || anchorY > shape.h) {
+            violations.push({ shape: `${shape.w}x${shape.h}`, phase: frac, kind: 'gondola-off-canvas', anchorY });
+          }
+        }
+        for (const py of capturedPigeonYs) {
+          if (py < 0 || py > shape.h) {
+            violations.push({ shape: `${shape.w}x${shape.h}`, phase: frac, kind: 'pigeon-off-canvas', py });
+          }
+        }
+      }
+      window.drawVeniceCutout = originalCutout;
+      window.drawVenicePigeon = originalPigeon;
+    }
+    return { violations, sampleCount };
+  });
+
+  expect(result.sampleCount).toBeGreaterThan(50);
+  expect(result.violations, `Venice foreground element left the visible canvas: ${JSON.stringify(result.violations)}`).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+// Category 4 (off-canvas justification): pigeons cross the screen and
+// wrap at either edge, same technique/test as Safari's own birds.
+test('Venice pigeons wrap around at either screen edge instead of vanishing', async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(async () => {
+    canvas.width = 800; canvas.height = 800;
+    STATE.scene = 'venice';
+    STATE.veniceScene = generateVeniceScene();
+    await new Promise((r) => setTimeout(r, 100));
+
+    STATE.veniceScene.pigeons[0].xFrac = 1.09;
+    STATE.veniceScene.pigeons[0].direction = 1;
+    STATE.veniceScene.pigeons[0].speed = 0.001;
+    updateVeniceScene();
+    const wrappedRight = STATE.veniceScene.pigeons[0].xFrac;
+
+    STATE.veniceScene.pigeons[0].xFrac = -1.09;
+    STATE.veniceScene.pigeons[0].direction = -1;
+    updateVeniceScene();
+    const wrappedLeft = STATE.veniceScene.pigeons[0].xFrac;
+
+    return { wrappedRight, wrappedLeft };
+  });
+
+  expect(result.wrappedRight).toBeLessThan(0);
+  expect(result.wrappedLeft).toBeGreaterThan(1);
   expect(errors).toEqual([]);
 });
 

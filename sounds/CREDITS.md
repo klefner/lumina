@@ -386,3 +386,53 @@ burst at onset for the thumbnail-on-metal contact transient. The
 family's other two voices are real recordings already sourced above:
 vibraphone (pad) and doublebass (drone/bass, per the same "warm,
 rounded, not heavy sub" brief the ambient track used).
+
+## Venice scene (venice-water.mp3, venice-crowd.mp3, venice-bells.mp3, venice-pigeons.mp3)
+
+Player request (2026-08-20): "the gondola area in front of st marks
+square in Venice Italy." SSE Library (this project's usual first stop,
+already used for wind/thunder/creak/owl elsewhere) had nothing usable for
+any of these four -- checked its WATER, ROCKS, BOATS, BELLS, CLOCKS,
+ANIMALS, BIRDS, and CROWDS collections directly, not just a keyword
+search. All four instead sourced from Freesound, filtered to CC0 1.0
+Universal only (confirmed individually on each sound's own page, not just
+trusted from the search filter) -- no attribution legally required,
+credited anyway. Freesound serves full-quality downloads only to logged-in
+users; each was pulled from Freesound's own public preview CDN instead
+(the `-hq.mp3` preview variant, ~128kbps), then trimmed/faded/downmixed
+with ffmpeg to this project's own established convention (mono, 44.1kHz,
+128kbps, 1s fades on loop beds) -- same two-pass technique as every other
+scene's own ambient recordings.
+
+- `venice-water.mp3` — "WavesOnTheShore.wav," by richardemoore, via
+  [Freesound](https://freesound.org/people/richardemoore/sounds/260263/),
+  CC0 -- gentle water lapping against a dock (Columbia River, Portland OR),
+  picked specifically for reading as calm small-body-of-water lapping, not
+  ocean surf (this project's existing beach-waves.mp3 is a much bigger,
+  wrong-feeling sound for a canal). 20s trimmed from the middle of the
+  original 45s recording, downmixed to mono, resampled to 44.1kHz, 1s fade
+  in/out.
+- `venice-crowd.mp3` — "Piazza San Marco - Venezia | 231029," by
+  GammaSintesi, via
+  [Freesound](https://freesound.org/people/GammaSintesi/sounds/709658/),
+  CC0 -- a binaural field recording made walking through St. Mark's
+  Square itself, indistinct tourist murmur/footsteps/piazza bustle, not
+  concentrated cheering (this project's existing birthday-crowd.mp3 is
+  the wrong energy for this scene). An exact-location match for the
+  requested scene. 20s trimmed from the middle of the original 2:20
+  recording (avoiding a louder isolated voice/footstep spike later in the
+  clip), downmixed to mono, resampled to 44.1kHz, 1s fade in/out.
+- `venice-bells.mp3` — "Italian bells mid distant.wav," by mikewest, via
+  [Freesound](https://freesound.org/people/mikewest/sounds/411489/), CC0
+  -- a bell tolling recorded in Italy, tagged "distant, mid" by its own
+  uploader. The occasional event layer, not a loop -- matches a campanile
+  bell heard across the water from the piazza. 16s trimmed from the start
+  of the original 2:10 recording, downmixed to mono, resampled to
+  44.1kHz, 1s fade in/out.
+- `venice-pigeons.mp3` — "Quinn Animal Sounds," by oliviaquinn, via
+  [Freesound](https://freesound.org/people/oliviaquinn/sounds/709224/),
+  CC0 -- a flock of pigeons flying and settling around a statue in a
+  piazza (Piazza Indipendenza, Florence). The other occasional event
+  layer. 8s trimmed from the flutter/settling burst partway through the
+  original 31.5s recording (identified from its own waveform, not
+  guessed), downmixed to mono, resampled to 44.1kHz, short fade in/out.
