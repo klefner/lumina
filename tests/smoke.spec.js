@@ -7636,9 +7636,13 @@ test('Photo boundary fractions (HORIZON_FRAC, WATER_END_FRAC) sit at real bright
       // average ~133.5 above, ~167.4 below): the shadowed brick shoreline
       // buildings read darker than the open lagoon water reflecting the
       // overcast sky directly beneath them. Its water-to-stone line
-      // (WATER_END_FRAC) is a smaller but still real rise too (~96.3 to
-      // ~107.8): the wet stone riva reflects the warm golden-hour sky,
-      // brighter than the water immediately above it.
+      // (WATER_END_FRAC, corrected 0.80 -> 0.85 after a PR review catch --
+      // see that constant's own comment) is a real, SHARP rise (~110.2 to
+      // ~144.0, then plateauing flat through 0.86-0.89 -- the plateau is
+      // what confirms this is a real material transition, not another
+      // point on a gradual wave/foam gradient): the wet stone riva
+      // reflects the warm golden-hour sky, brighter than the water
+      // immediately above it.
       veniceWaterTopRise: veniceWaterTopBelow.brightness - veniceWaterTopAbove.brightness,
       veniceWaterEndRise: veniceWaterEndBelow.brightness - veniceWaterEndAbove.brightness,
     };
@@ -7662,7 +7666,7 @@ test('Photo boundary fractions (HORIZON_FRAC, WATER_END_FRAC) sit at real bright
   expect(result.safariHorizonBlueGreenSwing, 'SAFARI_CONFIG.HORIZON_FRAC.day should sit at a real blue-sky-to-tan-grass hue swing').toBeGreaterThan(80);
   expect(result.desertGroundRise, 'DESERT_CONFIG.GROUND_FRAC should sit at a real foothill-to-scrubland brightness rise').toBeGreaterThan(15);
   expect(result.veniceWaterTopRise, 'VENICE_CONFIG.WATER_TOP_FRAC should sit at a real shore-to-water brightness rise').toBeGreaterThan(15);
-  expect(result.veniceWaterEndRise, 'VENICE_CONFIG.WATER_END_FRAC should sit at a real water-to-stone brightness rise').toBeGreaterThan(5);
+  expect(result.veniceWaterEndRise, 'VENICE_CONFIG.WATER_END_FRAC should sit at a real water-to-stone brightness rise').toBeGreaterThan(20);
   expect(errors).toEqual([]);
 });
 
@@ -8536,6 +8540,42 @@ test('a far Venice gondola renders visibly smaller than the same gondola would r
   expect(errors).toEqual([]);
 });
 
+// PR review catch (Codex, P1, on klefner/lumina#113): the real
+// photographed gondola row in venice-day.jpg sits at relative yFrac up
+// to ~0.50 within the water band (its hulls' darkest/lowest point
+// measured at image-fraction 0.68). Since animated gondola cutouts
+// always paint on top of the already-rasterized background regardless
+// of their own yFrac, any animated gondola at or below that depth would
+// incorrectly occlude the real, potentially-nearer photographed boats --
+// a category-3/5 violation no depth sort inside the animated set alone
+// can fix, because the photographed boats aren't part of that sortable
+// set at all. generateVeniceScene's own yFrac floor (0.62) must stay
+// comfortably above that real row's ceiling for every generated gondola,
+// not just on average -- sampled across many generations, not asserted
+// once, since it's a random range.
+test("generated Venice gondolas never sit at a depth that would visually nest them behind the real photographed moored row", async ({ page }) => {
+  const errors = trackErrors(page);
+  await page.goto('/index.html');
+  await page.waitForFunction(() => window.__lumina);
+
+  const result = await page.evaluate(() => {
+    // The real photographed row's own ceiling, independently computed
+    // from the same measured image-fraction (0.68) this round's fix was
+    // based on -- not the yFrac floor being tested, so a regression in
+    // one can't silently validate the other.
+    const realRowCeilingYFrac = (0.68 - VENICE_CONFIG.WATER_TOP_FRAC) / (VENICE_CONFIG.WATER_END_FRAC - VENICE_CONFIG.WATER_TOP_FRAC);
+    let minYFrac = 1;
+    for (let i = 0; i < 500; i++) {
+      const scene = generateVeniceScene();
+      for (const g of scene.gondolas) minYFrac = Math.min(minYFrac, g.yFrac);
+    }
+    return { minYFrac, realRowCeilingYFrac };
+  });
+
+  expect(result.minYFrac, `a generated gondola's yFrac (${result.minYFrac}) must stay above the real photographed row's own ceiling (${result.realRowCeilingYFrac}), with margin`).toBeGreaterThan(result.realRowCeilingYFrac + 0.05);
+  expect(errors).toEqual([]);
+});
+
 // Category 6 (region containment): every gondola's own anchor point --
 // not just its rendered bounding box -- must stay within the real
 // waterTopY..waterEndY band, and that band itself must stay on-screen,
@@ -8581,14 +8621,25 @@ test('Venice gondolas and pigeons stay correctly contained (gondolas within the 
         capturedPigeonYs = [];
         drawVeniceScene();
         sampleCount++;
+        // The REAL, authoritative water band this exact frame used -- the
+        // same function drawVeniceScene itself calls, not a formula
+        // re-derived here that could share a bug with the code under test
+        // (PR review catch, Codex, P2: the previous version of this test
+        // only checked hooked anchors against the full canvas [0, h],
+        // which can't catch a wrong WATER_TOP_FRAC/WATER_END_FRAC -- a
+        // mismeasured constant still comfortably fits inside canvas
+        // bounds, which is exactly how WATER_END_FRAC's own 0.80->0.85
+        // correction slipped past this test's first version).
+        const { waterTopY, waterEndY } = computeVeniceWaterBand(STATE.veniceScene, shape.w, shape.h);
+        const eps = 0.5; // float slop
         for (const anchorY of capturedAnchors) {
-          if (anchorY < 0 || anchorY > shape.h) {
-            violations.push({ shape: `${shape.w}x${shape.h}`, phase: frac, kind: 'gondola-off-canvas', anchorY });
+          if (anchorY < waterTopY - eps || anchorY > waterEndY + eps) {
+            violations.push({ shape: `${shape.w}x${shape.h}`, phase: frac, kind: 'gondola-outside-water-band', anchorY, waterTopY, waterEndY });
           }
         }
         for (const py of capturedPigeonYs) {
-          if (py < 0 || py > shape.h) {
-            violations.push({ shape: `${shape.w}x${shape.h}`, phase: frac, kind: 'pigeon-off-canvas', py });
+          if (py > waterTopY + eps) {
+            violations.push({ shape: `${shape.w}x${shape.h}`, phase: frac, kind: 'pigeon-inside-water-band', py, waterTopY });
           }
         }
       }

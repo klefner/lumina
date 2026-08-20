@@ -10815,7 +10815,7 @@ function drawDesertScene() {
 // rembg and trimmed to its own opaque bounding box, same technique as
 // every other scene's cutout library.
 // (2) medium legibility -- WATER_TOP_FRAC (0.51) and WATER_END_FRAC
-// (0.80) were measured with a full-row brightness scan of venice-day.jpg
+// (0.85) were measured with a full-row brightness scan of venice-day.jpg
 // AND confirmed by drawing literal reference lines across the photo and
 // inspecting the crop directly (the exact discipline BEACH_CONFIG.
 // HORIZON_FRAC's own history exists to enforce -- a scan number alone was
@@ -10823,7 +10823,15 @@ function drawDesertScene() {
 // is noisier here than Beach's clean sky/sea/sand photo -- the photographed
 // gondolas' own near-black hulls sit inside the water band and skew a
 // pure brightness read -- which is exactly why the visual confirmation
-// step matters more here, not less.
+// step matters more here, not less. WATER_END_FRAC's own first measured
+// value (0.80) still turned out wrong despite that process -- a PR
+// review catch (Codex) found the zoomed crop used to confirm it had
+// itself started AT 0.80, begging the question; a wider scan (0.78-0.89)
+// showed the real sharp, plateauing transition sits at 0.85-0.86, not
+// 0.80 (see WATER_END_FRAC's own comment in VENICE_CONFIG). Recorded
+// here as a reminder that "confirmed by a reference line" only holds if
+// the reference line's own crop wasn't already narrowed to a range that
+// presupposes the answer.
 // (3) depth order -- gondolas carry their own yFrac (see generateVeniceScene)
 // and are drawn back-to-front by it every frame, same technique as Beach's
 // dolphins; there is only one foreground element TYPE here (unlike Beach's
@@ -10878,8 +10886,18 @@ const VENICE_CONFIG = {
   // sky; rows between the two fractions are the real photographed lagoon
   // water the moored gondolas sit in; rows below WATER_END_FRAC are the
   // wet stone riva foreground the photo was shot from.
+  //
+  // WATER_END_FRAC corrected 0.80 -> 0.85 (PR review catch, Codex, P2):
+  // 0.80 was measured from a zoomed crop that started AT 0.80, which
+  // begged the question -- a full-row brightness scan across the whole
+  // 0.78-0.89 range instead shows a real, sharp, plateauing jump (110 ->
+  // 144, then flat) specifically at 0.85-0.86, while 0.78-0.84 is a much
+  // weaker, more gradual climb (wave/foam texture, not a material
+  // transition). 0.80 sat inside that gradual climb -- still real open
+  // water, not yet stone -- which silently excluded a genuine strip of
+  // usable water from every placement range below.
   WATER_TOP_FRAC: 0.51,
-  WATER_END_FRAC: 0.80,
+  WATER_END_FRAC: 0.85,
   // Sized as a close, prominent foreground element -- these gondolas are
   // meant to read as gliding past close to the camera, past the already-
   // photographed moored row further back in the water (see
@@ -10913,14 +10931,25 @@ function generateVeniceScene() {
   for (let i = 0; i < VENICE_CONFIG.GONDOLA_COUNT; i++) {
     gondolas.push({
       xFrac: Math.random(),
-      // Restricted to the NEARER half of the water band (0.45-0.95, not
-      // the full 0-1 range Beach's freely-swimming dolphins use) -- the
-      // real photographed gondolas already visible in the source photo
-      // itself sit in the farther half (see this section's own category-2
-      // note); placing these animated instances nearer keeps them reading
-      // as additional boats gliding past close to the camera, not
-      // overlapping/competing with the static moored row already in frame.
-      yFrac: 0.45 + Math.random() * 0.5,
+      // Restricted to the NEARER portion of the water band (0.62-0.97,
+      // not the full 0-1 range Beach's freely-swimming dolphins use) --
+      // the real photographed gondolas already visible in the source
+      // photo sit at relative yFrac up to ~0.50 within this band (their
+      // hulls' darkest/lowest point measured at image-fraction 0.68,
+      // i.e. (0.68-0.51)/(WATER_END_FRAC-0.51)). PR review catch (Codex,
+      // P1): an earlier range (0.45-0.95) let some animated gondolas
+      // represent boats at roughly the SAME or FARTHER depth as the real
+      // photographed row -- since these cutouts always paint on top of
+      // the already-rasterized background regardless of their own
+      // yFrac, a "farther" animated gondola would still visually occlude
+      // the real nearer photographed ones, an incorrect nesting no depth
+      // sort can fix because the photographed boats aren't part of the
+      // sortable scene graph at all. The fix is a hard floor comfortably
+      // ABOVE the real row's own ceiling (0.62, a 0.12 margin over 0.50),
+      // not a sort -- every animated gondola must represent a boat
+      // genuinely nearer than every real photographed one, by
+      // construction, so painting over the photo is always correct.
+      yFrac: 0.62 + Math.random() * 0.35,
       direction: Math.random() < 0.5 ? 1 : -1,
       // Slower than Beach's dolphins -- a rowed gondola gliding across a
       // calm canal, not a leaping animal.
@@ -11003,18 +11032,18 @@ function drawVenicePigeon(pigeon, x, y, t) {
   ctx.restore();
 }
 
-function drawVeniceScene() {
-  const w = canvas.width, h = canvas.height;
-  const scene = STATE.veniceScene;
+// Cover-fit + pan/zoom + water-band math, factored out of drawVeniceScene
+// so a test can call the exact same function to get the REAL, authoritative
+// waterTopY/waterEndY for a given phase/canvas shape -- not a formula
+// re-derived inside the test that could silently share a bug with the
+// code under test (PR review catch, Codex: the original containment test
+// only checked hooked anchors against the full canvas [0, h], which
+// can't actually catch a wrong WATER_TOP_FRAC/WATER_END_FRAC -- a
+// mismeasured constant still comfortably fits inside canvas bounds).
+function computeVeniceWaterBand(scene, w, h) {
   const cfg = VENICE_CONFIG;
   const img = VENICE_IMAGE;
   const t = scene.phase;
-
-  if (!img.complete || img.naturalWidth === 0) {
-    ctx.fillStyle = '#274a5c';
-    ctx.fillRect(0, 0, w, h);
-    return;
-  }
 
   const cycle = (t % cfg.PAN_CYCLE_FRAMES) / cfg.PAN_CYCLE_FRAMES;
   const easedT = 0.5 - 0.5 * Math.cos(cycle * Math.PI * 2);
@@ -11042,7 +11071,6 @@ function drawVeniceScene() {
   panY = Math.min(maxPanY, Math.max(minPanY, panY));
   // Still a valid crop of the actual image -- never reveal area outside it.
   panY = Math.min(Math.max(panY, 0), Math.max(0, drawH - h));
-  ctx.drawImage(img, -panX, -panY, drawW, drawH);
 
   // Mapped through the SAME pan/zoom space the photo itself just used --
   // see BEACH_CONFIG.HORIZON_FRAC's own comment for why a plain
@@ -11055,6 +11083,24 @@ function drawVeniceScene() {
   // visually survive regardless of what a specific canvas shape's
   // cover-fit math produces.
   const waterEndY = Math.min(-panY + cfg.WATER_END_FRAC * drawH, h);
+
+  return { panX, panY, drawW, drawH, waterTopY, waterEndY };
+}
+
+function drawVeniceScene() {
+  const w = canvas.width, h = canvas.height;
+  const scene = STATE.veniceScene;
+  const img = VENICE_IMAGE;
+  const t = scene.phase;
+
+  if (!img.complete || img.naturalWidth === 0) {
+    ctx.fillStyle = '#274a5c';
+    ctx.fillRect(0, 0, w, h);
+    return;
+  }
+
+  const { panX, panY, drawW, drawH, waterTopY, waterEndY } = computeVeniceWaterBand(scene, w, h);
+  ctx.drawImage(img, -panX, -panY, drawW, drawH);
 
   // Pigeons drawn first -- distant sky/architecture life, farthest from
   // the camera of anything foreground here, same "farthest first" depth
