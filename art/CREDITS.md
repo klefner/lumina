@@ -569,3 +569,77 @@ there's no darkened-for-moonlight case to handle.
 
 Desert's ambient sounds (`desert-wind.mp3`, `desert-thunder.mp3`) are
 credited in `sounds/CREDITS.md`, alongside every other scene's ambience.
+
+## Venice scene (venice-day.jpg)
+
+Player request (2026-08-20), verbatim: "the gondola area in front of st
+marks square in Venice Italy." Required Method applied proactively again
+(see `drawVeniceScene`'s own section header in game.js for the full
+category-by-category account). A real photograph, single variant (no
+day/night split, same reasoning as Desert):
+
+- `venice-day.jpg` — "Gondolas Docked on the Side of the River," by Helena
+  Jankovičová Kováčová, via
+  [Pexels](https://www.pexels.com/photo/gondolas-docked-on-the-side-of-the-river-5870314/),
+  free to use for commercial purposes, no attribution legally required,
+  credited anyway. Chosen over an alternate candidate that showed St
+  Mark's own Campanile/Doge's Palace directly but no clear gondolas in
+  frame -- this photo is the classic, immediately-recognizable "gondola
+  row in front of St Mark's Square" composition the request specifically
+  named: a row of gondolas moored to wooden poles (briccole), shot from
+  the wet stone riva directly in front of the square, with San Giorgio
+  Maggiore's own near-identical-design campanile and basilica across the
+  Bacino di San Marco in the background (the real view from that exact
+  spot -- St Mark's own Campanile is behind the photographer in this
+  composition, not visible). Also had by far the clearest, sharpest real
+  water/stone transition of any candidate reviewed, plus the highest
+  native resolution (11223×6313). Resized from the original to 1920×1278
+  and re-encoded (quality 78, ~429KB) for web delivery; otherwise
+  unedited.
+
+`VENICE_CONFIG.WATER_TOP_FRAC` (0.51) and `WATER_END_FRAC` (0.80) mark
+where the photo's own real lagoon water begins (below the distant shore/
+marina) and ends (at the wet stone riva foreground), both measured with a
+full-row brightness scan AND confirmed against a visual reference-line
+overlay before being written into game.js -- the scan alone was noisier
+here than Desert's single clean transition, since the photographed
+gondolas' own near-black hulls sit inside the water band and skew a pure
+brightness read; the reference-line step is what actually pinned the two
+values down (0.44, an earlier scan-only guess, turned out to still be
+inside the shoreline silhouette band, not the real water line).
+
+## Venice foreground cutout (art/venice-cutouts/gondola.webp)
+
+Same real-photo-cutout technique as every other scene's own library --
+one whole real photo, background removed with `rembg`, sourced from
+Pexels (free to use for commercial purposes, no attribution legally
+required, credited anyway):
+
+- `gondola.webp` — from an Anastasiya Maskalenka photo ("Man On A Gondola
+  In Canal In Venice"), via
+  [Pexels](https://www.pexels.com/photo/man-on-a-gondola-in-canal-in-venice-16141246/),
+  a gondolier standing and rowing two passengers, shot at a near-level
+  angle (picked specifically over an available alternate shot from a much
+  steeper top-down/bridge angle, which would have read as a mismatched
+  camera perspective against this scene's own eye-level background
+  photo). `rembg` produced a clean cutout; the initial crop used PIL's
+  default `getbbox()` (any non-zero alpha counts as content), which
+  turned out to include a very faint, essentially-invisible soft-shadow
+  feather several pixels below the boat's own real solid hull edge --
+  caught by this project's own automated "every cutout must touch its own
+  bottom edge with REAL (>150 alpha) opaque coverage" test, not a visual
+  read (the feather was too faint to notice by eye). Re-cropped to the
+  bounding box of a 150-alpha-threshold mask instead, which trimmed the
+  invisible margin and left a genuinely solid 178px-wide contact run at
+  the hull's real bottom edge.
+
+Pigeons are deliberately procedural (small flapping silhouettes drawn in
+`drawVenicePigeon`, game.js), not a photo cutout -- same reasoning/
+technique as Safari's own birds (`generateSafariBirds`): a whole-object
+photo of a bird mid-flight with nothing cropped at the frame edge is a
+much harder sourcing ask than a ground-standing animal, and this codebase
+already has an established, working answer for exactly that case.
+
+Venice's ambient sounds (`venice-water.mp3`, `venice-crowd.mp3`,
+`venice-bells.mp3`, `venice-pigeons.mp3`) are credited in
+`sounds/CREDITS.md`, alongside every other scene's ambience.

@@ -337,7 +337,7 @@ function saveCockpitModeSetting(enabled) {
 // 'rotate' (unlike flight/cockpit mode's off-by-default) since picking a
 // scene doesn't change how you play -- an unconfigured player should just
 // see everything.
-const SCENE_LIST = ['space', 'forest', 'beach', 'birthday', 'halloween', 'christmas', 'safari', 'desert'];
+const SCENE_LIST = ['space', 'forest', 'beach', 'birthday', 'halloween', 'christmas', 'safari', 'desert', 'venice'];
 const SCENE_KEY = 'lumina_scene_v1';
 function loadSceneSetting() {
   try {
@@ -515,7 +515,10 @@ function sceneWaveCount(scene) {
 // (a slow pan over a quiet, empty desert) otherwise reads. Even an
 // occasional, subtle flash is still a flash a player trying to wind down
 // in a dark room shouldn't be surprised by.
-const SLEEP_SAFE_SCENES = new Set(['space', 'forest', 'beach', 'christmas', 'aurora', 'reef', 'cavern', 'safari']);
+// Venice included -- a calm moored-boat canal scene with no sudden
+// visual event of its own (unlike Desert's lightning, excluded above for
+// exactly that reason).
+const SLEEP_SAFE_SCENES = new Set(['space', 'forest', 'beach', 'christmas', 'aurora', 'reef', 'cavern', 'safari', 'venice']);
 
 function isSceneSleepSafe(scene) {
   return SLEEP_SAFE_SCENES.has(scene);
@@ -2970,6 +2973,8 @@ const STATE = {
                            // (see generateSafariScene); null otherwise
   desertScene: null,      // { phase, flora, tumbleweed, roadrunner, lightning } for the current wave
                            // when scene === 'desert' (see generateDesertScene); null otherwise
+  veniceScene: null,      // { phase, gondolas, pigeons } for the current wave when scene === 'venice'
+                           // (see generateVeniceScene); null otherwise
   safariVariant: null,    // 'day' or 'night', persists across a whole safari block once rolled, and
                            // rides along with SAVE_KEY the same way rotateSeed does (see saveGame/loadSave) --
                            // see generateSafariScene's own comment for why this can't just live on safariScene
@@ -3971,6 +3976,26 @@ const SCENE_AMBIENT_CONFIG = {
       thunder: { file: 'desert-thunder.mp3', gain: 0.24, isEvent: true, minGapSec: 8, maxGapSec: 22, lowpassHz: 900 },
     },
   },
+  // Water first, same "floor layer" reasoning as every other scene's own
+  // wind/waves. Crowd is a second, quieter loop layer (a real piazza's
+  // own murmur, sourced from a field recording made AT Piazza San Marco
+  // itself -- see sounds/CREDITS.md), gained down well under water so it
+  // reads as background presence, not a competing focus. Bells and
+  // pigeons are the two occasional events -- a distant campanile toll and
+  // a small flock's flutter/coo, matching "gondola area in front of St
+  // Mark's Square" directly without needing a synced visual cue the way
+  // Desert's thunder loosely tracks its own lightning (these are fully
+  // independent random timers, same as every other scene's event/visual
+  // pairing).
+  venice: {
+    order: ['water', 'crowd', 'bells', 'pigeons'],
+    sounds: {
+      water: { file: 'venice-water.mp3', gain: 0.42, isEvent: false },
+      crowd: { file: 'venice-crowd.mp3', gain: 0.3, isEvent: false },
+      bells: { file: 'venice-bells.mp3', gain: 0.38, isEvent: true, minGapSec: 25, maxGapSec: 55 },
+      pigeons: { file: 'venice-pigeons.mp3', gain: 0.42, isEvent: true, minGapSec: 14, maxGapSec: 30 },
+    },
+  },
 };
 
 // Applied fresh on every repeat (a loop's next crossfaded pass, or an
@@ -4275,10 +4300,11 @@ const SCENE_COMPLETE_CELEBRATIONS = {
   christmas: { glyph: '🎄', bg: 'radial-gradient(circle at 35% 30%, #cdeccb, #1f5c3a)', glow: 'rgba(60,190,110,0.6)' },
   safari: { glyph: '🦒', bg: 'radial-gradient(circle at 35% 30%, #f6dfa0, #7a5a1e)', glow: 'rgba(230,180,80,0.6)' },
   desert: { glyph: '⚡', bg: 'radial-gradient(circle at 35% 30%, #e8d3a0, #5c4526)', glow: 'rgba(230,190,110,0.6)' },
+  venice: { glyph: '🚣', bg: 'radial-gradient(circle at 35% 30%, #b8d8e0, #2c4a5c)', glow: 'rgba(90,160,190,0.6)' },
 };
 const SCENE_DISPLAY_NAMES = {
   space: 'Space', forest: 'Forest', beach: 'Beach', birthday: 'Birthday', halloween: 'Halloween', christmas: 'Christmas', safari: 'Safari',
-  aurora: 'Aurora Skies', reef: 'Coral Reef', cavern: 'Crystal Cave', desert: 'Desert',
+  aurora: 'Aurora Skies', reef: 'Coral Reef', cavern: 'Crystal Cave', desert: 'Desert', venice: 'Venice',
 };
 
 // Full names matching the title screen's own scene-selector option text
@@ -4295,7 +4321,7 @@ const SCENE_DISPLAY_NAMES = {
 const SCENE_HUD_NAMES = {
   space: 'Space', forest: 'Night Forest', beach: 'Beach',
   birthday: 'Birthday Party', halloween: 'Halloween', christmas: 'Christmas', safari: 'Safari',
-  aurora: 'Aurora Skies', reef: 'Coral Reef Glow', cavern: 'Crystal Cave', desert: 'Desert',
+  aurora: 'Aurora Skies', reef: 'Coral Reef Glow', cavern: 'Crystal Cave', desert: 'Desert', venice: 'Venice',
 };
 
 function queueSceneCompleteToast(scene) {
@@ -8044,6 +8070,9 @@ function startWave(waveNumber) {
   // No previousScene carried forward -- see generateDesertScene's own
   // comment for why this scene has nothing that needs to survive a reroll.
   STATE.desertScene = STATE.scene === 'desert' ? generateDesertScene() : null;
+  // No previousScene carried forward, same reasoning as Desert -- nothing
+  // here needs to survive a reroll.
+  STATE.veniceScene = STATE.scene === 'venice' ? generateVeniceScene() : null;
   // Stop any leftover ambience from whatever scene the previous wave was
   // on the instant this wave's scene turns out to be different -- see
   // syncAmbienceToScene's own comment for why this can't just wait for
@@ -10764,6 +10793,349 @@ function drawDesertScene() {
   const vignette = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.25, w / 2, h / 2, Math.max(w, h) * 0.72);
   vignette.addColorStop(0, 'rgba(0,0,0,0)');
   vignette.addColorStop(1, 'rgba(40,30,14,0.4)');
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, w, h);
+}
+
+// ============================================================
+// SECTION 7F-3: VENICE BACKGROUND
+// ============================================================
+// Player request, verbatim: "the gondola area in front of st marks
+// square in Venice Italy." Required Method applied proactively again
+// (see Desert's own section header for why this is now the default way
+// a new real-photo scene gets built here, not an afterthought): every
+// category below is addressed before the first render, using the exact
+// measurement/verification techniques their own histories established --
+// direct reference-line inspection against the actual source photo, not
+// an assumed or eyeballed value.
+//
+// (1) contact -- the one cutout (gondola.webp) is a single whole real
+// photo showing the entire boat bow-to-stern, its own hull/waterline
+// visible and uncropped at the bottom of the source photo, isolated by
+// rembg and trimmed to its own opaque bounding box, same technique as
+// every other scene's cutout library.
+// (2) medium legibility -- WATER_TOP_FRAC (0.51) and WATER_END_FRAC
+// (0.85) were measured with a full-row brightness scan of venice-day.jpg
+// AND confirmed by drawing literal reference lines across the photo and
+// inspecting the crop directly (the exact discipline BEACH_CONFIG.
+// HORIZON_FRAC's own history exists to enforce -- a scan number alone was
+// what produced that constant's original wrong value). The scan itself
+// is noisier here than Beach's clean sky/sea/sand photo -- the photographed
+// gondolas' own near-black hulls sit inside the water band and skew a
+// pure brightness read -- which is exactly why the visual confirmation
+// step matters more here, not less. WATER_END_FRAC's own first measured
+// value (0.80) still turned out wrong despite that process -- a PR
+// review catch (Codex) found the zoomed crop used to confirm it had
+// itself started AT 0.80, begging the question; a wider scan (0.78-0.89)
+// showed the real sharp, plateauing transition sits at 0.85-0.86, not
+// 0.80 (see WATER_END_FRAC's own comment in VENICE_CONFIG). Recorded
+// here as a reminder that "confirmed by a reference line" only holds if
+// the reference line's own crop wasn't already narrowed to a range that
+// presupposes the answer.
+// (3) depth order -- gondolas carry their own yFrac (see generateVeniceScene)
+// and are drawn back-to-front by it every frame, same technique as Beach's
+// dolphins; there is only one foreground element TYPE here (unlike Beach's
+// several), so this is a single sort within one shared depth slot, same
+// idiom as Desert's flora.
+// (4) off-canvas justification -- pigeons cross the screen and wrap at
+// either edge, the same established technique as Safari's birds/Beach's
+// boat/Halloween's bats.
+// (5) composition matches anchor role -- the source gondola photo is a
+// near-level, side-on view (shot from a bridge, but the BOAT itself reads
+// close to eye level, not a steep aerial angle) -- picked specifically
+// over an available alternate candidate shot from a much steeper
+// top-down angle, which would have read as a mismatched camera
+// perspective against this scene's own eye-level background photo.
+// (6) region containment -- every gondola's own anchor point (not just
+// its rendered bounding box) is interpolated strictly between waterTopY
+// and waterEndY by construction (see drawVeniceScene), and both of those
+// are clamped the same way Beach's horizonY/Desert's groundY are: kept
+// within the screen's middle 70% via the panY clamp, with waterEndY
+// additionally backstopped against the canvas's own bottom edge (h) the
+// same way Beach's WATER_END_FRAC is backstopped against sandY. Pigeons
+// (plain screen-space, not photo-anchored -- see category 4) are
+// additionally clamped to stay above waterTopY with a safety margin, the
+// same fix Beach's own celestialY needed against the same clamp.
+// (7) compound placement -- multiple gondolas with independently random
+// x/y are sorted by depth every frame (category 3 above), so any two
+// that happen to overlap on screen resolve nearest-in-front regardless of
+// draw-array order.
+// (8) relative scale plausibility -- GONDOLA_SIZE_FRAC is a single named
+// range (not an inline literal) depth-scaled 0.4x-1.0x by yFrac, the same
+// technique Beach's dolphins/Desert's flora use, so a farther-placed
+// gondola always renders smaller than a nearer one at the same base size
+// draw, never the reverse.
+//
+// Pigeons are deliberately PROCEDURAL, not a photo cutout, mirroring
+// Safari's own birds (see generateSafariBirds) rather than a downgrade
+// from the real-photo direction: a whole-object photo of a bird mid-
+// flight with nothing cropped at the frame edge is a much harder sourcing
+// ask than a ground-standing animal, and this codebase already has an
+// established, working answer for that specific case. The signature
+// real-photo element here is the gondola itself.
+const VENICE_CONFIG = {
+  image: 'art/venice-day.jpg',
+  // Same calm pacing as every other real-photo scene's Ken Burns pan/zoom
+  // (Beach/Safari/Desert all share these exact values) -- background
+  // motion that should never compete with the dots/lines in front of it.
+  PAN_CYCLE_FRAMES: 5400,
+  ZOOM_MIN: 1.05,
+  ZOOM_MAX: 1.18,
+  // See this section's own category-2 note above for the measurement
+  // technique. Rows above WATER_TOP_FRAC are the distant shore/campanile/
+  // sky; rows between the two fractions are the real photographed lagoon
+  // water the moored gondolas sit in; rows below WATER_END_FRAC are the
+  // wet stone riva foreground the photo was shot from.
+  //
+  // WATER_END_FRAC corrected 0.80 -> 0.85 (PR review catch, Codex, P2):
+  // 0.80 was measured from a zoomed crop that started AT 0.80, which
+  // begged the question -- a full-row brightness scan across the whole
+  // 0.78-0.89 range instead shows a real, sharp, plateauing jump (110 ->
+  // 144, then flat) specifically at 0.85-0.86, while 0.78-0.84 is a much
+  // weaker, more gradual climb (wave/foam texture, not a material
+  // transition). 0.80 sat inside that gradual climb -- still real open
+  // water, not yet stone -- which silently excluded a genuine strip of
+  // usable water from every placement range below.
+  WATER_TOP_FRAC: 0.51,
+  WATER_END_FRAC: 0.85,
+  // Sized as a close, prominent foreground element -- these gondolas are
+  // meant to read as gliding past close to the camera, past the already-
+  // photographed moored row further back in the water (see
+  // generateVeniceScene's own yFrac range comment) -- not as a small
+  // distant detail the way Beach's dolphin/cruise-ship are.
+  GONDOLA_SIZE_FRAC: { min: 0.09, max: 0.14 },
+  GONDOLA_COUNT: 3,
+  PIGEON_COUNT: 5,
+};
+const VENICE_IMAGE = Object.assign(new Image(), { src: VENICE_CONFIG.image });
+
+// Real photo cutout (background removed with rembg, sourcing + process
+// notes in art/CREDITS.md) -- same technique as every other scene's own
+// library. A single source is enough here (unlike Desert's four-species
+// flora/fauna set): every instance is the same photographed gondola,
+// randomized only in position/direction/scale, the same way Beach's
+// dolphins are all the same source photo.
+const VENICE_CUTOUT_SOURCES = ['gondola'];
+const VENICE_CUTOUT_IMAGES = {};
+for (const name of VENICE_CUTOUT_SOURCES) {
+  VENICE_CUTOUT_IMAGES[name] = Object.assign(new Image(), { src: `art/venice-cutouts/${name}.webp` });
+}
+
+function generateVeniceScene() {
+  // Not persisted across waves the way Beach's day/night pick is (there's
+  // no variant to preserve) -- same as Desert, a fresh phase/layout every
+  // time the block starts.
+  const phase = Math.floor(Math.random() * VENICE_CONFIG.PAN_CYCLE_FRAMES);
+
+  const gondolas = [];
+  for (let i = 0; i < VENICE_CONFIG.GONDOLA_COUNT; i++) {
+    gondolas.push({
+      xFrac: Math.random(),
+      // Restricted to the NEARER portion of the water band (0.62-0.97,
+      // not the full 0-1 range Beach's freely-swimming dolphins use) --
+      // the real photographed gondolas already visible in the source
+      // photo sit at relative yFrac up to ~0.50 within this band (their
+      // hulls' darkest/lowest point measured at image-fraction 0.68,
+      // i.e. (0.68-0.51)/(WATER_END_FRAC-0.51)). PR review catch (Codex,
+      // P1): an earlier range (0.45-0.95) let some animated gondolas
+      // represent boats at roughly the SAME or FARTHER depth as the real
+      // photographed row -- since these cutouts always paint on top of
+      // the already-rasterized background regardless of their own
+      // yFrac, a "farther" animated gondola would still visually occlude
+      // the real nearer photographed ones, an incorrect nesting no depth
+      // sort can fix because the photographed boats aren't part of the
+      // sortable scene graph at all. The fix is a hard floor comfortably
+      // ABOVE the real row's own ceiling (0.62, a 0.12 margin over 0.50),
+      // not a sort -- every animated gondola must represent a boat
+      // genuinely nearer than every real photographed one, by
+      // construction, so painting over the photo is always correct.
+      yFrac: 0.62 + Math.random() * 0.35,
+      direction: Math.random() < 0.5 ? 1 : -1,
+      // Slower than Beach's dolphins -- a rowed gondola gliding across a
+      // calm canal, not a leaping animal.
+      speed: 0.00004 + Math.random() * 0.00004,
+      bobPhase: Math.random() * Math.PI * 2,
+      sizeFrac: VENICE_CONFIG.GONDOLA_SIZE_FRAC.min + Math.random() * (VENICE_CONFIG.GONDOLA_SIZE_FRAC.max - VENICE_CONFIG.GONDOLA_SIZE_FRAC.min),
+    });
+  }
+
+  // Plain screen-space, not mapped through the photo's own pan/zoom --
+  // same reasoning as Safari's own birds (see generateSafariBirds):
+  // decorative sky life with no specific real content to stay anchored
+  // to, unlike the gondolas above.
+  const pigeons = [];
+  for (let i = 0; i < VENICE_CONFIG.PIGEON_COUNT; i++) {
+    pigeons.push({
+      xFrac: Math.random(),
+      yFrac: 0.08 + Math.random() * 0.28,
+      direction: Math.random() < 0.5 ? 1 : -1,
+      speed: 0.00008 + Math.random() * 0.00007,
+      sizeFrac: 0.01 + Math.random() * 0.007,
+      wingPhase: Math.random() * Math.PI * 2,
+      wingSpeed: 0.15 + Math.random() * 0.06,
+    });
+  }
+
+  return { phase, gondolas, pigeons };
+}
+
+function updateVeniceScene() {
+  if (STATE.scene !== 'venice' || !STATE.veniceScene) return;
+  const scene = STATE.veniceScene;
+  scene.phase += 1;
+
+  for (const gondola of scene.gondolas) {
+    gondola.xFrac += gondola.speed * gondola.direction;
+    if (gondola.xFrac > 1.08) gondola.xFrac = -0.08;
+    else if (gondola.xFrac < -0.08) gondola.xFrac = 1.08;
+  }
+
+  for (const pigeon of scene.pigeons) {
+    pigeon.xFrac += pigeon.speed * pigeon.direction;
+    if (pigeon.xFrac > 1.08) pigeon.xFrac = -0.08;
+    else if (pigeon.xFrac < -0.08) pigeon.xFrac = 1.08;
+  }
+}
+
+// Draws a real-photo cutout bottom-anchored at (xCenter, anchorY) and
+// scaled to targetHeight, preserving the source image's own aspect ratio
+// -- same technique as drawDesertCutout/drawBeachCutout. No night-tint
+// filter (this scene has no night variant, same as Desert).
+function drawVeniceCutout(source, xCenter, anchorY, targetHeight, direction) {
+  const img = VENICE_CUTOUT_IMAGES[source];
+  if (!img.complete || img.naturalWidth === 0) return;
+  const targetWidth = targetHeight * (img.naturalWidth / img.naturalHeight);
+  ctx.save();
+  ctx.translate(xCenter, anchorY);
+  if (direction < 0) ctx.scale(-1, 1);
+  ctx.drawImage(img, -targetWidth / 2, -targetHeight, targetWidth, targetHeight);
+  ctx.restore();
+}
+
+// Small procedural silhouette -- see this section's own header comment
+// for why pigeons are procedural rather than a photo cutout, the same
+// reasoning/technique as Safari's own birds.
+function drawVenicePigeon(pigeon, x, y, t) {
+  const r = pigeon.sizeFrac * (canvas.width);
+  const wingAngle = Math.sin(t * pigeon.wingSpeed + pigeon.wingPhase) * 0.6;
+  ctx.save();
+  ctx.translate(x, y);
+  if (pigeon.direction < 0) ctx.scale(-1, 1);
+  ctx.strokeStyle = 'rgba(50, 46, 42, 0.6)';
+  ctx.lineWidth = Math.max(1, r * 0.28);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-r, wingAngle * r);
+  ctx.lineTo(0, 0);
+  ctx.lineTo(r, wingAngle * r);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// Cover-fit + pan/zoom + water-band math, factored out of drawVeniceScene
+// so a test can call the exact same function to get the REAL, authoritative
+// waterTopY/waterEndY for a given phase/canvas shape -- not a formula
+// re-derived inside the test that could silently share a bug with the
+// code under test (PR review catch, Codex: the original containment test
+// only checked hooked anchors against the full canvas [0, h], which
+// can't actually catch a wrong WATER_TOP_FRAC/WATER_END_FRAC -- a
+// mismeasured constant still comfortably fits inside canvas bounds).
+function computeVeniceWaterBand(scene, w, h) {
+  const cfg = VENICE_CONFIG;
+  const img = VENICE_IMAGE;
+  const t = scene.phase;
+
+  const cycle = (t % cfg.PAN_CYCLE_FRAMES) / cfg.PAN_CYCLE_FRAMES;
+  const easedT = 0.5 - 0.5 * Math.cos(cycle * Math.PI * 2);
+  const zoom = cfg.ZOOM_MIN + (cfg.ZOOM_MAX - cfg.ZOOM_MIN) * easedT;
+
+  // Cover-fit (like CSS object-fit: cover), same as every other real-photo scene.
+  const imgAspect = img.naturalWidth / img.naturalHeight;
+  const canvasAspect = w / h;
+  let drawW, drawH;
+  if (imgAspect > canvasAspect) {
+    drawH = h * zoom;
+    drawW = drawH * imgAspect;
+  } else {
+    drawW = w * zoom;
+    drawH = drawW / imgAspect;
+  }
+  const panX = (drawW - w) * easedT;
+  let panY = (drawH - h) * (0.5 + 0.3 * Math.sin(cycle * Math.PI * 2));
+  // Clamped so the water band -- and every water-anchored gondola -- never
+  // drifts off-screen, same margins/reasoning as Beach's own HORIZON_FRAC
+  // clamp (Codex review catch, PR #101) and Desert's GROUND_FRAC clamp.
+  const desiredWaterTopY = cfg.WATER_TOP_FRAC * drawH;
+  const minPanY = desiredWaterTopY - h * 0.85;
+  const maxPanY = desiredWaterTopY - h * 0.15;
+  panY = Math.min(maxPanY, Math.max(minPanY, panY));
+  // Still a valid crop of the actual image -- never reveal area outside it.
+  panY = Math.min(Math.max(panY, 0), Math.max(0, drawH - h));
+
+  // Mapped through the SAME pan/zoom space the photo itself just used --
+  // see BEACH_CONFIG.HORIZON_FRAC's own comment for why a plain
+  // screen-fraction line would drift away from the photo's own actual
+  // water line as panY shifts the image underneath it.
+  const waterTopY = -panY + cfg.WATER_TOP_FRAC * drawH;
+  // Backstopped against the canvas's own bottom edge, same reasoning as
+  // Beach's WATER_END_FRAC clamp against sandY (see that constant's own
+  // comment) -- a hard ceiling on where anything "in the water" can
+  // visually survive regardless of what a specific canvas shape's
+  // cover-fit math produces.
+  const waterEndY = Math.min(-panY + cfg.WATER_END_FRAC * drawH, h);
+
+  return { panX, panY, drawW, drawH, waterTopY, waterEndY };
+}
+
+function drawVeniceScene() {
+  const w = canvas.width, h = canvas.height;
+  const scene = STATE.veniceScene;
+  const img = VENICE_IMAGE;
+  const t = scene.phase;
+
+  if (!img.complete || img.naturalWidth === 0) {
+    ctx.fillStyle = '#274a5c';
+    ctx.fillRect(0, 0, w, h);
+    return;
+  }
+
+  const { panX, panY, drawW, drawH, waterTopY, waterEndY } = computeVeniceWaterBand(scene, w, h);
+  ctx.drawImage(img, -panX, -panY, drawW, drawH);
+
+  // Pigeons drawn first -- distant sky/architecture life, farthest from
+  // the camera of anything foreground here, same "farthest first" depth
+  // discipline as every other real-photo scene (see BEACH_DEPTH_LAYERS'
+  // own comment on why this axis, not motion speed or draw convenience,
+  // decides order). Clamped above waterTopY with a safety margin -- same
+  // fix Beach's own celestialY needed against the identical clamp above,
+  // since a wide-enough canvas can push waterTopY as high as 15% of h.
+  for (const pigeon of scene.pigeons) {
+    const pigeonY = Math.min(pigeon.yFrac * h, waterTopY - h * 0.04);
+    drawVenicePigeon(pigeon, pigeon.xFrac * w, pigeonY, t);
+  }
+
+  // Gondolas drawn back-to-front by depth (yFrac) -- see this section's
+  // own category-3/7 notes above.
+  const sortedGondolas = [...scene.gondolas].sort((a, b) => a.yFrac - b.yFrac);
+  for (const gondola of sortedGondolas) {
+    // Same depth-scale technique as Beach's dolphins -- a farther gondola
+    // (small yFrac) renders smaller than a nearer one (large yFrac) at
+    // the same base sizeFrac, never the reverse (category 8).
+    const depthScale = 0.4 + 0.6 * gondola.yFrac;
+    const renderHeight = gondola.sizeFrac * depthScale * h;
+    const gy = waterTopY + gondola.yFrac * (waterEndY - waterTopY);
+    // A small vertical bounce standing in for a real boat gently riding
+    // the water -- same spirit as Beach's boat/dolphin bob, scaled with
+    // renderHeight so a distant, small-rendered gondola doesn't bob with
+    // the same absolute amplitude as a near, large-rendered one.
+    const bob = Math.sin(t * 0.03 + gondola.bobPhase) * renderHeight * 0.06;
+    drawVeniceCutout('gondola', gondola.xFrac * w, gy + bob, renderHeight, gondola.direction);
+  }
+
+  // Same reasoning as every other real-photo scene's own vignette.
+  const vignette = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.25, w / 2, h / 2, Math.max(w, h) * 0.72);
+  vignette.addColorStop(0, 'rgba(0,0,0,0)');
+  vignette.addColorStop(1, 'rgba(10,18,26,0.4)');
   ctx.fillStyle = vignette;
   ctx.fillRect(0, 0, w, h);
 }
@@ -14424,6 +14796,7 @@ function update() {
   updateCavernScene();
   updateSafariScene();
   updateDesertScene();
+  updateVeniceScene();
   // Asteroids/satellites/comets only drift through once the whole wave's
   // line-galaxy is complete — they'd be a distraction while still connecting.
   if (STATE.phase === 'WAVE_COMPLETE') { updateSpaceObjects(); updateCelestialBodies(); }
@@ -14502,6 +14875,8 @@ function render() {
     drawSafariScene();
   } else if (STATE.scene === 'desert') {
     drawDesertScene();
+  } else if (STATE.scene === 'venice') {
+    drawVeniceScene();
   } else {
     drawStars();
     if (STATE.phase === 'WAVE_COMPLETE') { drawCelestialBodies(); drawSpaceObjects(); }
